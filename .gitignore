@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+data/raw/
+*.pt
+*.bin
+*.safetensors
+models/
+.venv/
+data/cleaned/
+data/processed/
+data/custom/
