@@ -1,0 +1,78 @@
+# Centralized pipeline configuration.
+#
+# This file is the single source of truth for model / training / LoRA /
+# data / export parameters. src/training/config.py reads it at import time
+# and falls back to hardcoded defaults if a key (or the file) is missing,
+# so scripts keep working even when run outside a checkout that has this
+# file (e.g. a stripped-down container image).
+#
+# NOTE on numbers: keep floats like learning rates in plain decimal form
+# (0.0002, not 2e-4) — PyYAML's default float resolver does not reliably
+# treat bare scientific notation as a float.
+
+model:
+  model_name: Qwen/Qwen2.5-0.5B-Instruct
+  load_in_4bit: true
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
+  # Must match data.max_length below.
+  max_seq_length: 512
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  bias: none
+  task_type: CAUSAL_LM
+
+training:
+  output_dir: models/qwen-voice-assistant
+  num_train_epochs: 3
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 0.0002
+  lr_scheduler_type: cosine
+  warmup_steps: 10
+  logging_steps: 10
+  save_steps: 50
+  max_grad_norm: 0.3
+  bf16: true
+  fp16: false
+  packing: true
+  seed: 42
+  # -1 disables the cap and trains the full num_train_epochs.
+  # Overridden by --max_steps on the CLI for smoke tests / dry runs.
+  max_steps: -1
+  assistant_only_loss: true
+
+data:
+  train_data_path: data/processed/train_final.json
+  model_name: Qwen/Qwen2.5-0.5B-Instruct
+  max_length: 512
+
+# Phase 6 (evaluation harness) has not been built yet in this repo — these
+# are the parameters it's expected to read once src/eval/evaluate.py exists.
+evaluation:
+  results_path: outputs/eval_results.json
+  in_domain_cases: 10
+  handoff_cases: 5
+  out_of_domain_cases: 5
+
+export:
+  base_model_name: Qwen/Qwen2.5-0.5B-Instruct
+  output_dir: outputs/merged_model
+  # bf16 or fp16
+  dtype: bf16
+  gguf_output_dir: outputs/gguf
+  quant_types:
+    - Q4_K_M
+    - Q8_0

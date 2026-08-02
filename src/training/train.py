@@ -10,6 +10,7 @@ This script uses:
     - HuggingFace Transformers for model and tokenizer
 """
 
+import argparse
 import json
 import torch
 from pathlib import Path
@@ -176,7 +177,7 @@ def load_training_data(data_path: str) -> Dataset:
 
 # ── Training ───────────────────────────────────────────────────────────────────
 
-def run_training(model, tokenizer, dataset, train_cfg, model_cfg) -> None:
+def run_training(model, tokenizer, dataset, train_cfg, model_cfg, device: str, resume: bool = False) -> None:
     """
     Run the supervised fine-tuning loop using TRL's SFTTrainer.
     SFTTrainer handles:
@@ -192,8 +193,20 @@ def run_training(model, tokenizer, dataset, train_cfg, model_cfg) -> None:
         dataset:   HuggingFace Dataset with messages column
         train_cfg: TrainingConfig instance
         model_cfg: ModelConfig instance
+        device:    'cuda' or 'cpu', from check_device() — bf16/fp16 mixed
+                   precision requires a GPU; transformers raises a
+                   ValueError if bf16/fp16 is requested without also
+                   setting use_cpu=True on CPU-only setups.
+        resume:    Resume from the latest checkpoint under
+                   train_cfg.output_dir (per HF Trainer's
+                   resume_from_checkpoint=True lookup) instead of
+                   training from scratch.
     """
     print(f"\nInitializing SFTTrainer...")
+
+    use_cpu = device == "cpu"
+    bf16 = train_cfg.bf16 and not use_cpu
+    fp16 = train_cfg.fp16 and not use_cpu
 
     sft_config = SFTConfig(
         output_dir=train_cfg.output_dir,
@@ -206,17 +219,20 @@ def run_training(model, tokenizer, dataset, train_cfg, model_cfg) -> None:
         logging_steps=train_cfg.logging_steps,
         save_steps=train_cfg.save_steps,
         max_grad_norm=train_cfg.max_grad_norm,
-        bf16=train_cfg.bf16,
-        fp16=train_cfg.fp16,
+        bf16=bf16,
+        fp16=fp16,
+        use_cpu=use_cpu,
         packing=train_cfg.packing,
         seed=train_cfg.seed,
-        max_seq_length=model_cfg.max_seq_length,
+        max_steps=train_cfg.max_steps,
+        assistant_only_loss=train_cfg.assistant_only_loss,
+        max_length=model_cfg.max_seq_length,
         dataset_text_field=None,
     )
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
         args=sft_config,
     )
@@ -225,15 +241,47 @@ def run_training(model, tokenizer, dataset, train_cfg, model_cfg) -> None:
     print(f"Epochs             : {train_cfg.num_train_epochs}")
     print(f"Examples           : {len(dataset)}")
     print(f"Effective batch    : {train_cfg.per_device_train_batch_size * train_cfg.gradient_accumulation_steps}")
-    print(f"Output dir         : {train_cfg.output_dir}\n")
+    print(f"Output dir         : {train_cfg.output_dir}")
+    print(f"Resume             : {resume}\n")
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=True if resume else None)
 
     print(f"\nTraining complete.")
     print(f"Saving final model to: {train_cfg.output_dir}")
     trainer.save_model(train_cfg.output_dir)
     tokenizer.save_pretrained(train_cfg.output_dir)
     print(f"Model saved.")
+
+
+# ── CLI arguments ──────────────────────────────────────────────────────────────
+
+def parse_args() -> argparse.Namespace:
+    """
+    Parse CLI overrides for the default configs in config.py.
+    Leaving a flag unset keeps the corresponding config default.
+    """
+    parser = argparse.ArgumentParser(description="Fine-tune Qwen 2.5 with QLoRA")
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=None,
+        help="Cap training to N optimizer steps (overrides num_train_epochs). "
+             "Useful for smoke-testing the pipeline, e.g. --max_steps 10.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Override the checkpoint/model output directory from TrainingConfig.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the latest checkpoint found under --output_dir "
+             "(or the configured TrainingConfig.output_dir) instead of "
+             "starting training from scratch.",
+    )
+    return parser.parse_args()
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -243,8 +291,15 @@ if __name__ == "__main__":
     print("QWEN 2.5 VOICE ASSISTANT — FINE-TUNING")
     print("="*60 + "\n")
 
+    args = parse_args()
+
     # Load all configs
     model_cfg, lora_cfg, train_cfg, data_cfg = get_all_configs()
+
+    if args.max_steps is not None:
+        train_cfg.max_steps = args.max_steps
+    if args.output_dir is not None:
+        train_cfg.output_dir = args.output_dir
 
     # Check device
     print("[1/5] Checking device...")
@@ -264,4 +319,4 @@ if __name__ == "__main__":
 
     # Train
     print("\n[5/5] Running training...")
-    run_training(model, tokenizer, dataset, train_cfg, model_cfg)
+    run_training(model, tokenizer, dataset, train_cfg, model_cfg, device, resume=args.resume)
