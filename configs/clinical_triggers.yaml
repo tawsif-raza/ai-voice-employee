@@ -1,0 +1,102 @@
+# Configuration for the clinical-question guard used in
+# src/inference/predict.py. This reuses HandoffDetector
+# (src/inference/handoff_detector.py) as-is — it's already a generic
+# layered phrase-intent matcher driven entirely by a YAML config, nothing
+# about its matching logic is handoff-specific. Pointing a second
+# HandoffDetector instance at this file turns it into a clinical-question
+# detector with zero new matching code.
+#
+# When this fires, predict.py short-circuits generation entirely and
+# routes the customer to a pharmacist rather than letting the small
+# fine-tuned model improvise an answer about dosage, interactions, or
+# diagnosis — see outputs/evaluation/failure_analysis.md and the
+# Production Hardening plan for why: RAG only ever surfaces retrieved,
+# non-clinical product facts (data/knowledge/medicine.json), and this
+# guard is what keeps genuinely clinical questions from reaching the
+# model at all.
+
+decision_threshold: 0.6
+
+exact_phrases:
+  weight: 0.95
+  phrases:
+    - how many mg should i take
+    - how much should i take
+    - is it safe to take
+    - safe to take with
+    - drug interaction
+    - side effects of
+    - allergic reaction
+    - safe during pregnancy
+    - safe while pregnant
+    - safe while breastfeeding
+    - too much medication
+    - i took too much
+    - diagnose my
+    - what dose should i take
+    - what dosage should i take
+    - can i overdose
+
+regex_patterns:
+  weight: 0.9
+  patterns:
+    - '\b(how (much|many))\b.{0,15}\b(take|dose|dosage|mg|milligrams?|pills?|tablets?)\b'
+    - '\b(interact|interaction|safe to (take|combine|mix))\b.{0,20}\b(with|and)\b'
+    - '\bside\s*effects?\b'
+    - '\ballerg(y|ic|ies)\b'
+    - '\b(pregnan\w*|breastfeed\w*|nursing)\b'
+    - '\bover ?dose\w*\b'
+    - '\b(diagnos\w*|what.?s wrong with me|do i have)\b'
+    - '\bsymptoms?\s+of\b'
+    - '\bis (it|this) (safe|okay|ok)\s+(to|for)\b'
+    # Below: found via the 200-case eval — these clinical paraphrases were
+    # missed by the patterns above.
+    - '\bwhat.?s?\s+(could be |might be |is )?causing\b'  # "what could be causing my stomach pain" (symptom inquiry without the word "symptom")
+    - '\bhow (much|many)\b.{0,30}\b(safe|okay|ok)\b'        # "how much melatonin is safe for a child" (dosage-adjacent, no "take"/"dose"/"mg")
+    - '\b(combine|mix)\b.{0,20}\bwith\b'                    # "combine this antihistamine with alcohol" (interaction, no "safe to" prefix)
+    - '\bdosage\s+(of|for)\b'                               # "what's the correct dosage of vitamin D" (no "how much/many" prefix)
+
+synonyms:
+  weight: 0.8
+  proximity_window: 6
+  actions:
+    - is it safe
+    - can i take
+    - should i take
+    - how much
+    - how many
+    - what happens if
+  targets:
+    - mg
+    - milligrams
+    - dosage
+    - dose
+    - interact
+    - interaction
+    - side effect
+    - overdose
+    - pregnant
+    - pregnancy
+    - allergic
+    - allergy
+    - symptom
+    - diagnose
+  standalone_targets:
+    - overdose
+    - side effects
+    - drug interaction
+    - allergic reaction
+    - diagnose me
+    - diagnose my
+
+semantic_examples:
+  weight: 0.7
+  similarity_threshold: 0.55
+  examples:
+    - how many milligrams of this should i take
+    - is it safe to take this with my other medication
+    - what are the side effects of this drug
+    - can i take this while pregnant
+    - i think i took too much medicine
+    - what could be causing my symptoms
+    - is this medication safe to combine with alcohol

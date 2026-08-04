@@ -67,6 +67,19 @@ evaluation:
   handoff_cases: 5
   out_of_domain_cases: 5
 
+# RAG retrieval (src/rag/). Read by src/inference/predict.py at
+# VoiceAssistantInference construction time. knowledge_dir/index_dir are
+# relative to repo root (same convention as data.train_data_path above) —
+# leave unset to use src/rag's own absolute defaults.
+rag:
+  enabled: true
+  knowledge_dir: data/knowledge
+  index_dir: outputs/rag_index
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
+  top_k: 3
+  score_threshold: 0.35
+  clinical_triggers_path: configs/clinical_triggers.yaml
+
 export:
   base_model_name: Qwen/Qwen2.5-0.5B-Instruct
   output_dir: outputs/merged_model

@@ -1,0 +1,131 @@
+# Configuration for the layered handoff-intent detector
+# (src/inference/handoff_detector.py). Editing this file changes detection
+# behavior without touching any code — add a new paraphrase, synonym, or
+# regex here rather than hard-coding it.
+#
+# Layers are tried in order from cheapest/most-precise to fuzziest; each
+# layer that fires reports a confidence, and the detector keeps the
+# highest one. `decision_threshold` is the confidence at/above which
+# `is_handoff` is True.
+
+decision_threshold: 0.6
+
+# Layer 1 — exact substring matches (fast path, highest confidence).
+# This is the original phrase list predict.py used before the redesign,
+# kept as-is for backward compatibility with responses that already
+# matched it.
+exact_phrases:
+  weight: 0.95
+  phrases:
+    - connect you to a human
+    - connect you with a human
+    - connect you to an agent
+    - connect you with an agent
+    - connect you to a representative
+    - connect you with a representative
+    - connect you to someone
+    - transfer you to a human
+    - transfer you to an agent
+    - transfer you to a representative
+    - transfer your call
+    - transfer this call
+    - speak with a human
+    - speak to a human
+    - speak with a representative
+    - speak to a representative
+    - speak with an agent
+    - speak to an agent
+    - talk to a human
+    - talk to a representative
+    - talk to an agent
+    - human agent
+    - live agent
+    - customer service representative
+    - escalate this
+    - escalate you
+    - escalate your
+    - get you a human
+    - get a human
+    - reach a representative
+    - reach a human agent
+
+# Layer 2 — regex patterns over the normalized text. Looser than exact
+# phrases: tolerates inserted words ("connect you with one of our
+# experienced agents"), verb conjugations ("connecting", "transferring"),
+# and a wider vocabulary (manager, supervisor, specialist, team member, ...).
+#
+# Action verbs use \w* suffixes (connect\w*, not connect) so "connecting
+# with a human" matches, not just "connect ... a human" — found via the
+# 200-case eval: a response saying "assist you in connecting with a
+# human" was missed because the verb was conjugated.
+regex_patterns:
+  weight: 0.9
+  patterns:
+    - '\b(connect\w*|transfer\w*|get|put|hand\w*|loop\w*|forward\w*|route\w*)\s+(you|me)?\s*(over|through)?\s*(with|to)?\s+(a|an|one of (our|the)|your|my)?\s*(experienced |dedicated |senior |live )?(human|agent|reps?|representatives?|specialists?|managers?|supervisors?|team\s*members?|someone|person)'
+    - '\b(speak\w*|talk\w*|chat\w*)\s+(with|to)\s+(a|an|one of (our|the))?\s*(human|agent|reps?|representatives?|specialists?|managers?|supervisors?|someone|person)'
+    - '\bescalat\w*\b'
+    - '\bhuman\s+assistance\b'
+    - '\bcustomer\s+care\b'
+    - '\btransfer\w*\s+you\b'
+
+# Layer 3 — synonym matching. Fires when an "action" word/phrase and a
+# "target" word/phrase both appear within `proximity_window` words of
+# each other, in any order, regardless of exact sentence structure.
+# This is what catches paraphrases neither the exact list nor the regex
+# patterns anticipated, e.g. "our team member will take great care of
+# getting you connected to a specialist".
+synonyms:
+  weight: 0.8
+  proximity_window: 8
+  actions:
+    - connect
+    - transfer
+    - escalate
+    - forward
+    - reach
+    - put you through
+    - get you
+    - hand you off
+    - loop in
+    - route you
+    - bring in
+  targets:
+    - human
+    - agent
+    - representative
+    - rep
+    - specialist
+    - manager
+    - supervisor
+    - team member
+    - someone
+    - person
+    - live person
+    - customer care
+    - support representative
+    - human assistance
+  # Phrases strong enough to signal handoff intent on their own, with no
+  # nearby action verb required (e.g. "I can get you human assistance").
+  standalone_targets:
+    - human assistance
+    - customer care team
+    - support representative
+    - live agent
+    - human agent
+
+# Layer 4 — semantic phrase matching. Lightweight lexical-similarity
+# match (token overlap + sequence ratio) against canonical example
+# sentences — not an embedding model, to keep this dependency-free and
+# fast on CPU. Catches phrasings structurally close to a known example
+# even when they share few exact synonym tokens.
+semantic_examples:
+  weight: 0.7
+  similarity_threshold: 0.55
+  examples:
+    - let me connect you with someone who can help
+    - I will transfer this call to a specialist
+    - our team member will assist you shortly
+    - you will be speaking with a live agent
+    - I can get you human assistance right away
+    - allow me to bring in a support representative
+    - I am connecting you to our customer care team

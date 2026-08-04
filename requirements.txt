@@ -19,6 +19,10 @@ tokenizers==0.22.2
 PyYAML==6.0.3
 rich==15.0.0
 
+# RAG (src/rag/) — retrieval over data/knowledge/*.json
+faiss-cpu==1.15.0
+sentence-transformers==5.6.1
+
 # Inference API (src/api/server.py)
 fastapi==0.139.2
 uvicorn[standard]==0.51.0

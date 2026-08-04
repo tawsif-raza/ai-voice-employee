@@ -7,12 +7,14 @@ Goal: Load the fine-tuned Qwen 2.5 voice assistant (base model + LoRA
 """
 
 import argparse
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
 import torch
+import yaml
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -20,6 +22,27 @@ from transformers import (
     TextIteratorStreamer,
 )
 from peft import PeftModel
+
+from handoff_detector import HandoffDetector, HandoffMatch
+
+# ── RAG config ───────────────────────────────────────────────────────────────
+# configs/config.yaml's `rag:` section is the single source of truth for
+# retrieval tuning (same pre-stub pattern src/eval/evaluate.py uses for its
+# `evaluation:` section). Falls back to defaults if the file/key is missing.
+
+_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.yaml"
+_CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "clinical_triggers.yaml"
+
+
+def _load_rag_config() -> dict:
+    if not _CONFIG_PATH.exists():
+        return {}
+    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("rag", {}) or {}
+
+
+_RAG_CONFIG = _load_rag_config()
 
 
 # ── Inference wrapper ─────────────────────────────────────────────────────────
@@ -39,43 +62,13 @@ class VoiceAssistantInference:
         "If you cannot help, offer to connect the customer to a human agent."
     )
 
-    # Substrings (checked case-insensitively) that indicate the model has
-    # decided to hand the conversation off to a human. Kept as plain
-    # substring matches rather than regex — voice-assistant responses are
-    # short and this is easier to extend as new phrasings show up.
-    HANDOFF_PHRASES = [
-        "connect you to a human",
-        "connect you with a human",
-        "connect you to an agent",
-        "connect you with an agent",
-        "connect you to a representative",
-        "connect you with a representative",
-        "connect you to someone",
-        "transfer you to a human",
-        "transfer you to an agent",
-        "transfer you to a representative",
-        "transfer your call",
-        "transfer this call",
-        "speak with a human",
-        "speak to a human",
-        "speak with a representative",
-        "speak to a representative",
-        "speak with an agent",
-        "speak to an agent",
-        "talk to a human",
-        "talk to a representative",
-        "talk to an agent",
-        "human agent",
-        "live agent",
-        "customer service representative",
-        "escalate this",
-        "escalate you",
-        "escalate your",
-        "get you a human",
-        "get a human",
-        "reach a representative",
-        "reach a human agent",
-    ]
+    # Kept for backward compatibility — anyone reading
+    # VoiceAssistantInference.HANDOFF_PHRASES directly still gets the same
+    # list. Detection itself has moved to HandoffDetector (see
+    # detect_handoff below), a layered normalize/regex/synonym/semantic
+    # matcher configured from configs/handoff_phrases.yaml — this list is
+    # only the fast-path "exact phrase" layer within it now.
+    HANDOFF_PHRASES = HandoffDetector.DEFAULT_EXACT_PHRASES
 
     # Where to look for a trained LoRA adapter when none is given explicitly,
     # in priority order. Matches train.py's default TrainingConfig.output_dir
@@ -96,6 +89,9 @@ class VoiceAssistantInference:
         top_p: float = 0.9,
         repetition_penalty: float = 1.1,
         auto_resolve_adapter: bool = True,
+        handoff_config_path: Optional[str] = None,
+        rag_enabled: bool = True,
+        clinical_config_path: Optional[str] = None,
     ):
         """
         Args:
@@ -121,12 +117,54 @@ class VoiceAssistantInference:
                                  standalone model — otherwise a LoRA adapter
                                  left over in outputs/ would get attached on
                                  top of a model it's already baked into.
+            handoff_config_path: Optional override for the YAML file
+                                 HandoffDetector reads (default:
+                                 configs/handoff_phrases.yaml).
+            rag_enabled:         Retrieve context from data/knowledge/*.json
+                                 (via FAISS) and inject it into generation,
+                                 and route clinical questions to a human
+                                 instead of the model. Tuning (top_k,
+                                 score threshold, knowledge/index dirs,
+                                 embedding model) comes from configs/
+                                 config.yaml's `rag:` section. Set False to
+                                 skip loading faiss/sentence-transformers
+                                 entirely (e.g. for a lightweight smoke test).
+            clinical_config_path: Optional override for the YAML file the
+                                 clinical-question guard reads (default:
+                                 configs/clinical_triggers.yaml). Reuses
+                                 HandoffDetector itself — see that file's
+                                 header comment for why.
         """
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
         self.repetition_penalty = repetition_penalty
         self.system_prompt = self.SYSTEM_PROMPT
+        self._handoff_detector = HandoffDetector(config_path=handoff_config_path)
+
+        self._rag_enabled = rag_enabled and bool(_RAG_CONFIG.get("enabled", True))
+        self._rag_top_k = int(_RAG_CONFIG.get("top_k", 3))
+        self._rag_score_threshold = float(_RAG_CONFIG.get("score_threshold", 0.35))
+        self._retriever = None
+        self._clinical_guard = None
+        if self._rag_enabled:
+            # Deferred import: faiss/sentence-transformers are only paid
+            # for when RAG is actually enabled.
+            rag_dir = str(Path(__file__).resolve().parents[1] / "rag")
+            if rag_dir not in sys.path:
+                sys.path.insert(0, rag_dir)
+            from retriever import Retriever
+
+            self._retriever = Retriever(
+                knowledge_dir=_RAG_CONFIG.get("knowledge_dir"),
+                index_dir=_RAG_CONFIG.get("index_dir"),
+                embedding_model=_RAG_CONFIG.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2"),
+            )
+            self._clinical_guard = HandoffDetector(
+                config_path=clinical_config_path
+                or _RAG_CONFIG.get("clinical_triggers_path")
+                or str(_CLINICAL_CONFIG_PATH)
+            )
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Device            : {self.device}")
@@ -249,23 +287,77 @@ class VoiceAssistantInference:
 
         Yields:
             str chunks as they're generated, then a final
-            {"response": str, "is_handoff": bool, "latency_ms": float}
+            {"response": str, "is_handoff": bool, "handoff_confidence": float,
+             "latency_ms": float, "retrieved_chunks": list[dict],
+             "clinical_guard_triggered": bool}
             dict as the last item. Callers can tell the two apart with
             isinstance(item, str).
         """
         history = history or []
-        messages = (
-            [{"role": "system", "content": self.system_prompt}]
-            + history
-            + [{"role": "user", "content": user_input}]
-        )
 
-        input_ids = self.tokenizer.apply_chat_template(
+        # Clinical questions (dosage, interactions, side effects, diagnosis,
+        # ...) never reach the model — the small fine-tuned model was never
+        # trained to ground clinical answers, and RAG only ever surfaces
+        # non-clinical product facts, so the safe behavior is to route these
+        # to a human deterministically rather than let the model improvise.
+        if self._clinical_guard is not None:
+            clinical_match = self._clinical_guard.score(user_input)
+            if clinical_match.is_handoff:
+                safe_response = (
+                    "That's a question our pharmacist needs to answer directly "
+                    "for your safety — let me connect you with one now."
+                )
+                yield safe_response
+                yield {
+                    "response": safe_response,
+                    "is_handoff": True,
+                    "handoff_confidence": clinical_match.confidence,
+                    "latency_ms": 0.0,
+                    "retrieved_chunks": [],
+                    "clinical_guard_triggered": True,
+                }
+                return
+
+        # Retrieve reference context and inject it as an extra system
+        # message. Training (src/data/preprocess.py) never showed the model
+        # a special "context block" format, so this is plain prose in a
+        # system turn — the most consistent thing to do without retraining,
+        # but grounding quality is inherently limited by that.
+        retrieved_chunks = []
+        context_message = None
+        if self._retriever is not None:
+            retrieved_chunks = self._retriever.retrieve(user_input, top_k=self._rag_top_k)
+            relevant = [c for c in retrieved_chunks if c.score >= self._rag_score_threshold]
+            if relevant:
+                context_lines = "\n".join(f"- {c.title}: {c.content}" for c in relevant)
+                context_message = {
+                    "role": "system",
+                    "content": (
+                        "Reference information that may help answer the "
+                        "customer's question, if relevant. Use it naturally "
+                        "without mentioning that you looked anything up:\n"
+                        + context_lines
+                    ),
+                }
+
+        messages = [{"role": "system", "content": self.system_prompt}]
+        if context_message is not None:
+            messages.append(context_message)
+        messages += history + [{"role": "user", "content": user_input}]
+
+        # apply_chat_template(..., return_tensors="pt") returns a BatchEncoding
+        # (not a bare tensor) on current transformers versions, so pull the
+        # tensors out explicitly rather than passing the encoding straight
+        # through to generate().
+        encoded = self.tokenizer.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=True,
             return_tensors="pt",
+            return_dict=True,
         ).to(self.model.device)
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded.get("attention_mask")
 
         streamer = TextIteratorStreamer(
             self.tokenizer, skip_prompt=True, skip_special_tokens=True
@@ -273,6 +365,7 @@ class VoiceAssistantInference:
 
         generation_kwargs = dict(
             input_ids=input_ids,
+            attention_mask=attention_mask,
             streamer=streamer,
             max_new_tokens=self.max_new_tokens,
             do_sample=self.temperature > 0,
@@ -300,11 +393,15 @@ class VoiceAssistantInference:
 
         latency_ms = (time.perf_counter() - start) * 1000
         response_text = "".join(chunks).strip()
+        handoff_match = self._handoff_detector.score(response_text)
 
         yield {
             "response": response_text,
-            "is_handoff": self.detect_handoff(response_text),
+            "is_handoff": handoff_match.is_handoff,
+            "handoff_confidence": handoff_match.confidence,
             "latency_ms": latency_ms,
+            "retrieved_chunks": [c.to_dict() for c in retrieved_chunks],
+            "clinical_guard_triggered": False,
         }
 
     def generate_response(
@@ -319,7 +416,7 @@ class VoiceAssistantInference:
         arrives, and returns the final summary dict.
 
         Returns:
-            {"response": str, "is_handoff": bool, "latency_ms": float}
+            {"response": str, "is_handoff": bool, "handoff_confidence": float, "latency_ms": float}
         """
         result: Optional[dict] = None
         for item in self.generate_response_stream(user_input, history=history):
@@ -335,15 +432,24 @@ class VoiceAssistantInference:
     def detect_handoff(self, response_text: str) -> bool:
         """
         Check whether a generated response signals a handoff to a human agent.
+        Delegates to HandoffDetector (handoff_detector.py): normalize ->
+        exact phrase -> regex -> synonym -> semantic layers, configured
+        from configs/handoff_phrases.yaml. Kept bool-returning for backward
+        compatibility; use detect_handoff_scored() for confidence and the
+        matched layer/evidence.
 
         Args:
             response_text: The model's generated reply.
 
         Returns:
-            True if any known handoff phrase appears in the response.
+            True if any layer signals handoff intent at or above the
+            configured confidence threshold.
         """
-        lowered = response_text.lower()
-        return any(phrase in lowered for phrase in self.HANDOFF_PHRASES)
+        return self._handoff_detector.detect(response_text)
+
+    def detect_handoff_scored(self, response_text: str) -> HandoffMatch:
+        """Same check as detect_handoff(), but returns confidence plus which layer/evidence matched."""
+        return self._handoff_detector.score(response_text)
 
     # ── Interactive REPL ─────────────────────────────────────────────────────
 
