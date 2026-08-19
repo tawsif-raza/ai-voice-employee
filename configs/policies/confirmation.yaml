@@ -1,0 +1,35 @@
+# Deterministic confirmation policy (Phase 3).
+#
+# Governs which tool actions require explicit, trusted confirmation
+# before they may proceed. "Trusted" is the operative word: the
+# `confirmed` flag evaluate_confirmation() reads MUST come from
+# application/session state controlled by the caller, never parsed out
+# of model-generated text -- see PolicyEngine.evaluate_confirmation()'s
+# docstring and tests/test_policy_engine.py's LLM trust-boundary tests.
+#
+# default_requires_confirmation is deliberately `true`: an action with no
+# entry here is treated as confirmation-required by default (fail
+# closed) rather than assumed safe to skip confirmation for.
+
+default_requires_confirmation: true
+
+actions:
+  BOOK_APPOINTMENT:
+    requires_confirmation: false
+    rule: APPOINTMENT_BOOKING_NO_CONFIRMATION_REQUIRED
+    reason: Booking a new appointment is additive and reversible by a follow-up cancellation.
+
+  CANCEL_APPOINTMENT:
+    requires_confirmation: true
+    rule: APPOINTMENT_ACTION_REQUIRES_CONFIRMATION
+    reason: Cancelling an existing appointment is destructive and requires explicit confirmation.
+
+  RESCHEDULE_APPOINTMENT:
+    requires_confirmation: true
+    rule: APPOINTMENT_ACTION_REQUIRES_CONFIRMATION
+    reason: Rescheduling changes an existing commitment and requires explicit confirmation.
+
+  ORDER_LOOKUP:
+    requires_confirmation: false
+    rule: ORDER_LOOKUP_NO_CONFIRMATION_REQUIRED
+    reason: Looking up order status is read-only.

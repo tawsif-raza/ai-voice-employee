@@ -1,0 +1,65 @@
+# Production authentication configuration (Phase 9; plan.md Step 9.3).
+#
+# Loaded by src/agent/oidc_provider.py's load_oidc_config(). The three
+# deployment-specific fields below (issuer_url, audience, jwks_url) are
+# placeholders -- a real deployment MUST override them via environment
+# variables (OIDC_ISSUER_URL / OIDC_AUDIENCE / OIDC_JWKS_URL), which take
+# priority over whatever is written here, matching this repository's
+# existing environment-variable convention (src/api/server.py's
+# MERGED_MODEL_DIR/BASE_MODEL_NAME/DEV_AUTH_ENABLED). No real credential,
+# secret, or signing key belongs in this file -- JWKS is a *public* key
+# set fetched over HTTPS, not a secret.
+#
+# If AUTH_MODE=production (or oidc) and, after applying environment
+# overrides, issuer_url/audience/jwks_url are still missing, provider
+# construction raises AuthConfigurationError -- this is the intended
+# fail-closed behavior (plan.md Principle 32), not a bug to work around
+# by hardcoding real values here.
+
+authentication:
+  # Deliberately empty. A real deployment MUST supply these three via
+  # OIDC_ISSUER_URL / OIDC_AUDIENCE / OIDC_JWKS_URL environment variables
+  # (preferred), or by editing a deployment-specific copy of this file.
+  # Left blank here (rather than filled with an "example.invalid"
+  # placeholder) so that a deployment which forgets to configure them
+  # gets load_oidc_config()'s explicit AuthConfigurationError at startup
+  # -- plan.md Principle 32's fail-closed requirement -- instead of a
+  # provider that quietly validates against a fake issuer no real token
+  # could ever satisfy, which would fail every request but without the
+  # loud, immediate, explicit startup signal a missing-configuration
+  # error is supposed to produce.
+  issuer_url: ""
+  audience: ""
+  jwks_url: ""
+
+  # RS256 only by default -- this repository does not configure a shared-
+  # secret (HS256) provider. "none" is never a valid entry here; it is
+  # explicitly rejected by load_oidc_config() even if listed.
+  algorithms:
+    - RS256
+
+  # Bounded tolerance for exp/nbf/iat validation (plan.md Step 9.8) --
+  # never unlimited, never disabled.
+  clock_skew_seconds: 60
+
+  # Token must carry every one of these claims or authentication is
+  # denied (jwt.decode(..., options={"require": [...]})).
+  required_claims:
+    - sub
+    - iss
+    - aud
+    - exp
+
+  # Which JWT claim carries role information, and how each claim VALUE
+  # maps to this application's own Role enum (src/agent/identity.py) --
+  # never accepted as a raw, unmapped string. A claim value with no
+  # matching entry here contributes no role (least privilege).
+  role_claim: roles
+  role_mapping:
+    admin: ADMIN
+    staff: STAFF
+    user: USER
+
+  # HTTP timeout for JWKS retrieval (plan.md Step 9.6/10.3) -- bounded,
+  # never infinite.
+  jwks_timeout_seconds: 10

@@ -1,0 +1,39 @@
+# Deterministic tool-action policy (Phase 3).
+#
+# This is a permission lookup only -- Tool Orchestrator does not exist
+# yet (explicitly out of scope for Phase 3). evaluate_tool_action() never
+# executes anything; it only answers "would this hypothetical action be
+# permitted in principle?" Confirmation requirements are a SEPARATE
+# concern (see confirmation.yaml / evaluate_confirmation()) so that "is
+# this action category allowed at all" and "does this specific
+# invocation need explicit confirmation" don't collapse into one
+# ambiguous flag.
+#
+# Rules are evaluated top-to-bottom; the first matching `action` wins
+# (documented ordering, not accidental). An action with no matching rule
+# falls through to default_action -- BLOCK -- so an unregistered/unknown
+# action can never silently be treated as allowed.
+
+default_action: BLOCK
+default_rule: TOOL_NOT_REGISTERED
+
+rules:
+  - action: BOOK_APPOINTMENT
+    rule: TOOL_APPOINTMENT_BOOKING_ALLOWED
+    allowed: true
+    reason: Booking a new appointment is a permitted action category.
+
+  - action: CANCEL_APPOINTMENT
+    rule: TOOL_APPOINTMENT_CANCEL_ALLOWED
+    allowed: true
+    reason: Cancelling an appointment is a permitted action category (see confirmation.yaml for its confirmation requirement).
+
+  - action: RESCHEDULE_APPOINTMENT
+    rule: TOOL_APPOINTMENT_RESCHEDULE_ALLOWED
+    allowed: true
+    reason: Rescheduling is a permitted action category (see confirmation.yaml).
+
+  - action: ORDER_LOOKUP
+    rule: TOOL_ORDER_LOOKUP_ALLOWED
+    allowed: true
+    reason: Looking up order status is read-only and permitted.

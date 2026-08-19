@@ -1,0 +1,254 @@
+# Configuration for the deterministic Intent Engine
+# (src/agent/intent_engine.py), added in Phase 2.
+#
+# Taxonomy rationale: informed by docs/DOMAIN_MODEL.md's IntentResult
+# entity (frozen; intent is "one of the fixed, versioned taxonomy...
+# Validation Rules: intent must match a value in the currently-configured
+# taxonomy [Config Service get_intent_config()]") and by the actual
+# knowledge domains under data/knowledge/ (faqs, policies, medicine,
+# appointments). docs/MODULES.md §3's illustrative six-category example
+# (knowledge_lookup, appointment_action, escalation_request,
+# clinical_question, out_of_domain, chit_chat) is explicitly an "e.g.",
+# not an exhaustive enum -- this taxonomy is the finer-grained,
+# configured taxonomy that document already defers to, chosen because it
+# maps onto real routing decisions (appointment booking vs. cancel vs.
+# reschedule are different future Tool Orchestrator actions, not one
+# bucket) rather than because the coarser example was wrong.
+#
+# Each intent's `route` is which downstream path a match sends
+# ConversationManager toward -- see src/agent/intent_engine.py's Route
+# constants. Clinical safety is NOT one of these routes: the clinical
+# guard (configs/clinical_triggers.yaml, via HandoffDetector) already
+# runs before Intent Engine ever sees the message and short-circuits the
+# turn deterministically -- see conversation_manager.py's handle_turn()
+# sequencing. MEDICATION_QUESTION here is for on-topic-but-not-clinical
+# product questions ("what is ibuprofen used for") that the clinical
+# guard correctly lets through today (tests/test_clinical_guard.py's
+# test_general_product_question_does_not_trigger) -- it routes to
+# RAG_LLM, not to a second, differently-configured safety gate, to avoid
+# the exact shared-fate/duplicated-safety-logic risk ADR-005 warns about.
+
+decision_threshold: 0.5
+# If the top two scoring intents are within this margin of each other,
+# treat the result as ambiguous (UNKNOWN) rather than guessing between
+# them, even if the top score alone would have cleared decision_threshold.
+ambiguity_margin: 0.08
+
+intents:
+  FAQ:
+    route: RAG_LLM
+    exact_weight: 0.9
+    exact_phrases:
+      - business hours
+      - store hours
+      - return policy
+      - shipping time
+      - how long does shipping take
+      - payment methods
+      - how do i track my order
+      - mobile app
+      - cancellation policy
+      - ship internationally
+      - reset my password
+      - change my shipping address
+      - change my address
+    regex_weight: 0.85
+    regex_patterns:
+      - \bhow long\s+does.*\bship
+    keyword_weight: 0.6
+    keywords:
+      - hours
+      - policy
+      - shipping
+      - return
+      - track
+      - payment methods
+      - app
+      - international
+
+  APPOINTMENT_BOOKING:
+    route: TOOL_ORCHESTRATOR
+    exact_weight: 0.92
+    exact_phrases:
+      - book an appointment
+      - book a vaccination
+      - book a consultation
+      - schedule an appointment
+      - make an appointment
+      - set up an appointment
+      - i want to book
+      - i need to book
+    regex_weight: 0.85
+    regex_patterns:
+      - \b(book|schedule|set up|make)\s+(a|an|my)?\s*(appointment|consultation|vaccination)
+    keyword_weight: 0.55
+    keywords:
+      - book an appointment
+      - booking
+      - schedule a visit
+
+  APPOINTMENT_CANCEL:
+    route: TOOL_ORCHESTRATOR
+    exact_weight: 0.92
+    exact_phrases:
+      - cancel my appointment
+      - cancel an appointment
+      - cancel the appointment
+      - i need to cancel my appointment
+      - i want to cancel my appointment
+    regex_weight: 0.85
+    regex_patterns:
+      - \bcancel\w*\s+(my|the|an|this)?\s*appointment
+    keyword_weight: 0.55
+    keywords:
+      - cancel appointment
+      - cancellation
+
+  APPOINTMENT_RESCHEDULE:
+    route: TOOL_ORCHESTRATOR
+    exact_weight: 0.92
+    exact_phrases:
+      - reschedule my appointment
+      - reschedule the appointment
+      - change my appointment time
+      - move my appointment
+      - i need to reschedule
+      - i want to reschedule my appointment
+    regex_weight: 0.85
+    regex_patterns:
+      - \bresched\w*\s+(my|the|an|this)?\s*appointment
+      - \bmove\s+(my|the)\s*appointment
+    keyword_weight: 0.55
+    keywords:
+      - reschedule
+      - change my appointment
+      - different time
+
+  ORDER_STATUS:
+    route: TOOL_ORCHESTRATOR
+    exact_weight: 0.9
+    exact_phrases:
+      - where is my order
+      - track my order
+      - order status
+      - when will my order arrive
+      - has my order shipped
+      - status of my order
+    regex_weight: 0.85
+    regex_patterns:
+      - \b(where|when)\s+(is|will)\s+my\s+order
+      - \btrack\w*\s+my\s+order
+    keyword_weight: 0.55
+    keywords:
+      - order status
+      - my order
+      - shipment
+      - package
+
+  BILLING:
+    route: BILLING_WORKFLOW
+    exact_weight: 0.88
+    exact_phrases:
+      - billing question
+      - i was charged twice
+      - refund my payment
+      - wrong amount charged
+      - dispute a charge
+      - update my payment method
+      - insurance billing question
+      - my card was charged twice
+    regex_weight: 0.82
+    regex_patterns:
+      - \b(charged|billed)\s+(twice|wrong|incorrectly)
+      - \bdispute\w*\s+a?\s*charge
+    keyword_weight: 0.55
+    keywords:
+      - billing
+      - charge
+      - charged
+      - invoice
+      - payment method
+      - overcharged
+
+  MEDICATION_QUESTION:
+    route: RAG_LLM
+    exact_weight: 0.8
+    exact_phrases:
+      - what is ibuprofen used for
+      - do you carry
+      - is this in stock
+      - tell me about this medication
+      - what is this medication for
+    keyword_weight: 0.55
+    keywords:
+      - medication
+      - medicine
+      - ibuprofen
+      - vitamin
+      - over the counter
+      - carry loratadine
+      - in stock
+
+  COMPLAINT:
+    route: HUMAN_HANDOFF
+    exact_weight: 0.9
+    exact_phrases:
+      - file a complaint
+      - i am not satisfied
+      - this is unacceptable
+      - i want to complain
+      - poor service
+      - very disappointed
+      - i am very frustrated
+    regex_weight: 0.82
+    regex_patterns:
+      - \bfile\s+a\s+(formal\s+)?complaint
+      - \bnot\s+satisfied\s+with
+      - \bescalat\w*\b
+    keyword_weight: 0.55
+    keywords:
+      - complaint
+      - complain
+      - unacceptable
+      - disappointed
+      - frustrated
+      - unhappy with
+
+  HUMAN_HANDOFF:
+    route: HUMAN_HANDOFF
+    exact_weight: 0.92
+    exact_phrases:
+      - speak to a human
+      - talk to a person
+      - connect me to an agent
+      - i want a human
+      - real person please
+      - speak to a manager
+      - i need to talk to someone
+    regex_weight: 0.85
+    regex_patterns:
+      - \b(speak|talk)\s+(to|with)\s+(a\s+)?(real\s+)?(human|person|manager|representative)
+      - \bconnect\s+me\s+(to|with)\s+(an?\s+)?(agent|human|representative|manager)
+    keyword_weight: 0.55
+    keywords:
+      - human
+      - real person
+      - representative
+      - manager
+
+  UNDERSPECIFIED_REQUEST:
+    # Deliberately low-weight, signal-only entry -- not a real,
+    # answerable business intent on its own. Its job is to distinguish
+    # "the user is clearly asking for *something* action-shaped but
+    # didn't say what" (Phase 2's "I need something tomorrow." example)
+    # from genuine zero-signal chit-chat/out-of-domain messages, which
+    # must keep falling through to normal generation (see
+    # intent_engine.py classify()'s docstring on the two UNKNOWN paths).
+    # regex_weight is kept below decision_threshold on purpose: a message
+    # that matches only this pattern always lands in the weak-signal
+    # branch below and is reported as intent=UNKNOWN with low confidence,
+    # never as this label winning outright.
+    route: CLARIFICATION
+    regex_weight: 0.45
+    regex_patterns:
+      - \b(need|want)\s+(something|this|that|it)\b.*\b(today|tomorrow|this week|soon|asap)\b

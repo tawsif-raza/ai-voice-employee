@@ -10,3 +10,11 @@ models/
 data/cleaned/
 data/processed/
 data/custom/
+
+# Local/scratch SQLite databases (dev PERSISTENCE_MODE, ad hoc Alembic
+# verification) -- never a real PostgreSQL deployment artifact.
+*.db
+
+# Training/eval run artifacts (checkpoints, logs, eval reports, RAG index) --
+# regenerated locally, not deployment or source artifacts.
+outputs/

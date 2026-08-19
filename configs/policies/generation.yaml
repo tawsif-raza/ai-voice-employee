@@ -1,0 +1,30 @@
+# Deterministic generation policy (Phase 3).
+#
+# Clinical safety is NOT decided here -- it comes from
+# PolicyEngine.evaluate_clinical(), fed by the existing
+# ClinicalSafetyGuard/HandoffDetector (configs/clinical_triggers.yaml).
+# This file governs only what happens for a message that has already
+# cleared clinical safety: whether it's safe to generate normally, or
+# whether the intent classifier's routing decision means the request
+# should be clarified instead.
+#
+# Rules are evaluated top-to-bottom; the first matching rule wins. This
+# ordering IS the documented conflict-resolution model (not accidental
+# file/dict order) -- see src/agent/policy_engine.py's module docstring.
+# If nothing matches, default_rule/default_action apply.
+
+default_rule: SAFE_GENERAL_INFORMATION
+default_action: ALLOW
+
+rules:
+  - match_route: CLARIFICATION
+    rule: UNKNOWN_REQUEST
+    allowed: false
+    action: CLARIFY
+    reason: Request intent is unclear; ask the user to clarify rather than guessing.
+
+  - match_intent: FAQ
+    rule: SAFE_FAQ
+    allowed: true
+    action: ALLOW
+    reason: Request is a routine, answerable FAQ.

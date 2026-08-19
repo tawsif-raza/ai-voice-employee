@@ -1,0 +1,97 @@
+# Deterministic privacy policy boundary (Phase 3).
+#
+# This is the *boundary* a future PII/redaction component can call
+# through -- not a complete PII detection system (explicitly out of
+# scope for this phase). It answers a narrow, deterministic question:
+# "is this named field allowed for this operation?" It does not scan
+# free text for PII.
+#
+# default_action is ALLOW for fields not listed under a given operation
+# -- this is intentionally narrow-scope, not a general-purpose classifier
+# that could silently over- or under-block arbitrary content. Expanding
+# coverage is future work (see Phase 6 in this plan).
+
+default_action: ALLOW
+default_rule: NOT_RESTRICTED
+
+restricted_fields:
+  log:
+    - user_id
+    - phone_number
+    - medical_condition
+    - payment_method
+    - address
+  persist:
+    - medical_condition
+    - payment_method
+  expose_downstream:
+    - payment_method
+    - medical_condition
+  include_in_metadata:
+    - medical_condition
+    - payment_method
+  store_in_session:
+    - payment_method
+
+# PII content-detection policies (Phase 6) -- a SECOND, complementary
+# dimension to restricted_fields above. restricted_fields governs named
+# KEYS (e.g. a record whose `key` is literally "medical_condition");
+# pii_policies governs DETECTED CONTENT PATTERNS found by scanning free
+# text (e.g. an email address embedded anywhere in a message), regardless
+# of which field it's in. Both are evaluated by PolicyEngine
+# (evaluate_privacy() for the former, evaluate_pii() for the latter).
+#
+# default_action here is REDACT, not ALLOW -- deliberately different from
+# restricted_fields' default above. Content-pattern PII detection is
+# inherently higher-stakes than named-field policy (which already has
+# every real field explicitly enumerated): an unconfigured (context,
+# PII type) combination should never silently become fully permissive.
+# IDENTIFIER (this app's own appt_<n>/order_<n> references) is the one
+# type explicitly allowed everywhere by default -- these are routine,
+# non-sensitive record references already used pervasively in normal
+# conversation, not personal data.
+pii_policies:
+  default_action: REDACT
+
+  contexts:
+    LOGGING:
+      EMAIL: REDACT
+      PHONE: REDACT
+      PAYMENT_INFORMATION: REDACT
+      IDENTIFIER: ALLOW
+    MEMORY:
+      EMAIL: RESTRICT
+      PHONE: RESTRICT
+      PAYMENT_INFORMATION: BLOCK
+      IDENTIFIER: ALLOW
+    SESSION:
+      EMAIL: RESTRICT
+      PHONE: RESTRICT
+      PAYMENT_INFORMATION: BLOCK
+      IDENTIFIER: ALLOW
+    LLM_CONTEXT:
+      # Conservative: the model should receive only the minimum
+      # necessary context (plan.md Step 6.10). A raw email/phone number
+      # surfaced through a tool result or memory value is redacted before
+      # it ever reaches the prompt -- matches Step 6.11's own worked
+      # example (a tool returning {patient_id, email, appointment} must
+      # not pass its email field to the LLM unredacted).
+      EMAIL: REDACT
+      PHONE: REDACT
+      PAYMENT_INFORMATION: REDACT
+      IDENTIFIER: ALLOW
+    TOOL_INPUT:
+      EMAIL: ALLOW
+      PHONE: ALLOW
+      PAYMENT_INFORMATION: BLOCK
+      IDENTIFIER: ALLOW
+    API_RESPONSE:
+      EMAIL: REDACT
+      PHONE: REDACT
+      PAYMENT_INFORMATION: REDACT
+      IDENTIFIER: ALLOW
+    TELEMETRY:
+      EMAIL: REDACT
+      PHONE: REDACT
+      PAYMENT_INFORMATION: BLOCK
+      IDENTIFIER: ALLOW

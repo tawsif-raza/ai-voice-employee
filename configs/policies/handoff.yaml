@@ -1,0 +1,51 @@
+# Deterministic handoff policy (Phase 3).
+#
+# This file does NOT re-implement phrase/pattern matching -- it
+# aggregates already-computed signals from the existing HandoffDetector
+# (clinical guard + post-generation handoff check, configs/
+# clinical_triggers.yaml and configs/handoff_phrases.yaml) and IntentEngine
+# (configs/intent_taxonomy.yaml) into one deterministic handoff decision.
+# PolicyEngine.evaluate_handoff() builds a dict of boolean signals from
+# its inputs and evaluates these rules top-to-bottom; the first true
+# signal wins (documented ordering -- clinical risk is listed first
+# deliberately, matching its precedence as the most safety-critical
+# signal).
+#
+# Named "handoff" rather than "escalation" to match this repository's
+# existing terminology throughout (HandoffDetector, is_handoff,
+# handoff_phrases.yaml, HUMAN_HANDOFF route) rather than introducing a
+# second synonym.
+
+default_action: ALLOW
+default_rule: NO_HANDOFF_SIGNAL
+
+rules:
+  - signal: clinical_triggered
+    rule: CLINICAL_RISK
+    action: HANDOFF
+    reason: The clinical safety guard flagged this message.
+
+  - signal: intent_human_handoff
+    rule: EXPLICIT_HUMAN_REQUEST
+    action: HANDOFF
+    reason: The user explicitly asked to speak with a human.
+
+  - signal: intent_complaint
+    rule: COMPLAINT
+    action: HANDOFF
+    reason: The message was classified as a complaint.
+
+  - signal: post_generation_handoff
+    rule: SAFETY_TRIGGER
+    action: HANDOFF
+    reason: The generated response itself signaled a need to hand off.
+
+  - signal: low_confidence
+    rule: LOW_CONFIDENCE
+    action: HANDOFF
+    reason: Intent classification confidence was too low to act on automatically.
+
+  - signal: unsupported_request
+    rule: UNSUPPORTED_REQUEST
+    action: HANDOFF
+    reason: The request does not match any supported capability.

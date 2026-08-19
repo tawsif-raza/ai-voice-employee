@@ -1,0 +1,71 @@
+# Reliability/timeout/retry/circuit-breaker configuration (Phase 10;
+# plan.md Step 10.2).
+#
+# Unlike configs/auth.yaml (Phase 9), missing/malformed values here fall
+# back to safe, conservative built-in defaults rather than failing
+# closed at startup -- reliability tuning is not a security boundary,
+# and a missing reliability.yaml should degrade to "sensible defaults,"
+# not "the server refuses to start" (see reliability_config.py's loader).
+#
+# Every value below was chosen for THIS application specifically, not
+# copied blindly:
+#   - llm.timeout_seconds is deliberately larger than the underlying
+#     LLMService.GENERATION_TIMEOUT_S (300s stall-detection) would ever
+#     need in practice for a 200-token voice-assistant reply on a small
+#     (Qwen2.5-0.5B) model; retries are bounded to 1 extra attempt since
+#     a full regeneration is expensive and a repeated timeout usually
+#     means a genuinely stuck dependency, not noise.
+#   - rag.max_retries is higher (2) because a single FAISS query is
+#     cheap and retrieval failures are more likely to be transient
+#     (e.g. a momentary resource contention) than LLM failures.
+#   - tools.max_retries is 0 by default: ToolOrchestrator only retries
+#     an action whose ActionSpec.idempotency is explicitly READ_ONLY or
+#     IDEMPOTENT_WRITE (src/agent/action_models.py) -- this top-level
+#     number is an additional cap on top of that per-action gate, not a
+#     replacement for it, so 0 here would fully disable tool retries
+#     even for idempotent actions; set to 1 to allow one bounded retry
+#     for genuinely idempotent/read-only tools.
+
+reliability:
+  llm:
+    timeout_seconds: 60
+    max_retries: 1
+    base_delay_seconds: 0.5
+    max_delay_seconds: 4.0
+
+  rag:
+    timeout_seconds: 5
+    max_retries: 2
+    base_delay_seconds: 0.2
+    max_delay_seconds: 2.0
+
+  tools:
+    max_retries: 1
+    base_delay_seconds: 0.2
+    max_delay_seconds: 2.0
+
+  circuit_breaker:
+    llm:
+      failure_threshold: 5
+      recovery_timeout_seconds: 30
+    rag:
+      failure_threshold: 5
+      recovery_timeout_seconds: 30
+    tools:
+      failure_threshold: 5
+      recovery_timeout_seconds: 30
+
+  # Bounds a single request's inputs (plan.md Step 10.16) -- rejected via
+  # normal Pydantic 422 validation error, not a raw internal exception.
+  request_limits:
+    max_message_length: 4000
+    max_history_turns: 50
+    max_history_turn_length: 4000
+
+  # Caps how many generate_stream() calls may run concurrently against
+  # the single loaded model instance (plan.md Step 10.16/10.17) -- keep
+  # at 1 unless the deployment's inference stack is verified safe for
+  # concurrent generate() calls on one model instance.
+  max_concurrent_generations: 1
+
+  graceful_shutdown_timeout_seconds: 30
