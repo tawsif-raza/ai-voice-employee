@@ -43,16 +43,29 @@ class SessionStatus(str, Enum):
 # (docs/DOMAIN_MODEL.md's ConversationSession State Invariant), extended
 # to this richer enum.
 ALLOWED_TRANSITIONS: dict[SessionStatus, frozenset] = {
-    SessionStatus.ACTIVE: frozenset({
-        SessionStatus.WAITING_FOR_INPUT, SessionStatus.WAITING_FOR_CONFIRMATION,
-        SessionStatus.COMPLETED, SessionStatus.EXPIRED, SessionStatus.FAILED,
-    }),
-    SessionStatus.WAITING_FOR_INPUT: frozenset({
-        SessionStatus.ACTIVE, SessionStatus.EXPIRED, SessionStatus.FAILED,
-    }),
-    SessionStatus.WAITING_FOR_CONFIRMATION: frozenset({
-        SessionStatus.ACTIVE, SessionStatus.EXPIRED, SessionStatus.FAILED,
-    }),
+    SessionStatus.ACTIVE: frozenset(
+        {
+            SessionStatus.WAITING_FOR_INPUT,
+            SessionStatus.WAITING_FOR_CONFIRMATION,
+            SessionStatus.COMPLETED,
+            SessionStatus.EXPIRED,
+            SessionStatus.FAILED,
+        }
+    ),
+    SessionStatus.WAITING_FOR_INPUT: frozenset(
+        {
+            SessionStatus.ACTIVE,
+            SessionStatus.EXPIRED,
+            SessionStatus.FAILED,
+        }
+    ),
+    SessionStatus.WAITING_FOR_CONFIRMATION: frozenset(
+        {
+            SessionStatus.ACTIVE,
+            SessionStatus.EXPIRED,
+            SessionStatus.FAILED,
+        }
+    ),
     SessionStatus.COMPLETED: frozenset(),
     SessionStatus.EXPIRED: frozenset(),
     SessionStatus.FAILED: frozenset(),

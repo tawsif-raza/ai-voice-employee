@@ -35,6 +35,7 @@ from predict import VoiceAssistantInference  # noqa: E402
 try:
     from rich.console import Console
     from rich.table import Table
+
     _HAS_RICH = True
 except ImportError:
     _HAS_RICH = False
@@ -71,23 +72,76 @@ def _get(key: str, default: Any) -> Any:
 CORE_BENCHMARK = [
     {"id": 1, "category": "in_domain", "message": "What are your business hours?", "expected_handoff": False},
     {"id": 2, "category": "in_domain", "message": "How do I reset my account password?", "expected_handoff": False},
-    {"id": 3, "category": "in_domain", "message": "What's your return policy for unused items?", "expected_handoff": False},
-    {"id": 4, "category": "in_domain", "message": "How long does standard shipping usually take?", "expected_handoff": False},
+    {
+        "id": 3,
+        "category": "in_domain",
+        "message": "What's your return policy for unused items?",
+        "expected_handoff": False,
+    },
+    {
+        "id": 4,
+        "category": "in_domain",
+        "message": "How long does standard shipping usually take?",
+        "expected_handoff": False,
+    },
     {"id": 5, "category": "in_domain", "message": "Do you ship internationally?", "expected_handoff": False},
     {"id": 6, "category": "in_domain", "message": "What payment methods do you accept?", "expected_handoff": False},
     {"id": 7, "category": "in_domain", "message": "How can I track my order?", "expected_handoff": False},
-    {"id": 8, "category": "in_domain", "message": "Can I change my shipping address after placing an order?", "expected_handoff": False},
-    {"id": 9, "category": "in_domain", "message": "What's your cancellation policy on subscriptions?", "expected_handoff": False},
-    {"id": 10, "category": "in_domain", "message": "Do you have a mobile app I can use to manage my account?", "expected_handoff": False},
-
-    {"id": 11, "category": "handoff", "message": "I want to speak to a real human agent right now.", "expected_handoff": True},
-    {"id": 12, "category": "handoff", "message": "This is the third time I've contacted you about my refund — I need this escalated.", "expected_handoff": True},
-    {"id": 13, "category": "handoff", "message": "I want to file a formal complaint about how I've been treated.", "expected_handoff": True},
-    {"id": 14, "category": "handoff", "message": "Can you connect me with a manager? I'm not satisfied with this conversation.", "expected_handoff": True},
-    {"id": 15, "category": "handoff", "message": "My card was charged twice for the same order and I need a person to fix it immediately.", "expected_handoff": True},
-
+    {
+        "id": 8,
+        "category": "in_domain",
+        "message": "Can I change my shipping address after placing an order?",
+        "expected_handoff": False,
+    },
+    {
+        "id": 9,
+        "category": "in_domain",
+        "message": "What's your cancellation policy on subscriptions?",
+        "expected_handoff": False,
+    },
+    {
+        "id": 10,
+        "category": "in_domain",
+        "message": "Do you have a mobile app I can use to manage my account?",
+        "expected_handoff": False,
+    },
+    {
+        "id": 11,
+        "category": "handoff",
+        "message": "I want to speak to a real human agent right now.",
+        "expected_handoff": True,
+    },
+    {
+        "id": 12,
+        "category": "handoff",
+        "message": "This is the third time I've contacted you about my refund — I need this escalated.",
+        "expected_handoff": True,
+    },
+    {
+        "id": 13,
+        "category": "handoff",
+        "message": "I want to file a formal complaint about how I've been treated.",
+        "expected_handoff": True,
+    },
+    {
+        "id": 14,
+        "category": "handoff",
+        "message": "Can you connect me with a manager? I'm not satisfied with this conversation.",
+        "expected_handoff": True,
+    },
+    {
+        "id": 15,
+        "category": "handoff",
+        "message": "My card was charged twice for the same order and I need a person to fix it immediately.",
+        "expected_handoff": True,
+    },
     {"id": 16, "category": "out_of_domain", "message": "What's the capital of France?", "expected_handoff": False},
-    {"id": 17, "category": "out_of_domain", "message": "Can you write me a short poem about the ocean?", "expected_handoff": False},
+    {
+        "id": 17,
+        "category": "out_of_domain",
+        "message": "Can you write me a short poem about the ocean?",
+        "expected_handoff": False,
+    },
     {"id": 18, "category": "out_of_domain", "message": "What's 15 times 37?", "expected_handoff": False},
     {"id": 19, "category": "out_of_domain", "message": "Tell me a joke.", "expected_handoff": False},
     {"id": 20, "category": "out_of_domain", "message": "What's the weather like today?", "expected_handoff": False},
@@ -132,6 +186,7 @@ def load_benchmark(quick: bool, benchmark_path: Optional[str], sample: Optional[
 
 
 # ── Per-turn / per-case evaluation ──────────────────────────────────────────
+
 
 def run_turn(assistant: VoiceAssistantInference, turn: dict, history: list[dict]) -> dict:
     """Run one conversational turn (with accumulated history) and score it against its expectations."""
@@ -201,6 +256,7 @@ def run_case(assistant: VoiceAssistantInference, case: dict) -> dict:
 
 
 # ── Aggregation ──────────────────────────────────────────────────────────────
+
 
 def _percentile(values: list[float], pct: float) -> float:
     """Linear-interpolation percentile, dependency-free (no numpy)."""
@@ -294,6 +350,7 @@ def _category_breakdown(flat: list[tuple[str, dict]]) -> dict:
 
 # ── Reporting ────────────────────────────────────────────────────────────────
 
+
 def _turn_rows(results: list[dict]) -> list[tuple]:
     rows = []
     for r in results:
@@ -349,16 +406,23 @@ def print_summary_rich(results: list[dict], metrics: dict) -> None:
     summary.add_row("Handoff precision", f"{metrics['handoff_precision']:.2f}")
     summary.add_row("Handoff recall", f"{metrics['handoff_recall']:.2f}")
     if metrics["retrieval_hit_rate"] is not None:
-        summary.add_row("Retrieval hit rate", f"{metrics['retrieval_hit_rate']:.1%} ({metrics['retrieval_evaluated_turns']} turns)")
+        summary.add_row(
+            "Retrieval hit rate", f"{metrics['retrieval_hit_rate']:.1%} ({metrics['retrieval_evaluated_turns']} turns)"
+        )
     if metrics["clinical_guard_accuracy"] is not None:
-        summary.add_row("Clinical guard accuracy", f"{metrics['clinical_guard_accuracy']:.1%} ({metrics['clinical_evaluated_turns']} turns)")
+        summary.add_row(
+            "Clinical guard accuracy",
+            f"{metrics['clinical_guard_accuracy']:.1%} ({metrics['clinical_evaluated_turns']} turns)",
+        )
     summary.add_row("Avg word count", f"{metrics['avg_word_count']:.1f}")
     summary.add_row("Avg token count", f"{metrics['avg_token_count']:.1f}")
     summary.add_row("Avg TTFT (ms)", f"{metrics['avg_ttft_ms']:.0f}")
     summary.add_row("Avg throughput (tok/s)", f"{metrics['avg_throughput_tok_s']:.2f}")
-    summary.add_row("Latency avg / p50 / p90 / p99 (ms)",
-                     f"{metrics['latency_ms_avg']:.0f} / {metrics['latency_ms_p50']:.0f} / "
-                     f"{metrics['latency_ms_p90']:.0f} / {metrics['latency_ms_p99']:.0f}")
+    summary.add_row(
+        "Latency avg / p50 / p90 / p99 (ms)",
+        f"{metrics['latency_ms_avg']:.0f} / {metrics['latency_ms_p50']:.0f} / "
+        f"{metrics['latency_ms_p90']:.0f} / {metrics['latency_ms_p99']:.0f}",
+    )
     console.print(summary)
 
 
@@ -374,14 +438,17 @@ def print_summary_plain(results: list[dict], metrics: dict) -> None:
             retr = "hit" if t["retrieval_hit"] else "miss"
         exp_pred = f"{t['expected_handoff']}/{t['predicted_handoff']}"
         print(
-            f"{label:>7} {category:<14} {exp_pred:<14} {ok:<5} "
-            f"{retr:<5} {t['word_count']:>6} {t['latency_ms']:>8.0f}"
+            f"{label:>7} {category:<14} {exp_pred:<14} {ok:<5} {retr:<5} {t['word_count']:>6} {t['latency_ms']:>8.0f}"
         )
     print("=" * 90)
     print("By category:")
     for category, stats in sorted(metrics["by_category"].items()):
-        retrieval_str = f", retrieval hit rate {stats['retrieval_hit_rate']:.1%}" if stats["retrieval_hit_rate"] is not None else ""
-        print(f"  {category:<14} turns={stats['num_turns']:<4} handoff_acc={stats['handoff_accuracy']:.1%}{retrieval_str}")
+        retrieval_str = (
+            f", retrieval hit rate {stats['retrieval_hit_rate']:.1%}" if stats["retrieval_hit_rate"] is not None else ""
+        )
+        print(
+            f"  {category:<14} turns={stats['num_turns']:<4} handoff_acc={stats['handoff_accuracy']:.1%}{retrieval_str}"
+        )
     print("=" * 90)
     print(f"Cases / turns                     : {metrics['num_cases']} / {metrics['num_turns']}")
     print(f"Handoff accuracy (per turn)       : {metrics['accuracy']:.1%}")
@@ -389,15 +456,21 @@ def print_summary_plain(results: list[dict], metrics: dict) -> None:
     print(f"Handoff precision                 : {metrics['handoff_precision']:.2f}")
     print(f"Handoff recall                    : {metrics['handoff_recall']:.2f}")
     if metrics["retrieval_hit_rate"] is not None:
-        print(f"Retrieval hit rate                 : {metrics['retrieval_hit_rate']:.1%} ({metrics['retrieval_evaluated_turns']} turns)")
+        print(
+            f"Retrieval hit rate                 : {metrics['retrieval_hit_rate']:.1%} ({metrics['retrieval_evaluated_turns']} turns)"
+        )
     if metrics["clinical_guard_accuracy"] is not None:
-        print(f"Clinical guard accuracy            : {metrics['clinical_guard_accuracy']:.1%} ({metrics['clinical_evaluated_turns']} turns)")
+        print(
+            f"Clinical guard accuracy            : {metrics['clinical_guard_accuracy']:.1%} ({metrics['clinical_evaluated_turns']} turns)"
+        )
     print(f"Avg word count                     : {metrics['avg_word_count']:.1f}")
     print(f"Avg token count                    : {metrics['avg_token_count']:.1f}")
     print(f"Avg TTFT (ms)                       : {metrics['avg_ttft_ms']:.0f}")
     print(f"Avg throughput (tok/s)              : {metrics['avg_throughput_tok_s']:.2f}")
-    print(f"Latency avg/p50/p90/p99 (ms)        : {metrics['latency_ms_avg']:.0f} / {metrics['latency_ms_p50']:.0f} / "
-          f"{metrics['latency_ms_p90']:.0f} / {metrics['latency_ms_p99']:.0f}")
+    print(
+        f"Latency avg/p50/p90/p99 (ms)        : {metrics['latency_ms_avg']:.0f} / {metrics['latency_ms_p50']:.0f} / "
+        f"{metrics['latency_ms_p90']:.0f} / {metrics['latency_ms_p99']:.0f}"
+    )
     print("=" * 90 + "\n")
 
 
@@ -410,6 +483,7 @@ def print_summary(results: list[dict], metrics: dict) -> None:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate the voice assistant against the benchmark")
     parser.add_argument("--base_model", default="Qwen/Qwen2.5-0.5B-Instruct")
@@ -417,23 +491,28 @@ def parse_args() -> argparse.Namespace:
         "--adapter_path",
         default=None,
         help="LoRA checkpoint directory. Auto-resolved from outputs/checkpoint-final "
-             "or the latest outputs/checkpoint-* if omitted.",
+        "or the latest outputs/checkpoint-* if omitted.",
     )
     parser.add_argument("--max_new_tokens", type=int, default=150)
     parser.add_argument(
-        "--quick", action="store_true",
+        "--quick",
+        action="store_true",
         help="Run only the 20-case hand-curated CORE_BENCHMARK (fast smoke test) instead of the full 200-case benchmark.",
     )
     parser.add_argument(
-        "--benchmark", default=None,
+        "--benchmark",
+        default=None,
         help=f"Path to a benchmark JSON file (default: {DEFAULT_BENCHMARK_PATH.name}, generated by generate_benchmark.py). Ignored with --quick.",
     )
     parser.add_argument(
-        "--sample", type=int, default=None,
+        "--sample",
+        type=int,
+        default=None,
         help="Run a reproducible random subset of N cases from the loaded benchmark instead of all of them (fixed seed=42). Ignored with --quick.",
     )
     parser.add_argument(
-        "--output", default=None,
+        "--output",
+        default=None,
         help="Defaults to outputs/evaluation/eval_results_200.json (full run) or the configured evaluation.results_path (--quick).",
     )
     return parser.parse_args()

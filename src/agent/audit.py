@@ -30,7 +30,7 @@ import logging
 import threading
 from typing import Optional
 
-from observability_models import AuditEvent, EventType, Severity, SecurityEvent, new_event_id, now_utc
+from observability_models import AuditEvent, EventType, SecurityEvent, Severity, new_event_id, now_utc
 from privacy_logging import get_privacy_aware_logger, log_event
 
 _AUDIT_LOGGER_NAME = "ai_voice_agent.audit"
@@ -62,9 +62,13 @@ class AuditRepository:
             self._security_events.append(event)
 
     def list_events(
-        self, event_type: Optional[EventType] = None, request_id: Optional[str] = None,
-        actor: Optional[str] = None, session_id: Optional[str] = None,
-        start_time=None, end_time=None,
+        self,
+        event_type: Optional[EventType] = None,
+        request_id: Optional[str] = None,
+        actor: Optional[str] = None,
+        session_id: Optional[str] = None,
+        start_time=None,
+        end_time=None,
     ) -> list[AuditEvent]:
         """
         Phase 12.8 (plan.md's explicit required filter set: "correlation
@@ -151,16 +155,27 @@ class AuditLogger:
             _trace_id, _span_id = None, None
             try:
                 from tracing import get_current_trace_context
+
                 _trace_id, _span_id = get_current_trace_context()
             except Exception:
                 pass
 
             event = AuditEvent(
-                event_id=new_event_id(), timestamp=now_utc(), event_type=event_type,
-                request_id=request_id, conversation_id=conversation_id, session_id=session_id,
-                actor=actor, action=action, resource=resource, outcome=outcome,
-                policy=policy, reason=reason, metadata=safe_metadata,
-                trace_id=_trace_id, span_id=_span_id,
+                event_id=new_event_id(),
+                timestamp=now_utc(),
+                event_type=event_type,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                session_id=session_id,
+                actor=actor,
+                action=action,
+                resource=resource,
+                outcome=outcome,
+                policy=policy,
+                reason=reason,
+                metadata=safe_metadata,
+                trace_id=_trace_id,
+                span_id=_span_id,
             )
             self._repository.append(event)
             log_event(self._logger, f"audit:{event_type.value}", event.to_dict())
@@ -181,7 +196,9 @@ class SecurityEventDetector:
     def __init__(self, audit_logger: AuditLogger, repeated_failure_threshold: int = 3):
         self._audit_logger = audit_logger
         self._threshold = repeated_failure_threshold
-        self._auth_failure_counts: dict[str, int] = {}  # keyed by a safe, non-secret identifier (e.g. request source), never the token
+        self._auth_failure_counts: dict[
+            str, int
+        ] = {}  # keyed by a safe, non-secret identifier (e.g. request source), never the token
 
     def record_auth_failure(self, identifier: str, request_id: Optional[str] = None) -> None:
         """`identifier` MUST be a safe, non-secret reference (e.g. a client IP or a hashed value) — never the submitted token/credential."""
@@ -189,51 +206,93 @@ class SecurityEventDetector:
         count = self._auth_failure_counts[identifier]
         if count >= self._threshold:
             self._emit(
-                type_="REPEATED_AUTH_FAILURE", severity=Severity.MEDIUM, request_id=request_id,
-                actor=identifier, resource="authentication", outcome="denied",
+                type_="REPEATED_AUTH_FAILURE",
+                severity=Severity.MEDIUM,
+                request_id=request_id,
+                actor=identifier,
+                resource="authentication",
+                outcome="denied",
                 reason=f"{count} consecutive authentication failures.",
             )
 
     def reset_auth_failures(self, identifier: str) -> None:
         self._auth_failure_counts.pop(identifier, None)
 
-    def record_cross_user_access_attempt(self, resource_type: str, actor: str, request_id: Optional[str] = None) -> None:
+    def record_cross_user_access_attempt(
+        self, resource_type: str, actor: str, request_id: Optional[str] = None
+    ) -> None:
         self._emit(
-            type_="CROSS_USER_ACCESS_ATTEMPT", severity=Severity.HIGH, request_id=request_id,
-            actor=actor, resource=resource_type, outcome="denied",
+            type_="CROSS_USER_ACCESS_ATTEMPT",
+            severity=Severity.HIGH,
+            request_id=request_id,
+            actor=actor,
+            resource=resource_type,
+            outcome="denied",
             reason=f"Identity attempted to access another user's {resource_type}.",
         )
 
-    def record_unknown_tool_request(self, action_name: str, actor: Optional[str], request_id: Optional[str] = None) -> None:
+    def record_unknown_tool_request(
+        self, action_name: str, actor: Optional[str], request_id: Optional[str] = None
+    ) -> None:
         self._emit(
-            type_="UNKNOWN_TOOL_REQUEST", severity=Severity.MEDIUM, request_id=request_id,
-            actor=actor, resource=action_name, outcome="denied",
+            type_="UNKNOWN_TOOL_REQUEST",
+            severity=Severity.MEDIUM,
+            request_id=request_id,
+            actor=actor,
+            resource=action_name,
+            outcome="denied",
             reason=f"Request referenced an unregistered tool action: '{action_name}'.",
         )
 
-    def record_policy_bypass_attempt(self, description: str, actor: Optional[str], request_id: Optional[str] = None) -> None:
+    def record_policy_bypass_attempt(
+        self, description: str, actor: Optional[str], request_id: Optional[str] = None
+    ) -> None:
         self._emit(
-            type_="POLICY_BYPASS_ATTEMPT", severity=Severity.CRITICAL, request_id=request_id,
-            actor=actor, resource=None, outcome="denied", reason=description,
+            type_="POLICY_BYPASS_ATTEMPT",
+            severity=Severity.CRITICAL,
+            request_id=request_id,
+            actor=actor,
+            resource=None,
+            outcome="denied",
+            reason=description,
         )
 
     def record_malformed_action_proposal(self, actor: Optional[str], request_id: Optional[str] = None) -> None:
         self._emit(
-            type_="MALFORMED_ACTION_PROPOSAL", severity=Severity.LOW, request_id=request_id,
-            actor=actor, resource=None, outcome="rejected", reason="Structurally invalid action proposal.",
+            type_="MALFORMED_ACTION_PROPOSAL",
+            severity=Severity.LOW,
+            request_id=request_id,
+            actor=actor,
+            resource=None,
+            outcome="rejected",
+            reason="Structurally invalid action proposal.",
         )
 
-    def record_repeated_authorization_denial(self, actor: str, resource: str, count: int, request_id: Optional[str] = None) -> None:
+    def record_repeated_authorization_denial(
+        self, actor: str, resource: str, count: int, request_id: Optional[str] = None
+    ) -> None:
         self._emit(
-            type_="REPEATED_AUTHORIZATION_DENIAL", severity=Severity.MEDIUM, request_id=request_id,
-            actor=actor, resource=resource, outcome="denied", reason=f"{count} consecutive authorization denials.",
+            type_="REPEATED_AUTHORIZATION_DENIAL",
+            severity=Severity.MEDIUM,
+            request_id=request_id,
+            actor=actor,
+            resource=resource,
+            outcome="denied",
+            reason=f"{count} consecutive authorization denials.",
         )
 
     def _emit(self, type_: str, severity: Severity, request_id, actor, resource, outcome, reason) -> None:
         try:
             event = SecurityEvent(
-                event_id=new_event_id(), timestamp=now_utc(), type=type_, severity=severity,
-                request_id=request_id, actor=actor, resource=resource, outcome=outcome, reason=reason,
+                event_id=new_event_id(),
+                timestamp=now_utc(),
+                type=type_,
+                severity=severity,
+                request_id=request_id,
+                actor=actor,
+                resource=resource,
+                outcome=outcome,
+                reason=reason,
             )
             self._audit_logger._repository.append_security_event(event)
         except Exception:

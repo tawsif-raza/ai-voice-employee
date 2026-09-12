@@ -36,6 +36,7 @@ from knowledge_base import load_knowledge_base  # noqa: E402
 
 OUTPUT_PATH = Path(__file__).resolve().parent / "benchmark_200.json"
 
+
 # Deterministic template selection per chunk id -- stable across runs
 # (unlike Python's built-in hash(), which is salted per-process).
 def _stable_index(key: str, modulo: int) -> int:
@@ -216,16 +217,34 @@ def build_multi_turn_cases(chunks: list[dict], count: int) -> list[dict]:
         chunk_a = chunks[(i * 3) % len(chunks)]
         chunk_b = chunks[(i * 3 + 7) % len(chunks)]
 
-        turns = [_turn(_question_for_chunk(chunk_a, variant=i % 2), expected_handoff=False, expected_chunk_id=chunk_a["id"])]
+        turns = [
+            _turn(_question_for_chunk(chunk_a, variant=i % 2), expected_handoff=False, expected_chunk_id=chunk_a["id"])
+        ]
 
         if pattern == "rag_rag":
-            turns.append(_turn(_question_for_chunk(chunk_b, variant=(i + 1) % 2), expected_handoff=False, expected_chunk_id=chunk_b["id"]))
+            turns.append(
+                _turn(
+                    _question_for_chunk(chunk_b, variant=(i + 1) % 2),
+                    expected_handoff=False,
+                    expected_chunk_id=chunk_b["id"],
+                )
+            )
         elif pattern == "rag_handoff":
             turns.append(_turn(HANDOFF_MESSAGES[i % len(HANDOFF_MESSAGES)], expected_handoff=True))
         elif pattern == "rag_clinical":
-            turns.append(_turn(CLINICAL_MESSAGES[i % len(CLINICAL_MESSAGES)], expected_handoff=True, expected_clinical_guard=True))
+            turns.append(
+                _turn(
+                    CLINICAL_MESSAGES[i % len(CLINICAL_MESSAGES)], expected_handoff=True, expected_clinical_guard=True
+                )
+            )
         elif pattern == "rag_rag_handoff":
-            turns.append(_turn(_question_for_chunk(chunk_b, variant=(i + 1) % 2), expected_handoff=False, expected_chunk_id=chunk_b["id"]))
+            turns.append(
+                _turn(
+                    _question_for_chunk(chunk_b, variant=(i + 1) % 2),
+                    expected_handoff=False,
+                    expected_chunk_id=chunk_b["id"],
+                )
+            )
             turns.append(_turn(HANDOFF_MESSAGES[(i + 5) % len(HANDOFF_MESSAGES)], expected_handoff=True))
 
         cases.append({"category": "multi_turn", "pattern": pattern, "turns": turns})

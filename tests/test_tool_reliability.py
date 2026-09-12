@@ -29,10 +29,12 @@ from reliability import CircuitBreaker, CircuitState, RetryPolicy  # noqa: E402
 from tool_orchestrator import ToolOrchestrator  # noqa: E402
 from tool_registry import ToolRegistry  # noqa: E402
 
-
 AUTHENTICATED_USER = AuthContext(
-    user_id="user-1", authenticated=True, roles=(Role.USER.value,),
-    permissions=permissions_for_roles((Role.USER,)), authentication_method="test",
+    user_id="user-1",
+    authenticated=True,
+    roles=(Role.USER.value,),
+    permissions=permissions_for_roles((Role.USER,)),
+    authentication_method="test",
 )
 
 
@@ -51,18 +53,28 @@ class TestTimeoutRetry(unittest.TestCase):
         orig_spec = registry.get_spec("ORDER_LOOKUP")
         short_timeout_registry.register(
             ActionSpec(
-                name="ORDER_LOOKUP", description=orig_spec.description, params_schema=orig_spec.params_schema,
-                required_params=orig_spec.required_params, requires_confirmation=False, destructive=False,
-                timeout_seconds=0.05, required_permission=orig_spec.required_permission, idempotency="READ_ONLY",
+                name="ORDER_LOOKUP",
+                description=orig_spec.description,
+                params_schema=orig_spec.params_schema,
+                required_params=orig_spec.required_params,
+                requires_confirmation=False,
+                destructive=False,
+                timeout_seconds=0.05,
+                required_permission=orig_spec.required_permission,
+                idempotency="READ_ONLY",
             ),
             registry.get_callable("ORDER_LOOKUP"),
         )
         orchestrator = ToolOrchestrator(
-            short_timeout_registry, PolicyEngine(), audit_logger=AuditLogger(repository=repo),
-            retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01), sleep_fn=_no_sleep,
+            short_timeout_registry,
+            PolicyEngine(),
+            audit_logger=AuditLogger(repository=repo),
+            retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01),
+            sleep_fn=_no_sleep,
         )
         request = ToolRequest(
-            action="ORDER_LOOKUP", params={"order_id": "order_1001", "_simulate_delay_seconds": 999},
+            action="ORDER_LOOKUP",
+            params={"order_id": "order_1001", "_simulate_delay_seconds": 999},
             confirmed=True,
         )
         # The simulated delay is fixed across attempts, so both the first
@@ -81,17 +93,25 @@ class TestTimeoutRetry(unittest.TestCase):
         orig_spec = base_registry.get_spec("BOOK_APPOINTMENT")
         registry.register(
             ActionSpec(
-                name="BOOK_APPOINTMENT", description=orig_spec.description, params_schema=orig_spec.params_schema,
-                required_params=orig_spec.required_params, requires_confirmation=False, destructive=False,
-                timeout_seconds=0.05, required_permission=orig_spec.required_permission,
+                name="BOOK_APPOINTMENT",
+                description=orig_spec.description,
+                params_schema=orig_spec.params_schema,
+                required_params=orig_spec.required_params,
+                requires_confirmation=False,
+                destructive=False,
+                timeout_seconds=0.05,
+                required_permission=orig_spec.required_permission,
                 idempotency="NON_IDEMPOTENT_WRITE",
             ),
             base_registry.get_callable("BOOK_APPOINTMENT"),
         )
         repo = AuditRepository()
         orchestrator = ToolOrchestrator(
-            registry, PolicyEngine(), audit_logger=AuditLogger(repository=repo),
-            retry_policy=RetryPolicy(max_attempts=5, base_delay_seconds=0.01), sleep_fn=_no_sleep,
+            registry,
+            PolicyEngine(),
+            audit_logger=AuditLogger(repository=repo),
+            retry_policy=RetryPolicy(max_attempts=5, base_delay_seconds=0.01),
+            sleep_fn=_no_sleep,
         )
         request = ToolRequest(
             action="BOOK_APPOINTMENT",
@@ -108,9 +128,15 @@ class TestTimeoutRetry(unittest.TestCase):
         orig_spec = base_registry.get_spec("ORDER_LOOKUP")
         registry.register(
             ActionSpec(
-                name="ORDER_LOOKUP", description=orig_spec.description, params_schema=orig_spec.params_schema,
-                required_params=orig_spec.required_params, requires_confirmation=False, destructive=False,
-                timeout_seconds=0.02, required_permission=orig_spec.required_permission, idempotency="READ_ONLY",
+                name="ORDER_LOOKUP",
+                description=orig_spec.description,
+                params_schema=orig_spec.params_schema,
+                required_params=orig_spec.required_params,
+                requires_confirmation=False,
+                destructive=False,
+                timeout_seconds=0.02,
+                required_permission=orig_spec.required_permission,
+                idempotency="READ_ONLY",
             ),
             base_registry.get_callable("ORDER_LOOKUP"),
         )
@@ -123,11 +149,15 @@ class TestTimeoutRetry(unittest.TestCase):
 
         registry._callables["ORDER_LOOKUP"] = _counting_callable  # test-only direct registry poke
         orchestrator = ToolOrchestrator(
-            registry, PolicyEngine(), retry_policy=RetryPolicy(max_attempts=3, base_delay_seconds=0.01),
+            registry,
+            PolicyEngine(),
+            retry_policy=RetryPolicy(max_attempts=3, base_delay_seconds=0.01),
             sleep_fn=_no_sleep,
         )
         request = ToolRequest(
-            action="ORDER_LOOKUP", params={"order_id": "order_1001", "_simulate_delay_seconds": 999}, confirmed=True,
+            action="ORDER_LOOKUP",
+            params={"order_id": "order_1001", "_simulate_delay_seconds": 999},
+            confirmed=True,
         )
         result = orchestrator.invoke(request, auth=AUTHENTICATED_USER)
         self.assertEqual(result.status, "timeout")
@@ -139,8 +169,11 @@ class TestValidationErrorsNeverRetried(unittest.TestCase):
         registry = build_default_tool_registry()
         repo = AuditRepository()
         orchestrator = ToolOrchestrator(
-            registry, PolicyEngine(), audit_logger=AuditLogger(repository=repo),
-            retry_policy=RetryPolicy(max_attempts=5, base_delay_seconds=0.01), sleep_fn=_no_sleep,
+            registry,
+            PolicyEngine(),
+            audit_logger=AuditLogger(repository=repo),
+            retry_policy=RetryPolicy(max_attempts=5, base_delay_seconds=0.01),
+            sleep_fn=_no_sleep,
         )
         request = ToolRequest(action="ORDER_LOOKUP", params={}, confirmed=True)
         result = orchestrator.invoke(request, auth=AUTHENTICATED_USER)
@@ -155,20 +188,32 @@ class TestCircuitBreakerIntegration(unittest.TestCase):
         orig_spec = base_registry.get_spec("ORDER_LOOKUP")
         registry.register(
             ActionSpec(
-                name="ORDER_LOOKUP", description=orig_spec.description, params_schema=orig_spec.params_schema,
-                required_params=orig_spec.required_params, requires_confirmation=False, destructive=False,
-                timeout_seconds=0.02, required_permission=orig_spec.required_permission, idempotency="READ_ONLY",
+                name="ORDER_LOOKUP",
+                description=orig_spec.description,
+                params_schema=orig_spec.params_schema,
+                required_params=orig_spec.required_params,
+                requires_confirmation=False,
+                destructive=False,
+                timeout_seconds=0.02,
+                required_permission=orig_spec.required_permission,
+                idempotency="READ_ONLY",
             ),
             base_registry.get_callable("ORDER_LOOKUP"),
         )
         repo = AuditRepository()
         cb = CircuitBreaker(failure_threshold=2, recovery_timeout_seconds=999)
         orchestrator = ToolOrchestrator(
-            registry, PolicyEngine(), audit_logger=AuditLogger(repository=repo),
-            circuit_breaker=cb, retry_policy=RetryPolicy(max_attempts=1), sleep_fn=_no_sleep,
+            registry,
+            PolicyEngine(),
+            audit_logger=AuditLogger(repository=repo),
+            circuit_breaker=cb,
+            retry_policy=RetryPolicy(max_attempts=1),
+            sleep_fn=_no_sleep,
         )
         request = ToolRequest(
-            action="ORDER_LOOKUP", params={"order_id": "order_1001", "_simulate_delay_seconds": 999}, confirmed=True,
+            action="ORDER_LOOKUP",
+            params={"order_id": "order_1001", "_simulate_delay_seconds": 999},
+            confirmed=True,
         )
         orchestrator.invoke(request, auth=AUTHENTICATED_USER)
         self.assertEqual(cb.state, CircuitState.CLOSED)
@@ -202,8 +247,10 @@ class TestConcurrentDuplicateRequests(unittest.TestCase):
         registry = build_default_tool_registry(appointment_store=appointments)
         orchestrator = ToolOrchestrator(registry, PolicyEngine())
         request = ToolRequest(
-            action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]},
-            confirmed=True, request_id="req-fixed-1",
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            request_id="req-fixed-1",
         )
         results = []
         lock = threading.Lock()
@@ -230,19 +277,30 @@ class TestMetricsIntegration(unittest.TestCase):
         orig_spec = base_registry.get_spec("ORDER_LOOKUP")
         registry.register(
             ActionSpec(
-                name="ORDER_LOOKUP", description=orig_spec.description, params_schema=orig_spec.params_schema,
-                required_params=orig_spec.required_params, requires_confirmation=False, destructive=False,
-                timeout_seconds=0.02, required_permission=orig_spec.required_permission, idempotency="READ_ONLY",
+                name="ORDER_LOOKUP",
+                description=orig_spec.description,
+                params_schema=orig_spec.params_schema,
+                required_params=orig_spec.required_params,
+                requires_confirmation=False,
+                destructive=False,
+                timeout_seconds=0.02,
+                required_permission=orig_spec.required_permission,
+                idempotency="READ_ONLY",
             ),
             base_registry.get_callable("ORDER_LOOKUP"),
         )
         metrics = MetricsRegistry()
         orchestrator = ToolOrchestrator(
-            registry, PolicyEngine(), metrics=metrics,
-            retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01), sleep_fn=_no_sleep,
+            registry,
+            PolicyEngine(),
+            metrics=metrics,
+            retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01),
+            sleep_fn=_no_sleep,
         )
         request = ToolRequest(
-            action="ORDER_LOOKUP", params={"order_id": "order_1001", "_simulate_delay_seconds": 999}, confirmed=True,
+            action="ORDER_LOOKUP",
+            params={"order_id": "order_1001", "_simulate_delay_seconds": 999},
+            confirmed=True,
         )
         orchestrator.invoke(request, auth=AUTHENTICATED_USER)
         self.assertEqual(metrics.get_counter("timeouts_total"), 2)
@@ -255,8 +313,10 @@ class TestMetricsIntegration(unittest.TestCase):
         metrics = MetricsRegistry()
         orchestrator = ToolOrchestrator(registry, PolicyEngine(), metrics=metrics)
         request = ToolRequest(
-            action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]},
-            confirmed=True, request_id="req-dup-1",
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            request_id="req-dup-1",
         )
         orchestrator.invoke(request, auth=AUTHENTICATED_USER)
         orchestrator.invoke(request, auth=AUTHENTICATED_USER)

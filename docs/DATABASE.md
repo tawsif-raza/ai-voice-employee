@@ -1,4 +1,4 @@
-﻿# Database Architecture and Operations
+# Database Architecture and Operations
 
 _Status: Production-Ready (Phases 12 & 13)_
 

@@ -99,8 +99,8 @@ class CorrelationContext:
     session_id: Optional[str] = None
     user_id: Optional[str] = None
     turn_id: Optional[str] = None
-    trace_id: Optional[str] = None   # Phase 14: hex string from OpenTelemetry
-    span_id: Optional[str] = None    # Phase 14: hex string from OpenTelemetry
+    trace_id: Optional[str] = None  # Phase 14: hex string from OpenTelemetry
+    span_id: Optional[str] = None  # Phase 14: hex string from OpenTelemetry
 
     def to_dict(self) -> dict:
         d = {
@@ -139,8 +139,8 @@ class AuditEvent:
     policy: Optional[str] = None
     reason: Optional[str] = None
     metadata: dict = field(default_factory=dict)
-    trace_id: Optional[str] = None   # Phase 14: OpenTelemetry trace correlation
-    span_id: Optional[str] = None    # Phase 14: OpenTelemetry span correlation
+    trace_id: Optional[str] = None  # Phase 14: OpenTelemetry trace correlation
+    span_id: Optional[str] = None  # Phase 14: OpenTelemetry span correlation
 
     def to_dict(self) -> dict:
         d = {

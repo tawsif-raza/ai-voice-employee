@@ -40,8 +40,11 @@ class TestVoiceAssistantInferenceBackwardCompatibility(unittest.TestCase):
     def test_public_methods_preserved(self):
         cls = predict.VoiceAssistantInference
         for name in (
-            "generate_response_stream", "generate_response",
-            "detect_handoff", "detect_handoff_scored", "run_interactive",
+            "generate_response_stream",
+            "generate_response",
+            "detect_handoff",
+            "detect_handoff_scored",
+            "run_interactive",
         ):
             self.assertTrue(hasattr(cls, name), f"missing backward-compatible method: {name}")
 
@@ -62,9 +65,18 @@ class TestVoiceAssistantInferenceBackwardCompatibility(unittest.TestCase):
     def test_init_signature_unchanged(self):
         sig = inspect.signature(predict.VoiceAssistantInference.__init__)
         expected = [
-            "self", "base_model_name", "adapter_path", "merge_weights", "max_new_tokens",
-            "temperature", "top_p", "repetition_penalty", "auto_resolve_adapter",
-            "handoff_config_path", "rag_enabled", "clinical_config_path",
+            "self",
+            "base_model_name",
+            "adapter_path",
+            "merge_weights",
+            "max_new_tokens",
+            "temperature",
+            "top_p",
+            "repetition_penalty",
+            "auto_resolve_adapter",
+            "handoff_config_path",
+            "rag_enabled",
+            "clinical_config_path",
         ]
         self.assertEqual(list(sig.parameters), expected)
 
@@ -77,7 +89,6 @@ class TestVoiceAssistantInferenceBackwardCompatibility(unittest.TestCase):
         # The old inline orchestration must no longer be the primary
         # architecture: VoiceAssistantInference must delegate to a real
         # ConversationManager, not reimplement the turn sequence itself.
-        import conversation_manager
         init_source = inspect.getsource(predict.VoiceAssistantInference.__init__)
         self.assertIn("build_conversation_manager", init_source)
         stream_source = inspect.getsource(predict.VoiceAssistantInference.generate_response_stream)

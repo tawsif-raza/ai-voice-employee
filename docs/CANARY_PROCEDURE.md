@@ -1,4 +1,4 @@
-﻿# Canary Telephony Live Verification Procedure
+# Canary Telephony Live Verification Procedure
 
 ## 1. Pre-Flight Verification Checklist
 

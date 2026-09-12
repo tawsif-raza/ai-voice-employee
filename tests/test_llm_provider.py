@@ -11,7 +11,7 @@ Tests:
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 _INFERENCE_DIR = str(Path(__file__).resolve().parents[1] / "src" / "inference")
 if _INFERENCE_DIR not in sys.path:
@@ -22,8 +22,6 @@ from llm_provider import (
     ClaudeLLMProvider,
     FallbackLLMProvider,
     GeminiLLMProvider,
-    LLMOverloadedError,
-    LLMProviderError,
     LLMQuotaExceededError,
     build_llm_provider,
 )
@@ -53,7 +51,6 @@ class MockLLMProvider(BaseLLMProvider):
 
 
 class TestLLMProvider(unittest.TestCase):
-
     def test_mock_provider_contract(self):
         provider = MockLLMProvider("test", ["Hello", " world"])
         stream = list(provider.generate_stream([{"role": "user", "content": "Hi"}]))
@@ -108,8 +105,7 @@ class TestLLMProvider(unittest.TestCase):
 
     def test_fallback_triggers_on_claude_quota_exhaustion(self):
         primary = MockLLMProvider(
-            "claude", [],
-            should_raise=LLMQuotaExceededError("Rate limit exceeded 429", provider="claude")
+            "claude", [], should_raise=LLMQuotaExceededError("Rate limit exceeded 429", provider="claude")
         )
         fallback = MockLLMProvider("gemini", ["Gemini", " fallback", " response"])
         orchestrator = FallbackLLMProvider(primary=primary, fallback=fallback, cooldown_seconds=30.0)

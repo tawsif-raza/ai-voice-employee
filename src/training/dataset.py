@@ -12,20 +12,19 @@ Key concepts implemented here:
 
 import json
 from pathlib import Path
-from typing import Any
 
-from transformers import AutoTokenizer
 from datasets import Dataset
-
+from transformers import AutoTokenizer
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 TRAIN_DATA_PATH = Path("data/processed/train_final.json")
-MODEL_NAME      = "Qwen/Qwen2.5-0.5B-Instruct"  # Smallest Qwen 2.5 for testing
-MAX_LENGTH      = 512                             # Max tokens per example
+MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"  # Smallest Qwen 2.5 for testing
+MAX_LENGTH = 512  # Max tokens per example
 
 
 # ── Load tokenizer ─────────────────────────────────────────────────────────────
+
 
 def load_tokenizer(model_name: str) -> AutoTokenizer:
     """
@@ -58,6 +57,7 @@ def load_tokenizer(model_name: str) -> AutoTokenizer:
 
 # ── ChatML formatting ──────────────────────────────────────────────────────────
 
+
 def format_as_chatml(messages: list[dict]) -> str:
     """
     Convert a list of messages into Qwen 2.5 ChatML format string.
@@ -78,13 +78,14 @@ def format_as_chatml(messages: list[dict]) -> str:
     """
     formatted = ""
     for msg in messages:
-        role    = msg["role"]
+        role = msg["role"]
         content = msg["content"]
         formatted += f"<|im_start|>{role}\n{content}<|im_end|>\n"
     return formatted
 
 
 # ── Loss mask creation ─────────────────────────────────────────────────────────
+
 
 def create_loss_mask(
     messages: list[dict],
@@ -107,10 +108,10 @@ def create_loss_mask(
         Dict with input_ids, attention_mask, and labels lists
     """
     input_ids: list[int] = []
-    labels:    list[int] = []
+    labels: list[int] = []
 
     for msg in messages:
-        role    = msg["role"]
+        role = msg["role"]
         content = msg["content"]
 
         # Format this single turn as ChatML
@@ -131,19 +132,20 @@ def create_loss_mask(
 
     # Truncate to max_length if needed
     input_ids = input_ids[:max_length]
-    labels    = labels[:max_length]
+    labels = labels[:max_length]
 
     # Create attention mask: 1 for all real tokens
     attention_mask = [1] * len(input_ids)
 
     return {
-        "input_ids":      input_ids,
+        "input_ids": input_ids,
         "attention_mask": attention_mask,
-        "labels":         labels,
+        "labels": labels,
     }
 
 
 # ── Dataset builder ────────────────────────────────────────────────────────────
+
 
 def build_training_dataset(
     data_path: Path,
@@ -188,10 +190,7 @@ def build_training_dataset(
             continue
 
         # Track examples that were truncated
-        full_ids = tokenizer.encode(
-            format_as_chatml(messages),
-            add_special_tokens=False
-        )
+        full_ids = tokenizer.encode(format_as_chatml(messages), add_special_tokens=False)
         if len(full_ids) > max_length:
             too_long += 1
 
@@ -206,6 +205,7 @@ def build_training_dataset(
 
 # ── Verification ───────────────────────────────────────────────────────────────
 
+
 def verify_single_example(
     example: dict,
     tokenizer: AutoTokenizer,
@@ -218,24 +218,24 @@ def verify_single_example(
         example:   A single dict from train_final.json
         tokenizer: Loaded tokenizer instance
     """
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("SINGLE EXAMPLE VERIFICATION")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     messages = example["messages"]
-    result   = create_loss_mask(messages, tokenizer, MAX_LENGTH)
+    result = create_loss_mask(messages, tokenizer, MAX_LENGTH)
 
     input_ids = result["input_ids"]
-    labels    = result["labels"]
+    labels = result["labels"]
 
     print(f"Total tokens     : {len(input_ids)}")
-    active = sum(1 for l in labels if l != -100)
-    masked = sum(1 for l in labels if l == -100)
+    active = sum(1 for label in labels if label != -100)
+    masked = sum(1 for label in labels if label == -100)
     print(f"Active labels    : {active}  (assistant tokens — loss calculated)")
     print(f"Masked labels    : {masked}  (system/user tokens — ignored)")
-    print(f"Loss coverage    : {active/len(labels)*100:.1f}%")
+    print(f"Loss coverage    : {active / len(labels) * 100:.1f}%")
 
-    print(f"\nFirst 5 tokens decoded:")
+    print("\nFirst 5 tokens decoded:")
     for i in range(min(5, len(input_ids))):
         token_str = tokenizer.decode([input_ids[i]])
         label_str = str(labels[i]) if labels[i] != -100 else "MASKED"
@@ -257,9 +257,9 @@ if __name__ == "__main__":
     # Build full dataset
     dataset = build_training_dataset(TRAIN_DATA_PATH, tokenizer)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("DATASET READY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Total examples   : {len(dataset)}")
     print(f"Features         : {dataset.features}")
     print(f"\nFirst example keys: {list(dataset[0].keys())}")

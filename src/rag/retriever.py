@@ -21,7 +21,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from embeddings import DEFAULT_MODEL_NAME, embed_query, embed_texts  # noqa: E402
-from knowledge_base import Chunk, DEFAULT_KNOWLEDGE_DIR, knowledge_dir_mtime, load_knowledge_base  # noqa: E402
+from knowledge_base import DEFAULT_KNOWLEDGE_DIR, Chunk, knowledge_dir_mtime, load_knowledge_base  # noqa: E402
 
 DEFAULT_INDEX_DIR = Path(__file__).resolve().parents[2] / "outputs" / "rag_index"
 
@@ -117,7 +117,11 @@ class Retriever:
             chunk = self._chunks[idx]
             if domain and chunk.domain != domain:
                 continue
-            results.append(RetrievedChunk(id=chunk.id, domain=chunk.domain, title=chunk.title, content=chunk.content, score=float(score)))
+            results.append(
+                RetrievedChunk(
+                    id=chunk.id, domain=chunk.domain, title=chunk.title, content=chunk.content, score=float(score)
+                )
+            )
             if len(results) >= top_k:
                 break
         return results

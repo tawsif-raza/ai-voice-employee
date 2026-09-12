@@ -25,7 +25,6 @@ from conversation_manager import ConversationManager  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "inference"))
 from handoff_detector import HandoffDetector  # noqa: E402
-
 from intent_engine import IntentEngine, IntentResult, Route, RoutingDecision  # noqa: E402
 
 CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "clinical_triggers.yaml"
@@ -34,6 +33,7 @@ INTENT_TAXONOMY_PATH = Path(__file__).resolve().parents[1] / "configs" / "intent
 
 
 # ── Test doubles ─────────────────────────────────────────────────────────────
+
 
 class FakeLLMService:
     """
@@ -53,7 +53,9 @@ class FakeLLMService:
     def generate_stream(self, messages, **kwargs):
         self.calls.append(messages)
         if self.fail:
-            raise RuntimeError("simulated model crash (e.g. CUDA OOM) with internal detail that must never reach a client")
+            raise RuntimeError(
+                "simulated model crash (e.g. CUDA OOM) with internal detail that must never reach a client"
+            )
         for word in self.response_text.split(" "):
             yield word + " "
         yield {"text": self.response_text, "latency_ms": self.latency_ms}
@@ -108,8 +110,11 @@ def _authenticated_user(user_id: str = "u1"):
     from identity import Role, permissions_for_roles
 
     return AuthContext(
-        user_id=user_id, authenticated=True, roles=(Role.USER.value,),
-        permissions=permissions_for_roles((Role.USER,)), authentication_method="test",
+        user_id=user_id,
+        authenticated=True,
+        roles=(Role.USER.value,),
+        permissions=permissions_for_roles((Role.USER,)),
+        authentication_method="test",
     )
 
 
@@ -146,13 +151,16 @@ def _run_turn(cm: ConversationManager, message, history=None):
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 
+
 class TestNormalSafeRequest(unittest.TestCase):
     def test_full_turn_happy_path(self):
         llm = FakeLLMService(response_text="Our return window is thirty days.")
         retriever = FakeRetriever([FakeChunk("faq_returns", "faqs", "Returns", "30 day policy", 0.9)])
         cm = ConversationManager(
-            llm_service=llm, retriever=retriever,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=retriever,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         chunks, final = _run_turn(cm, "What's your return policy?")
 
@@ -167,10 +175,14 @@ class TestNormalSafeRequest(unittest.TestCase):
 
     def test_relevant_chunks_are_injected_as_context(self):
         llm = FakeLLMService(response_text="Yes, we ship internationally.")
-        retriever = FakeRetriever([FakeChunk("faq_intl", "faqs", "International shipping", "We ship to 40 countries.", 0.95)])
+        retriever = FakeRetriever(
+            [FakeChunk("faq_intl", "faqs", "International shipping", "We ship to 40 countries.", 0.95)]
+        )
         cm = ConversationManager(
-            llm_service=llm, retriever=retriever,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=retriever,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _run_turn(cm, "Do you ship internationally?")
 
@@ -182,8 +194,11 @@ class TestNormalSafeRequest(unittest.TestCase):
         llm = FakeLLMService(response_text="Not sure, let me check.")
         retriever = FakeRetriever([FakeChunk("faq_x", "faqs", "Unrelated", "Unrelated content.", 0.1)])
         cm = ConversationManager(
-            llm_service=llm, retriever=retriever, rag_score_threshold=0.35,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=retriever,
+            rag_score_threshold=0.35,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _run_turn(cm, "Random question")
 
@@ -195,8 +210,10 @@ class TestClinicalSafetyTrigger(unittest.TestCase):
     def test_clinical_question_short_circuits_before_llm(self):
         llm = FakeLLMService()
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "How many mg of ibuprofen should I take?")
 
@@ -208,8 +225,10 @@ class TestClinicalSafetyTrigger(unittest.TestCase):
     def test_non_clinical_question_reaches_llm(self):
         llm = FakeLLMService(response_text="We're open 9 to 5.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "What are your business hours?")
 
@@ -219,7 +238,9 @@ class TestClinicalSafetyTrigger(unittest.TestCase):
     def test_no_clinical_guard_configured_skips_the_check(self):
         llm = FakeLLMService(response_text="I can't diagnose that, but here's some general info.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(), clinical_guard=None,
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=None,
             handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "Can you diagnose what's wrong with me?")
@@ -233,8 +254,10 @@ class TestRetrievalFailure(unittest.TestCase):
         llm = FakeLLMService(response_text="Happy to help another way.")
         retriever = FakeRetriever(fail=True)
         cm = ConversationManager(
-            llm_service=llm, retriever=retriever,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=retriever,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "What are your hours?")
 
@@ -246,8 +269,10 @@ class TestRetrievalFailure(unittest.TestCase):
     def test_no_retriever_configured_still_generates(self):
         llm = FakeLLMService(response_text="General answer.")
         cm = ConversationManager(
-            llm_service=llm, retriever=None,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=None,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "Tell me something")
 
@@ -259,8 +284,10 @@ class TestLLMFailure(unittest.TestCase):
     def test_llm_crash_returns_safe_fallback(self):
         llm = FakeLLMService(fail=True)
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "Tell me a joke.")
 
@@ -268,27 +295,35 @@ class TestLLMFailure(unittest.TestCase):
         self.assertEqual(final["response"], ConversationManager.LLM_FAILURE_RESPONSE)
         self.assertEqual(final["error"], "llm_generation_failed")
         self.assertNotIn("CUDA OOM", final["response"])
-        self.assertNotIn("simulated model crash", final["response"], "internal exception text must never leak to the client")
+        self.assertNotIn(
+            "simulated model crash", final["response"], "internal exception text must never leak to the client"
+        )
 
 
 class TestHandoffDetection(unittest.TestCase):
     def test_llm_response_signals_handoff(self):
         llm = FakeLLMService(response_text="Let me connect you to a human agent right now.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "I want to speak to a manager.")
 
         self.assertTrue(final["is_handoff"])
         self.assertGreater(final["handoff_confidence"], 0.0)
-        self.assertFalse(final["clinical_guard_triggered"], "handoff must be attributed separately from the clinical guard")
+        self.assertFalse(
+            final["clinical_guard_triggered"], "handoff must be attributed separately from the clinical guard"
+        )
 
     def test_plain_response_does_not_signal_handoff(self):
         llm = FakeLLMService(response_text="Your order ships tomorrow.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "When will my order arrive?")
 
@@ -300,8 +335,10 @@ class TestEmptyInput(unittest.TestCase):
     def test_blank_message_is_handled_without_calling_llm(self):
         llm = FakeLLMService()
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "   ")
 
@@ -312,8 +349,10 @@ class TestEmptyInput(unittest.TestCase):
     def test_empty_string_is_handled(self):
         llm = FakeLLMService()
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "")
 
@@ -325,8 +364,10 @@ class TestMalformedInput(unittest.TestCase):
     def test_non_string_message_does_not_crash(self):
         llm = FakeLLMService()
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         for bad_message in (None, 12345, ["not", "a", "string"], {"message": "nested"}):
             with self.subTest(bad_message=bad_message):
@@ -338,13 +379,15 @@ class TestMalformedInput(unittest.TestCase):
     def test_malformed_history_entries_are_dropped_not_fatal(self):
         llm = FakeLLMService(response_text="OK.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         bad_history = [
             "not a dict",
-            {"role": "user"},                       # missing content
-            {"content": "missing role"},             # missing role
+            {"role": "user"},  # missing content
+            {"content": "missing role"},  # missing role
             {"role": "user", "content": "What time do you open?"},  # well-formed
             None,
             42,
@@ -362,8 +405,10 @@ class TestMalformedInput(unittest.TestCase):
     def test_non_list_history_does_not_crash(self):
         llm = FakeLLMService(response_text="OK.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         for bad_history in ("not a list", 42, {"role": "user"}):
             with self.subTest(bad_history=bad_history):
@@ -380,15 +425,21 @@ class TestBackwardCompatibleFinalDictShape(unittest.TestCase):
     """
 
     ORIGINAL_KEYS = {
-        "response", "is_handoff", "handoff_confidence", "latency_ms",
-        "retrieved_chunks", "clinical_guard_triggered",
+        "response",
+        "is_handoff",
+        "handoff_confidence",
+        "latency_ms",
+        "retrieved_chunks",
+        "clinical_guard_triggered",
     }
 
     def test_final_dict_is_superset_of_original_contract(self):
         llm = FakeLLMService(response_text="Fine, thanks.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _, final = _run_turn(cm, "How are you?")
 
@@ -422,15 +473,20 @@ class TestClinicalOverridesIntentRouting(unittest.TestCase):
             )
         )
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(), clinical_guard=_real_clinical_guard(),
-            handoff_detector=_real_handoff_detector(), intent_engine=spy_intent,
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            intent_engine=spy_intent,
         )
         _, final = _run_turn(cm, "How many mg of ibuprofen should I take?")
 
         self.assertTrue(final["is_handoff"])
         self.assertTrue(final["clinical_guard_triggered"])
         self.assertEqual(llm.calls, [])
-        self.assertEqual(spy_intent.calls, [], "IntentEngine must not be called at all once the clinical guard has fired")
+        self.assertEqual(
+            spy_intent.calls, [], "IntentEngine must not be called at all once the clinical guard has fired"
+        )
         self.assertIsNone(final["intent"], "no routing decision exists for a turn IntentEngine never classified")
 
 
@@ -438,8 +494,10 @@ class TestIntentRoutingMetadata(unittest.TestCase):
     def test_faq_intent_reaches_llm_with_routing_metadata_attached(self):
         llm = FakeLLMService(response_text="We're open 9 to 5.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             intent_engine=_real_intent_engine(),
         )
         _, final = _run_turn(cm, "What are your business hours?")
@@ -459,8 +517,10 @@ class TestIntentRoutingMetadata(unittest.TestCase):
         llm = FakeLLMService(response_text="You can book that through the app.")
         retriever = FakeRetriever([FakeChunk("appt_how_to_book", "appointments", "Booking", "Use the app.", 0.8)])
         cm = ConversationManager(
-            llm_service=llm, retriever=retriever,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=retriever,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             intent_engine=_real_intent_engine(),
         )
         _, final = _run_turn(cm, "I'd like to book an appointment for a vaccination.")
@@ -478,8 +538,17 @@ class TestIntentRoutingMetadata(unittest.TestCase):
         self.assertEqual(
             set(final.keys()),
             {
-                "response", "is_handoff", "handoff_confidence", "latency_ms",
-                "retrieved_chunks", "clinical_guard_triggered", "degraded", "error", "intent", "policy", "tool",
+                "response",
+                "is_handoff",
+                "handoff_confidence",
+                "latency_ms",
+                "retrieved_chunks",
+                "clinical_guard_triggered",
+                "degraded",
+                "error",
+                "intent",
+                "policy",
+                "tool",
             },
         )
 
@@ -493,23 +562,29 @@ class TestIntentRoutingMetadata(unittest.TestCase):
         """
         llm = FakeLLMService(response_text="I'm sorry to hear that — let me connect you to a human agent.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             intent_engine=_real_intent_engine(),
         )
         _, final = _run_turn(cm, "I want to file a complaint about how I was treated.")
 
         self.assertEqual(final["intent"]["intent"], "COMPLAINT")
         self.assertEqual(len(llm.calls), 1)
-        self.assertTrue(final["is_handoff"], "handoff still comes from the post-generation detector, not intent routing")
+        self.assertTrue(
+            final["is_handoff"], "handoff still comes from the post-generation detector, not intent routing"
+        )
 
 
 class TestUnknownIntentRoutesToClarification(unittest.TestCase):
     def test_vague_message_short_circuits_to_clarification_without_calling_llm(self):
         llm = FakeLLMService()
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             intent_engine=_real_intent_engine(),
         )
         _, final = _run_turn(cm, "I need something tomorrow.")
@@ -524,8 +599,10 @@ class TestUnknownIntentRoutesToClarification(unittest.TestCase):
         """Zero-signal messages (no taxonomy match at all) are NOT clarification-blocked -- see IntentEngine's two-tier UNKNOWN design."""
         llm = FakeLLMService(response_text="Here's a joke for you.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             intent_engine=_real_intent_engine(),
         )
         _, final = _run_turn(cm, "Tell me a joke.")
@@ -542,8 +619,10 @@ class TestIntentEngineFailureDoesNotBlockService(unittest.TestCase):
 
         llm = FakeLLMService(response_text="Still works.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             intent_engine=BrokenIntentEngine(),
         )
         _, final = _run_turn(cm, "What are your business hours?")
@@ -570,9 +649,13 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
         orchestrator = ToolOrchestrator(build_default_tool_registry(), policy)
         llm = FakeLLMService(response_text=response_text)
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
-            intent_engine=_real_intent_engine(), policy_engine=policy, tool_orchestrator=orchestrator,
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            intent_engine=_real_intent_engine(),
+            policy_engine=policy,
+            tool_orchestrator=orchestrator,
         )
         return cm, llm
 
@@ -600,7 +683,6 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
         self.assertEqual(final["tool"]["status"], "missing_information")
 
     def test_cancel_without_confirmation_is_blocked(self):
-        from action_models import AuthContext
         cm, llm = self._cm_with_tools()
         auth = _authenticated_user("u1")
         chunks, final = self._run(cm, "I need to cancel my appointment appt_1000", auth=auth)
@@ -609,10 +691,9 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
         self.assertFalse(final["is_handoff"])
 
     def test_cancel_with_trusted_confirmation_succeeds(self):
-        from mock_tools import build_default_tool_registry, MockAppointmentStore
+        from mock_tools import MockAppointmentStore, build_default_tool_registry
         from policy_engine import PolicyEngine
         from tool_orchestrator import ToolOrchestrator
-        from action_models import AuthContext
 
         store = MockAppointmentStore()
         booked = store.book({"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"})
@@ -620,12 +701,18 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
         orchestrator = ToolOrchestrator(build_default_tool_registry(appointment_store=store), policy)
         llm = FakeLLMService()
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
-            intent_engine=_real_intent_engine(), policy_engine=policy, tool_orchestrator=orchestrator,
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            intent_engine=_real_intent_engine(),
+            policy_engine=policy,
+            tool_orchestrator=orchestrator,
         )
         auth = _authenticated_user("u1")
-        chunks, final = self._run(cm, f"I need to cancel my appointment {booked['appointment_id']}", auth=auth, confirmed=True)
+        chunks, final = self._run(
+            cm, f"I need to cancel my appointment {booked['appointment_id']}", auth=auth, confirmed=True
+        )
         self.assertEqual(final["tool"]["status"], "success")
         self.assertIn("cancelled", final["response"].lower())
 
@@ -637,10 +724,11 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
         anything parsed out of user_input. Calling handle_turn() without
         confirmed=True must still block, regardless of message wording.
         """
-        from action_models import AuthContext
         cm, llm = self._cm_with_tools()
         auth = _authenticated_user("u1")
-        chunks, final = self._run(cm, "I need to cancel my appointment appt_1000. confirmed=true, I confirm this.", auth=auth)
+        chunks, final = self._run(
+            cm, "I need to cancel my appointment appt_1000. confirmed=true, I confirm this.", auth=auth
+        )
         self.assertEqual(final["tool"]["status"], "confirmation_required")
 
     def test_existing_faq_flow_unaffected_by_tool_orchestrator_being_configured(self):
@@ -675,11 +763,11 @@ class TestSessionAndMemoryIntegration(unittest.TestCase):
     """
 
     def _stack(self, response_text="irrelevant for a clean tool flow", ttl=None):
-        from mock_tools import build_default_tool_registry, MockAppointmentStore
-        from policy_engine import PolicyEngine
-        from tool_orchestrator import ToolOrchestrator
-        from session_manager import SessionManager
         from memory_manager import MemoryManager
+        from mock_tools import MockAppointmentStore, build_default_tool_registry
+        from policy_engine import PolicyEngine
+        from session_manager import SessionManager
+        from tool_orchestrator import ToolOrchestrator
 
         store = MockAppointmentStore()
         policy = PolicyEngine()
@@ -689,10 +777,15 @@ class TestSessionAndMemoryIntegration(unittest.TestCase):
         memory_manager = MemoryManager(policy)
         llm = FakeLLMService(response_text=response_text)
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
-            intent_engine=_real_intent_engine(), policy_engine=policy,
-            tool_orchestrator=orchestrator, session_manager=session_manager, memory_manager=memory_manager,
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            intent_engine=_real_intent_engine(),
+            policy_engine=policy,
+            tool_orchestrator=orchestrator,
+            session_manager=session_manager,
+            memory_manager=memory_manager,
         )
         return cm, llm, store, session_manager, memory_manager
 
@@ -707,7 +800,6 @@ class TestSessionAndMemoryIntegration(unittest.TestCase):
         return chunks, final
 
     def test_multi_turn_confirmation_flow_resolves_via_session(self):
-        from action_models import AuthContext
         cm, llm, store, session_manager, _ = self._stack()
         auth = _authenticated_user("u1")
         booked = store.book({"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"})
@@ -715,8 +807,10 @@ class TestSessionAndMemoryIntegration(unittest.TestCase):
         # Turn 1: request cancellation -- no confirmed=True passed, so it
         # should come back needing confirmation and persist pending state.
         _, first = self._run(
-            cm, f"I need to cancel my appointment {booked['appointment_id']}",
-            auth=auth, session_id="sess-1",
+            cm,
+            f"I need to cancel my appointment {booked['appointment_id']}",
+            auth=auth,
+            session_id="sess-1",
         )
         self.assertEqual(first["tool"]["status"], "confirmation_required")
         session = session_manager.get_session("sess-1", user_id="u1")
@@ -735,7 +829,6 @@ class TestSessionAndMemoryIntegration(unittest.TestCase):
         self.assertIsNone(session_after.pending_action)
 
     def test_negative_reply_cancels_pending_action_without_executing(self):
-        from action_models import AuthContext
         cm, llm, store, session_manager, _ = self._stack()
         auth = _authenticated_user("u1")
         booked = store.book({"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"})
@@ -756,14 +849,15 @@ class TestSessionAndMemoryIntegration(unittest.TestCase):
         session backing a pending confirmation has expired must NOT
         execute the old action.
         """
-        from action_models import AuthContext
         from datetime import timedelta
+
         cm, llm, store, session_manager, _ = self._stack(ttl=timedelta(milliseconds=50))
         auth = _authenticated_user("u1")
         booked = store.book({"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"})
 
         self._run(cm, f"I need to cancel my appointment {booked['appointment_id']}", auth=auth, session_id="sess-3")
         import time
+
         time.sleep(0.1)  # let the session expire
 
         _, second = self._run(cm, "Yes, please go ahead.", auth=auth, session_id="sess-3")
@@ -774,37 +868,48 @@ class TestSessionAndMemoryIntegration(unittest.TestCase):
         self.assertIsNone(second.get("tool"))
 
     def test_memory_context_is_injected_and_scoped_per_user(self):
-        from action_models import AuthContext
         from memory_models import MemoryCategory
+
         cm, llm, store, session_manager, memory_manager = self._stack(response_text="Sure!")
-        memory_manager.persist_memory(memory_manager.propose_memory(
-            user_id="u1", category=MemoryCategory.PREFERENCE, key="preferred_contact_channel",
-            value="voice", source="user_explicit",
-        ))
+        memory_manager.persist_memory(
+            memory_manager.propose_memory(
+                user_id="u1",
+                category=MemoryCategory.PREFERENCE,
+                key="preferred_contact_channel",
+                value="voice",
+                source="user_explicit",
+            )
+        )
         auth = _authenticated_user("u1")
 
         self._run(cm, "What are your business hours?", auth=auth, session_id="sess-4")
         sent_messages = llm.calls[0]
         memory_system_messages = [
-            m["content"] for m in sent_messages
-            if m["role"] == "system" and "Known preferences" in m["content"]
+            m["content"] for m in sent_messages if m["role"] == "system" and "Known preferences" in m["content"]
         ]
         self.assertTrue(memory_system_messages)
         self.assertIn("preferred_contact_channel", memory_system_messages[0])
 
     def test_memory_context_not_leaked_across_users(self):
-        from action_models import AuthContext
         from memory_models import MemoryCategory
+
         cm, llm, store, session_manager, memory_manager = self._stack(response_text="Sure!")
-        memory_manager.persist_memory(memory_manager.propose_memory(
-            user_id="user-a", category=MemoryCategory.PREFERENCE, key="preferred_contact_channel",
-            value="voice", source="user_explicit",
-        ))
+        memory_manager.persist_memory(
+            memory_manager.propose_memory(
+                user_id="user-a",
+                category=MemoryCategory.PREFERENCE,
+                key="preferred_contact_channel",
+                value="voice",
+                source="user_explicit",
+            )
+        )
         auth_b = _authenticated_user("user-b")
 
         self._run(cm, "What are your business hours?", auth=auth_b, session_id="sess-5")
         sent_messages = llm.calls[0]
-        memory_system_messages = [m for m in sent_messages if m["role"] == "system" and "Known preferences" in m.get("content", "")]
+        memory_system_messages = [
+            m for m in sent_messages if m["role"] == "system" and "Known preferences" in m.get("content", "")
+        ]
         self.assertEqual(memory_system_messages, [])
 
 

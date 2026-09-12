@@ -37,13 +37,12 @@ import threading
 import time
 from typing import Callable, Optional
 
-from opentelemetry import trace
-
 from action_models import ANONYMOUS_CONTEXT, ActionProposal, AuthContext, ToolExecutionResult, ToolRequest
 from observability_models import EventType
+from opentelemetry import trace
 from reliability import CircuitBreaker, CircuitState, RetryPolicy
 from tool_registry import ToolRegistry
-from tracing import get_tracer, SpanAttributes  # noqa: E402  (Phase 14)
+from tracing import SpanAttributes, get_tracer  # noqa: E402  (Phase 14)
 
 # Phase 14: module-level tracer singleton -- see conversation_manager.py's
 # identical pattern. Zero-cost no-op spans when tracing is disabled.
@@ -103,9 +102,17 @@ class ToolOrchestrator:
     """
 
     def __init__(
-        self, registry: ToolRegistry, policy_engine, privacy_service=None, audit_logger=None, security_detector=None,
-        retry_policy: Optional[RetryPolicy] = None, circuit_breaker: Optional[CircuitBreaker] = None,
-        metrics=None, sleep_fn: Optional[Callable[[float], None]] = None, idempotency_repository=None,
+        self,
+        registry: ToolRegistry,
+        policy_engine,
+        privacy_service=None,
+        audit_logger=None,
+        security_detector=None,
+        retry_policy: Optional[RetryPolicy] = None,
+        circuit_breaker: Optional[CircuitBreaker] = None,
+        metrics=None,
+        sleep_fn: Optional[Callable[[float], None]] = None,
+        idempotency_repository=None,
     ):
         self._registry = registry
         self._policy_engine = policy_engine
@@ -204,13 +211,15 @@ class ToolOrchestrator:
             expected_type_name = spec.params_schema.get(key)
             if expected_type_name and not _type_matches(value, expected_type_name):
                 raise ToolValidationError(
-                    f"Parameter '{key}' for '{action}' expected type '{expected_type_name}', "
-                    f"got {type(value).__name__}"
+                    f"Parameter '{key}' for '{action}' expected type '{expected_type_name}', got {type(value).__name__}"
                 )
 
         return ToolRequest(
-            action=action, params=dict(params), session_id=proposal.session_id,
-            confirmed=False, request_id=proposal.request_id,
+            action=action,
+            params=dict(params),
+            session_id=proposal.session_id,
+            confirmed=False,
+            request_id=proposal.request_id,
         )
 
     # ── Execution (trusted request -> typed result) ─────────────────────────
@@ -233,8 +242,11 @@ class ToolOrchestrator:
 
         if self._audit_logger is not None and action_name:
             self._audit_logger.record(
-                EventType.TOOL_REQUESTED, outcome="requested", actor=actor,
-                action=action_name, request_id=request_id,
+                EventType.TOOL_REQUESTED,
+                outcome="requested",
+                actor=actor,
+                action=action_name,
+                request_id=request_id,
             )
             if self._registry.get_spec(action_name) is None and self._security_detector is not None:
                 self._security_detector.record_unknown_tool_request(action_name, actor, request_id=request_id)
@@ -270,10 +282,16 @@ class ToolOrchestrator:
         "timeout": EventType.TOOL_TIMEOUT,
     }
 
-    def _emit_result_events(self, result: ToolExecutionResult, tool_request: ToolRequest, actor: Optional[str], request_id: Optional[str]) -> None:
+    def _emit_result_events(
+        self, result: ToolExecutionResult, tool_request: ToolRequest, actor: Optional[str], request_id: Optional[str]
+    ) -> None:
         if result.success:
             self._audit_logger.record(
-                EventType.TOOL_ALLOWED, outcome="allowed", actor=actor, action=result.tool, request_id=request_id,
+                EventType.TOOL_ALLOWED,
+                outcome="allowed",
+                actor=actor,
+                action=result.tool,
+                request_id=request_id,
             )
             # A confirmed request that actually reached success means the
             # confirmation gate was genuinely satisfied -- record that
@@ -282,25 +300,40 @@ class ToolOrchestrator:
             # trusted ToolRequest.confirmed field, never from any claim.
             if getattr(tool_request, "confirmed", False):
                 self._audit_logger.record(
-                    EventType.CONFIRMATION_RECEIVED, outcome="success", actor=actor,
-                    action=result.tool, request_id=request_id,
+                    EventType.CONFIRMATION_RECEIVED,
+                    outcome="success",
+                    actor=actor,
+                    action=result.tool,
+                    request_id=request_id,
                 )
             self._audit_logger.record(
-                EventType.TOOL_SUCCEEDED, outcome="success", actor=actor, action=result.tool, request_id=request_id,
+                EventType.TOOL_SUCCEEDED,
+                outcome="success",
+                actor=actor,
+                action=result.tool,
+                request_id=request_id,
             )
             return
 
         if result.error in ("AUTHENTICATION_REQUIRED", "INSUFFICIENT_PERMISSIONS", "NOT_RESOURCE_OWNER"):
             self._audit_logger.record(
-                EventType.AUTHZ_DENY, outcome="denied", actor=actor, action=result.tool,
-                request_id=request_id, reason=result.error,
+                EventType.AUTHZ_DENY,
+                outcome="denied",
+                actor=actor,
+                action=result.tool,
+                request_id=request_id,
+                reason=result.error,
             )
             return
 
         event_type = self._STATUS_TO_EVENT.get(result.status, EventType.TOOL_FAILED)
         self._audit_logger.record(
-            event_type, outcome=result.status, actor=actor, action=result.tool,
-            request_id=request_id, reason=result.error,
+            event_type,
+            outcome=result.status,
+            actor=actor,
+            action=result.tool,
+            request_id=request_id,
+            reason=result.error,
         )
 
     def _record_pii_event(self, pii_decision, action: str, tool_request: ToolRequest, auth: AuthContext) -> None:
@@ -318,27 +351,45 @@ class ToolOrchestrator:
         request_id = tool_request.request_id
         pii_types = sorted({f.type.value for f in pii_decision.findings})
         self._audit_logger.record(
-            EventType.PII_DETECTED, outcome="detected", actor=actor, action=action,
-            request_id=request_id, metadata={"pii_types": pii_types, "context": "TOOL_INPUT"},
+            EventType.PII_DETECTED,
+            outcome="detected",
+            actor=actor,
+            action=action,
+            request_id=request_id,
+            metadata={"pii_types": pii_types, "context": "TOOL_INPUT"},
         )
         if pii_decision.action == "BLOCK":
             self._audit_logger.record(
-                EventType.PRIVACY_BLOCK, outcome="denied", actor=actor, action=action,
-                request_id=request_id, reason=pii_decision.reason,
+                EventType.PRIVACY_BLOCK,
+                outcome="denied",
+                actor=actor,
+                action=action,
+                request_id=request_id,
+                reason=pii_decision.reason,
                 metadata={"pii_types": pii_types, "context": "TOOL_INPUT"},
             )
         elif pii_decision.action == "REDACT":
             self._audit_logger.record(
-                EventType.PII_REDACTED, outcome="redacted", actor=actor, action=action,
-                request_id=request_id, metadata={"pii_types": pii_types, "context": "TOOL_INPUT"},
+                EventType.PII_REDACTED,
+                outcome="redacted",
+                actor=actor,
+                action=action,
+                request_id=request_id,
+                metadata={"pii_types": pii_types, "context": "TOOL_INPUT"},
             )
         elif pii_decision.action == "RESTRICT":
             self._audit_logger.record(
-                EventType.PRIVACY_RESTRICT, outcome="restricted", actor=actor, action=action,
-                request_id=request_id, metadata={"pii_types": pii_types, "context": "TOOL_INPUT"},
+                EventType.PRIVACY_RESTRICT,
+                outcome="restricted",
+                actor=actor,
+                action=action,
+                request_id=request_id,
+                metadata={"pii_types": pii_types, "context": "TOOL_INPUT"},
             )
 
-    def _idempotency_denied_result(self, action: str, tool_request: ToolRequest, auth: AuthContext) -> ToolExecutionResult:
+    def _idempotency_denied_result(
+        self, action: str, tool_request: ToolRequest, auth: AuthContext
+    ) -> ToolExecutionResult:
         """
         Shared "already claimed" result-building for step 4's two paths
         (default in-process set, and Phase 12.9's persisted repository) —
@@ -349,14 +400,19 @@ class ToolOrchestrator:
         actor = auth.user_id if isinstance(auth, AuthContext) and auth.authenticated else None
         if self._audit_logger is not None:
             self._audit_logger.record(
-                EventType.IDEMPOTENCY_DUPLICATE, outcome="denied", actor=actor,
-                action=action, request_id=tool_request.request_id,
+                EventType.IDEMPOTENCY_DUPLICATE,
+                outcome="denied",
+                actor=actor,
+                action=action,
+                request_id=tool_request.request_id,
                 reason="This request_id has already been executed.",
             )
         if self._metrics is not None:
             self._metrics.increment("idempotency_duplicates_total")
         return ToolExecutionResult(
-            success=False, tool=action, status="duplicate",
+            success=False,
+            tool=action,
+            status="duplicate",
             error="This request_id has already been executed.",
             request_id=tool_request.request_id,
         )
@@ -376,7 +432,10 @@ class ToolOrchestrator:
         spec = self._registry.get_spec(action)
         if spec is None:
             return ToolExecutionResult(
-                success=False, tool=action, status="failure", error="UNKNOWN_TOOL",
+                success=False,
+                tool=action,
+                status="failure",
+                error="UNKNOWN_TOOL",
                 request_id=tool_request.request_id,
             )
 
@@ -393,17 +452,26 @@ class ToolOrchestrator:
                 except Exception:
                     pass
                 return ToolExecutionResult(
-                    success=False, tool=action, status="policy_denied", error="POLICY_ENGINE_UNAVAILABLE",
+                    success=False,
+                    tool=action,
+                    status="policy_denied",
+                    error="POLICY_ENGINE_UNAVAILABLE",
                     request_id=tool_request.request_id,
                 )
             try:
-                _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "allowed" if tool_policy.allowed else "policy_denied")
+                _gate_span.set_attribute(
+                    SpanAttributes.POLICY_OUTCOME, "allowed" if tool_policy.allowed else "policy_denied"
+                )
             except Exception:
                 pass
             if not tool_policy.allowed:
                 return ToolExecutionResult(
-                    success=False, tool=action, status="policy_denied", error=tool_policy.reason,
-                    request_id=tool_request.request_id, metadata={"policy": tool_policy.to_dict()},
+                    success=False,
+                    tool=action,
+                    status="policy_denied",
+                    error=tool_policy.reason,
+                    request_id=tool_request.request_id,
+                    metadata={"policy": tool_policy.to_dict()},
                 )
 
         # 2. Authentication/authorization -- trusted `auth`, never derived
@@ -418,7 +486,10 @@ class ToolOrchestrator:
                 except Exception:
                     pass
                 return ToolExecutionResult(
-                    success=False, tool=action, status="failure", error="AUTHENTICATION_REQUIRED",
+                    success=False,
+                    tool=action,
+                    status="failure",
+                    error="AUTHENTICATION_REQUIRED",
                     request_id=tool_request.request_id,
                 )
             if spec.required_role and not auth.has_role(spec.required_role):
@@ -427,7 +498,10 @@ class ToolOrchestrator:
                 except Exception:
                     pass
                 return ToolExecutionResult(
-                    success=False, tool=action, status="failure", error="INSUFFICIENT_PERMISSIONS",
+                    success=False,
+                    tool=action,
+                    status="failure",
+                    error="INSUFFICIENT_PERMISSIONS",
                     request_id=tool_request.request_id,
                 )
 
@@ -442,7 +516,9 @@ class ToolOrchestrator:
             if spec.required_permission is not None:
                 try:
                     authz = self._policy_engine.evaluate_authorization(
-                        auth, spec.required_permission, resource_owner_user_id=tool_request.resource_owner_user_id,
+                        auth,
+                        spec.required_permission,
+                        resource_owner_user_id=tool_request.resource_owner_user_id,
                     )
                 except Exception:
                     try:
@@ -450,7 +526,10 @@ class ToolOrchestrator:
                     except Exception:
                         pass
                     return ToolExecutionResult(
-                        success=False, tool=action, status="failure", error="POLICY_ENGINE_UNAVAILABLE",
+                        success=False,
+                        tool=action,
+                        status="failure",
+                        error="POLICY_ENGINE_UNAVAILABLE",
                         request_id=tool_request.request_id,
                     )
                 try:
@@ -459,13 +538,21 @@ class ToolOrchestrator:
                     pass
                 if not authz.allowed:
                     return ToolExecutionResult(
-                        success=False, tool=action, status="failure", error=authz.rule,
-                        request_id=tool_request.request_id, metadata={"policy": authz.to_dict()},
+                        success=False,
+                        tool=action,
+                        status="failure",
+                        error=authz.rule,
+                        request_id=tool_request.request_id,
+                        metadata={"policy": authz.to_dict()},
                     )
                 if self._audit_logger is not None:
                     self._audit_logger.record(
-                        EventType.AUTHZ_ALLOW, outcome="allowed", actor=auth.user_id, action=action,
-                        request_id=tool_request.request_id, policy=authz.policy,
+                        EventType.AUTHZ_ALLOW,
+                        outcome="allowed",
+                        actor=auth.user_id,
+                        action=action,
+                        request_id=tool_request.request_id,
+                        policy=authz.policy,
                     )
 
         # 2.5. Tool-input privacy (Phase 6, only when a PrivacyService is
@@ -489,8 +576,12 @@ class ToolOrchestrator:
                         except Exception:
                             pass
                         return ToolExecutionResult(
-                            success=False, tool=action, status="policy_denied", error=pii_decision.reason,
-                            request_id=tool_request.request_id, metadata={"policy": pii_decision.to_dict()},
+                            success=False,
+                            tool=action,
+                            status="policy_denied",
+                            error=pii_decision.reason,
+                            request_id=tool_request.request_id,
+                            metadata={"policy": pii_decision.to_dict()},
                         )
 
         # 3. Confirmation -- trusted `tool_request.confirmed`, never
@@ -499,26 +590,36 @@ class ToolOrchestrator:
         # closed) rather than skipping the check.
         with _traced("tool_orchestrator.gate_confirmation") as _gate_span:
             try:
-                confirmation_policy = self._policy_engine.evaluate_confirmation(action, confirmed=tool_request.confirmed)
+                confirmation_policy = self._policy_engine.evaluate_confirmation(
+                    action, confirmed=tool_request.confirmed
+                )
             except Exception:
                 try:
                     _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "confirmation_required")
                 except Exception:
                     pass
                 return ToolExecutionResult(
-                    success=False, tool=action, status="confirmation_required", error="POLICY_ENGINE_UNAVAILABLE",
+                    success=False,
+                    tool=action,
+                    status="confirmation_required",
+                    error="POLICY_ENGINE_UNAVAILABLE",
                     request_id=tool_request.request_id,
                 )
             try:
                 _gate_span.set_attribute(
-                    SpanAttributes.POLICY_OUTCOME, "allowed" if confirmation_policy.allowed else "confirmation_required",
+                    SpanAttributes.POLICY_OUTCOME,
+                    "allowed" if confirmation_policy.allowed else "confirmation_required",
                 )
             except Exception:
                 pass
             if not confirmation_policy.allowed:
                 return ToolExecutionResult(
-                    success=False, tool=action, status="confirmation_required", error=confirmation_policy.reason,
-                    request_id=tool_request.request_id, metadata={"policy": confirmation_policy.to_dict()},
+                    success=False,
+                    tool=action,
+                    status="confirmation_required",
+                    error=confirmation_policy.reason,
+                    request_id=tool_request.request_id,
+                    metadata={"policy": confirmation_policy.to_dict()},
                 )
 
         # 4. Idempotency -- a repeated request_id never re-executes,
@@ -557,7 +658,9 @@ class ToolOrchestrator:
                             pass
                         return self._idempotency_denied_result(action, tool_request, auth)
             elif using_persisted_idempotency:
-                reserved = self._idempotency_repository.try_reserve(tool_request.request_id, user_id=auth.user_id, action=action)
+                reserved = self._idempotency_repository.try_reserve(
+                    tool_request.request_id, user_id=auth.user_id, action=action
+                )
                 if not reserved:
                     try:
                         _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "duplicate")
@@ -584,6 +687,7 @@ class ToolOrchestrator:
                 _exec_span.set_attribute(SpanAttributes.LATENCY_MS, (time.monotonic() - _exec_start) * 1000.0)
                 if result.status == "timeout":
                     from opentelemetry.trace import StatusCode
+
                     _exec_span.set_status(StatusCode.ERROR, "DependencyTimeoutError")
                     _exec_span.set_attribute(SpanAttributes.ERROR_TYPE, "DependencyTimeoutError")
             except Exception:
@@ -592,7 +696,9 @@ class ToolOrchestrator:
         if tool_request.request_id:
             if using_persisted_idempotency:
                 if result.success:
-                    self._idempotency_repository.update_result(tool_request.request_id, user_id=auth.user_id, result_status="success")
+                    self._idempotency_repository.update_result(
+                        tool_request.request_id, user_id=auth.user_id, result_status="success"
+                    )
                 else:
                     # A failed attempt must not permanently consume the
                     # idempotency key -- only success is "locked in",
@@ -613,9 +719,13 @@ class ToolOrchestrator:
         # unredacted, regardless of what ConversationManager does with it.
         if self._privacy_service is not None and result.result:
             result = ToolExecutionResult(
-                success=result.success, tool=result.tool, status=result.status,
+                success=result.success,
+                tool=result.tool,
+                status=result.status,
                 result=self._privacy_service.sanitize(result.result, context="LLM_CONTEXT"),
-                error=result.error, request_id=result.request_id, metadata=result.metadata,
+                error=result.error,
+                request_id=result.request_id,
+                metadata=result.metadata,
             )
 
         return result
@@ -623,13 +733,18 @@ class ToolOrchestrator:
     def _record_dependency_timeout(self, action: str, tool_request: ToolRequest, actor: Optional[str]) -> None:
         if self._audit_logger is not None:
             self._audit_logger.record(
-                EventType.DEPENDENCY_TIMEOUT, outcome="timeout", actor=actor, action=action,
+                EventType.DEPENDENCY_TIMEOUT,
+                outcome="timeout",
+                actor=actor,
+                action=action,
                 request_id=tool_request.request_id,
             )
         if self._metrics is not None:
             self._metrics.increment("timeouts_total")
 
-    def _execute_with_reliability(self, action: str, spec, tool_request: ToolRequest, auth: AuthContext) -> ToolExecutionResult:
+    def _execute_with_reliability(
+        self, action: str, spec, tool_request: ToolRequest, auth: AuthContext
+    ) -> ToolExecutionResult:
         """
         Wraps _execute_once() with the circuit breaker (Step 10.9) and
         bounded, idempotency-gated retry (Steps 10.4-10.7). Never applied
@@ -642,13 +757,20 @@ class ToolOrchestrator:
         if self._circuit_breaker is not None and not self._circuit_breaker.allow_request():
             if self._audit_logger is not None:
                 self._audit_logger.record(
-                    EventType.DEPENDENCY_FAILURE, outcome="denied", actor=actor, action=action,
-                    request_id=tool_request.request_id, reason="Circuit breaker open for tool execution.",
+                    EventType.DEPENDENCY_FAILURE,
+                    outcome="denied",
+                    actor=actor,
+                    action=action,
+                    request_id=tool_request.request_id,
+                    reason="Circuit breaker open for tool execution.",
                 )
             if self._metrics is not None:
                 self._metrics.increment("dependency_failures_total")
             return ToolExecutionResult(
-                success=False, tool=action, status="failure", error="DEPENDENCY_UNAVAILABLE",
+                success=False,
+                tool=action,
+                status="failure",
+                error="DEPENDENCY_UNAVAILABLE",
                 request_id=tool_request.request_id,
             )
 
@@ -664,7 +786,10 @@ class ToolOrchestrator:
                 break
             if self._audit_logger is not None:
                 self._audit_logger.record(
-                    EventType.RETRY_ATTEMPT, outcome="retrying", actor=actor, action=action,
+                    EventType.RETRY_ATTEMPT,
+                    outcome="retrying",
+                    actor=actor,
+                    action=action,
                     request_id=tool_request.request_id,
                     metadata={"attempt": attempt + 1, "max_attempts": decision.max_attempts},
                 )
@@ -677,14 +802,20 @@ class ToolOrchestrator:
                 self._record_dependency_timeout(action, tool_request, actor)
 
         if self._circuit_breaker is not None:
-            dependency_failed = result.status == "timeout" or (result.status == "failure" and result.error == "TOOL_EXECUTION_FAILED")
+            dependency_failed = result.status == "timeout" or (
+                result.status == "failure" and result.error == "TOOL_EXECUTION_FAILED"
+            )
             if dependency_failed:
                 new_state = self._circuit_breaker.record_failure()
                 if new_state is CircuitState.OPEN:
                     if self._audit_logger is not None:
                         self._audit_logger.record(
-                            EventType.CIRCUIT_OPEN, outcome="opened", actor=actor, action=action,
-                            request_id=tool_request.request_id, reason="Consecutive tool dependency failures exceeded threshold.",
+                            EventType.CIRCUIT_OPEN,
+                            outcome="opened",
+                            actor=actor,
+                            action=action,
+                            request_id=tool_request.request_id,
+                            reason="Consecutive tool dependency failures exceeded threshold.",
                         )
                     if self._metrics is not None:
                         self._metrics.increment("circuit_breaker_open_total")
@@ -694,7 +825,9 @@ class ToolOrchestrator:
         return result
 
     @staticmethod
-    def _execute_once(fn, action: str, params: dict, timeout_seconds: float, request_id: Optional[str]) -> ToolExecutionResult:
+    def _execute_once(
+        fn, action: str, params: dict, timeout_seconds: float, request_id: Optional[str]
+    ) -> ToolExecutionResult:
         """
         Phase 10 fix (plan.md Step 10.3/10.21): this previously used
         `with concurrent.futures.ThreadPoolExecutor(...) as executor:`.
@@ -729,8 +862,11 @@ class ToolOrchestrator:
             outcome, payload = result_queue.get(timeout=timeout_seconds)
         except queue.Empty:
             return ToolExecutionResult(
-                success=False, tool=action, status="timeout",
-                error=f"Tool execution exceeded {timeout_seconds}s", request_id=request_id,
+                success=False,
+                tool=action,
+                status="timeout",
+                error=f"Tool execution exceeded {timeout_seconds}s",
+                request_id=request_id,
             )
 
         if outcome == "error":
@@ -739,16 +875,26 @@ class ToolOrchestrator:
                 # Our own mock tools' deterministic, safe validation
                 # errors (e.g. "Missing required parameters") -- fine to
                 # surface verbatim, we authored every message.
-                return ToolExecutionResult(success=False, tool=action, status="failure", error=str(exc), request_id=request_id)
+                return ToolExecutionResult(
+                    success=False, tool=action, status="failure", error=str(exc), request_id=request_id
+                )
             # Anything else (including simulated failures) is
             # generalized -- never leak internal exception detail to
             # the caller, matching ConversationManager's existing
             # error-handling discipline (src/agent/conversation_manager.py).
-            return ToolExecutionResult(success=False, tool=action, status="failure", error="TOOL_EXECUTION_FAILED", request_id=request_id)
+            return ToolExecutionResult(
+                success=False, tool=action, status="failure", error="TOOL_EXECUTION_FAILED", request_id=request_id
+            )
 
         result_data = payload
         if not isinstance(result_data, dict):
             return ToolExecutionResult(
-                success=False, tool=action, status="failure", error="MALFORMED_TOOL_RESULT", request_id=request_id,
+                success=False,
+                tool=action,
+                status="failure",
+                error="MALFORMED_TOOL_RESULT",
+                request_id=request_id,
             )
-        return ToolExecutionResult(success=True, tool=action, status="success", result=result_data, request_id=request_id)
+        return ToolExecutionResult(
+            success=True, tool=action, status="success", result=result_data, request_id=request_id
+        )

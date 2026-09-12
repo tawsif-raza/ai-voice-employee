@@ -31,11 +31,10 @@ query shapes below in Step 12.3 — no schema change was needed.
 
 from typing import Optional
 
-from sqlalchemy import select
-
 from db import Database
 from db_models import AuditEventRow, SecurityEventRow
 from observability_models import AuditEvent, EventType, SecurityEvent, Severity
+from sqlalchemy import select
 
 
 def _aware(dt):
@@ -46,26 +45,51 @@ def _aware(dt):
 
 def _row_to_event(row: AuditEventRow) -> AuditEvent:
     return AuditEvent(
-        event_id=row.event_id, timestamp=_aware(row.timestamp), event_type=EventType(row.event_type),
-        request_id=row.request_id, conversation_id=row.conversation_id, session_id=row.session_id,
-        actor=row.actor, action=row.action, resource=row.resource, outcome=row.outcome,
-        policy=row.policy, reason=row.reason, metadata=dict(row.metadata_ or {}),
+        event_id=row.event_id,
+        timestamp=_aware(row.timestamp),
+        event_type=EventType(row.event_type),
+        request_id=row.request_id,
+        conversation_id=row.conversation_id,
+        session_id=row.session_id,
+        actor=row.actor,
+        action=row.action,
+        resource=row.resource,
+        outcome=row.outcome,
+        policy=row.policy,
+        reason=row.reason,
+        metadata=dict(row.metadata_ or {}),
     )
 
 
 def _event_to_values(event: AuditEvent) -> dict:
     return {
-        "event_id": event.event_id, "timestamp": event.timestamp, "event_type": event.event_type.value,
-        "request_id": event.request_id, "conversation_id": event.conversation_id, "session_id": event.session_id,
-        "actor": event.actor, "action": event.action, "resource": event.resource, "outcome": event.outcome,
-        "policy": event.policy, "reason": event.reason, "metadata": dict(event.metadata),
+        "event_id": event.event_id,
+        "timestamp": event.timestamp,
+        "event_type": event.event_type.value,
+        "request_id": event.request_id,
+        "conversation_id": event.conversation_id,
+        "session_id": event.session_id,
+        "actor": event.actor,
+        "action": event.action,
+        "resource": event.resource,
+        "outcome": event.outcome,
+        "policy": event.policy,
+        "reason": event.reason,
+        "metadata": dict(event.metadata),
     }
 
 
 def _row_to_security_event(row: SecurityEventRow) -> SecurityEvent:
     return SecurityEvent(
-        event_id=row.event_id, timestamp=_aware(row.timestamp), type=row.type, severity=Severity(row.severity),
-        request_id=row.request_id, actor=row.actor, resource=row.resource, outcome=row.outcome, reason=row.reason,
+        event_id=row.event_id,
+        timestamp=_aware(row.timestamp),
+        type=row.type,
+        severity=Severity(row.severity),
+        request_id=row.request_id,
+        actor=row.actor,
+        resource=row.resource,
+        outcome=row.outcome,
+        reason=row.reason,
     )
 
 
@@ -80,17 +104,27 @@ class PostgresAuditRepository:
 
     def append_security_event(self, event: SecurityEvent) -> None:
         values = {
-            "event_id": event.event_id, "timestamp": event.timestamp, "type": event.type,
-            "severity": event.severity.value, "request_id": event.request_id, "actor": event.actor,
-            "resource": event.resource, "outcome": event.outcome, "reason": event.reason,
+            "event_id": event.event_id,
+            "timestamp": event.timestamp,
+            "type": event.type,
+            "severity": event.severity.value,
+            "request_id": event.request_id,
+            "actor": event.actor,
+            "resource": event.resource,
+            "outcome": event.outcome,
+            "reason": event.reason,
         }
         with self._database.session_scope() as db_session:
             db_session.execute(SecurityEventRow.__table__.insert().values(**values))
 
     def list_events(
-        self, event_type: Optional[EventType] = None, request_id: Optional[str] = None,
-        actor: Optional[str] = None, session_id: Optional[str] = None,
-        start_time=None, end_time=None,
+        self,
+        event_type: Optional[EventType] = None,
+        request_id: Optional[str] = None,
+        actor: Optional[str] = None,
+        session_id: Optional[str] = None,
+        start_time=None,
+        end_time=None,
     ) -> list:
         table = AuditEventRow.__table__
         stmt = select(AuditEventRow)

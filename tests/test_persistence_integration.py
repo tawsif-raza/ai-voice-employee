@@ -26,12 +26,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 
+from audit_repository_postgres import PostgresAuditRepository  # noqa: E402
 from conversation_manager import PersistenceRepositories, resolve_persistence_repositories  # noqa: E402
 from db import DatabaseUnavailableError  # noqa: E402
-from session_repository_postgres import PostgresSessionRepository  # noqa: E402
-from memory_repository_postgres import PostgresMemoryRepository  # noqa: E402
-from audit_repository_postgres import PostgresAuditRepository  # noqa: E402
 from idempotency_repository_postgres import PostgresIdempotencyRepository  # noqa: E402
+from memory_repository_postgres import PostgresMemoryRepository  # noqa: E402
+from session_repository_postgres import PostgresSessionRepository  # noqa: E402
 
 
 class _EnvGuard:
@@ -99,11 +99,10 @@ class TestProductionModeWiresRealRepositories(unittest.TestCase):
         with _EnvGuard():
             os.environ["PERSISTENCE_MODE"] = "production"
             os.environ["DATABASE_URL"] = f"sqlite:///{self.db_path.as_posix()}"
-            from db_models import Base
-
             # Create schema first (a real deployment runs `alembic upgrade
             # head`; this test does the equivalent directly for speed).
-            from db import load_database_config, Database
+            from db import Database, load_database_config
+            from db_models import Base
 
             bootstrap = Database(load_database_config())
             Base.metadata.create_all(bootstrap.engine)
@@ -171,8 +170,8 @@ class TestEndToEndFlowsAgainstPersistedRepositories(unittest.TestCase):
         os.environ["PERSISTENCE_MODE"] = "production"
         os.environ["DATABASE_URL"] = f"sqlite:///{self.db_path.as_posix()}"
 
+        from db import Database, load_database_config
         from db_models import Base
-        from db import load_database_config, Database
 
         bootstrap = Database(load_database_config())
         Base.metadata.create_all(bootstrap.engine)
@@ -187,15 +186,12 @@ class TestEndToEndFlowsAgainstPersistedRepositories(unittest.TestCase):
             self.db_path.unlink()
 
     def test_appointment_workflow_confirmation_survives_restart_and_executes_exactly_once(self):
-        from conversation_manager import ConversationManager
-        from handoff_detector import HandoffDetector
-        from intent_engine import IntentEngine
+        from action_models import AuthContext
+        from identity import Role, permissions_for_roles
         from mock_tools import MockAppointmentStore, build_default_tool_registry
         from policy_engine import PolicyEngine
         from session_manager import SessionManager
         from tool_orchestrator import ToolOrchestrator
-        from action_models import AuthContext
-        from identity import Role, permissions_for_roles
 
         class _FakeLLM:
             def generate_stream(self, messages):
@@ -208,12 +204,21 @@ class TestEndToEndFlowsAgainstPersistedRepositories(unittest.TestCase):
         orchestrator = ToolOrchestrator(registry, policy_engine, idempotency_repository=self.persistence.idempotency)
         session_manager = SessionManager(repository=self.persistence.session)
 
-        auth = AuthContext(user_id="user-1", authenticated=True, roles=(Role.USER.value,), permissions=permissions_for_roles((Role.USER,)), authentication_method="test")
+        auth = AuthContext(
+            user_id="user-1",
+            authenticated=True,
+            roles=(Role.USER.value,),
+            permissions=permissions_for_roles((Role.USER,)),
+            authentication_method="test",
+        )
 
         session = session_manager.create_session(user_id="user-1")
         session_manager.update_session(
-            session.session_id, user_id="user-1", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": booked["appointment_id"]},
+            session.session_id,
+            user_id="user-1",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": booked["appointment_id"]},
         )
 
         # "Restart": brand-new SessionManager/ToolOrchestrator against the
@@ -253,17 +258,25 @@ class TestEndToEndFlowsAgainstPersistedRepositories(unittest.TestCase):
     def test_faq_flow_end_to_end_with_persisted_audit(self):
         """request -> safety -> policy -> RAG -> LLM -> response -> audit, with the audit trail landing in the persisted repository."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
-        from test_conversation_manager import FakeLLMService, FakeRetriever, FakeChunk, _real_clinical_guard, _real_handoff_detector, _run_turn
-        from conversation_manager import ConversationManager
         from audit import AuditLogger
-        from observability_models import EventType
+        from conversation_manager import ConversationManager
+        from test_conversation_manager import (
+            FakeChunk,
+            FakeLLMService,
+            FakeRetriever,
+            _real_clinical_guard,
+            _real_handoff_detector,
+            _run_turn,
+        )
 
         audit_logger = AuditLogger(repository=self.persistence.audit)
         llm = FakeLLMService(response_text="Our return window is thirty days.")
         retriever = FakeRetriever([FakeChunk("faq_returns", "faqs", "Returns", "30 day policy", 0.9)])
         cm = ConversationManager(
-            llm_service=llm, retriever=retriever,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=retriever,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             audit_logger=audit_logger,
         )
         _, final = _run_turn(cm, "What's your return policy?")
@@ -273,15 +286,23 @@ class TestEndToEndFlowsAgainstPersistedRepositories(unittest.TestCase):
     def test_clinical_flow_end_to_end_llm_never_called(self):
         """risky request -> ClinicalSafetyGuard -> LLM NOT called -> handoff, with the persisted audit trail confirming a real SAFETY_BLOCK/SAFETY_HANDOFF decision was recorded."""
         sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
-        from test_conversation_manager import FakeLLMService, FakeRetriever, _real_clinical_guard, _real_handoff_detector, _run_turn
-        from conversation_manager import ConversationManager
         from audit import AuditLogger
+        from conversation_manager import ConversationManager
+        from test_conversation_manager import (
+            FakeLLMService,
+            FakeRetriever,
+            _real_clinical_guard,
+            _real_handoff_detector,
+            _run_turn,
+        )
 
         audit_logger = AuditLogger(repository=self.persistence.audit)
         llm = FakeLLMService()
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             audit_logger=audit_logger,
         )
         _, final = _run_turn(cm, "How many mg of ibuprofen should I take?")

@@ -51,18 +51,17 @@ import json
 import logging
 import os
 import sys
-import uuid
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
-import time
-import uvicorn
 
 # This codebase avoids package-relative imports (no __init__.py anywhere),
 # so the sibling directory is added to sys.path explicitly rather than
@@ -72,18 +71,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "voice"))
 from action_models import ANONYMOUS_CONTEXT, AuthContext  # noqa: E402
 from audit import AuditLogger, SecurityEventDetector  # noqa: E402
 from conversation_manager import ConversationManager, build_conversation_manager  # noqa: E402
+from db import Database, load_database_config  # noqa: E402
 from identity import AuthenticationError, DevelopmentAuthenticationProvider  # noqa: E402
 from metrics import MetricsRegistry  # noqa: E402
 from observability_models import EventType, new_request_id  # noqa: E402
 from oidc_provider import OIDCAuthenticationProvider, load_oidc_config  # noqa: E402
-from reliability_config import load_reliability_config  # noqa: E402
-from db import Database, DatabaseUnavailableError, load_database_config  # noqa: E402
-from telephony_models import TwilioEventType, parse_twilio_frame  # noqa: E402
-from voice_pipeline import VoiceCallManager  # noqa: E402
-from stt_service import DeepgramSTTService, MockSTTService  # noqa: E402
-from tts_service import ElevenLabsTTSService, MockTTSService  # noqa: E402
 from production_logging import configure_production_logging  # noqa: E402
-from tracing import TracingConfig, init_tracing, shutdown_tracing, SpanAttributes  # noqa: E402  (Phase 14)
+from reliability_config import load_reliability_config  # noqa: E402
+from stt_service import DeepgramSTTService, MockSTTService  # noqa: E402
+from telephony_models import TwilioEventType, parse_twilio_frame  # noqa: E402
+from tracing import SpanAttributes, TracingConfig, init_tracing, shutdown_tracing  # noqa: E402  (Phase 14)
+from tts_service import ElevenLabsTTSService, MockTTSService  # noqa: E402
+from voice_pipeline import VoiceCallManager  # noqa: E402
 
 configure_production_logging()
 
@@ -126,11 +125,15 @@ if AUTH_MODE in _PRODUCTION_AUTH_MODES:
     # not start with broken authentication rather than serve requests
     # under it (plan.md Principle 32).
     _authentication_provider = OIDCAuthenticationProvider(
-        load_oidc_config(), audit_logger=_audit_logger, security_detector=_security_detector,
+        load_oidc_config(),
+        audit_logger=_audit_logger,
+        security_detector=_security_detector,
     )
 else:
     _authentication_provider = DevelopmentAuthenticationProvider(
-        enabled=_DEV_AUTH_ENABLED, audit_logger=_audit_logger, security_detector=_security_detector,
+        enabled=_DEV_AUTH_ENABLED,
+        audit_logger=_audit_logger,
+        security_detector=_security_detector,
     )
 
 _conversation_manager: Optional[ConversationManager] = None
@@ -186,6 +189,7 @@ async def lifespan(app: FastAPI):
     # Phase 14: auto-instrument FastAPI (creates root spans for every HTTP request).
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
         FastAPIInstrumentor.instrument_app(app)
     except Exception:
         logging.getLogger("ai_voice_agent.tracing").debug("FastAPI auto-instrumentation skipped.", exc_info=True)
@@ -194,17 +198,19 @@ async def lifespan(app: FastAPI):
     if merged_dir.exists():
         print(f"Loading merged model from {merged_dir}...")
         _conversation_manager = build_conversation_manager(
-            base_model_name=str(merged_dir), auto_resolve_adapter=False,
-            audit_logger=_audit_logger, metrics=_metrics, security_detector=_security_detector,
+            base_model_name=str(merged_dir),
+            auto_resolve_adapter=False,
+            audit_logger=_audit_logger,
+            metrics=_metrics,
+            security_detector=_security_detector,
         )
     else:
-        print(
-            f"No merged model at {merged_dir} — loading base model "
-            "with auto-resolved LoRA adapter instead."
-        )
+        print(f"No merged model at {merged_dir} — loading base model with auto-resolved LoRA adapter instead.")
         _conversation_manager = build_conversation_manager(
             base_model_name=BASE_MODEL_NAME,
-            audit_logger=_audit_logger, metrics=_metrics, security_detector=_security_detector,
+            audit_logger=_audit_logger,
+            metrics=_metrics,
+            security_detector=_security_detector,
         )
     _database = getattr(_conversation_manager, "database", None)
 
@@ -214,6 +220,7 @@ async def lifespan(app: FastAPI):
             engine = getattr(_database, "_engine", None) or getattr(_database, "engine", None)
             if engine is not None:
                 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
                 SQLAlchemyInstrumentor().instrument(engine=engine, enable_commenter=False)
         except Exception:
             logging.getLogger("ai_voice_agent.tracing").debug("SQLAlchemy auto-instrumentation skipped.", exc_info=True)
@@ -221,6 +228,7 @@ async def lifespan(app: FastAPI):
     # Phase 14: auto-instrument outbound HTTP requests.
     try:
         from opentelemetry.instrumentation.requests import RequestsInstrumentor
+
         RequestsInstrumentor().instrument()
     except Exception:
         logging.getLogger("ai_voice_agent.tracing").debug("Requests auto-instrumentation skipped.", exc_info=True)
@@ -268,6 +276,7 @@ async def _correlation_id_middleware(request: Request, call_next):
     # Phase 14: inject request_id into the active OTel span (if any).
     try:
         from opentelemetry import trace as _trace
+
         _span = _trace.get_current_span()
         if _span.is_recording():
             _span.set_attribute(SpanAttributes.REQUEST_ID, request_id)
@@ -292,16 +301,25 @@ async def _safe_exception_handler(request: Request, exc: Exception):
     error_id = new_request_id()
     _error_logger.error(
         "unhandled_exception error_id=%s request_id=%s exception_type=%s",
-        error_id, request_id, type(exc).__name__,
+        error_id,
+        request_id,
+        type(exc).__name__,
     )
     _audit_logger.record(
-        EventType.SYSTEM_ERROR, outcome="internal_error", request_id=request_id,
-        reason=f"Unhandled {type(exc).__name__}", metadata={"error_id": error_id, "exception_type": type(exc).__name__},
+        EventType.SYSTEM_ERROR,
+        outcome="internal_error",
+        request_id=request_id,
+        reason=f"Unhandled {type(exc).__name__}",
+        metadata={"error_id": error_id, "exception_type": type(exc).__name__},
     )
     return JSONResponse(
         status_code=500,
-        content={"request_id": request_id, "error_id": error_id, "error_code": "internal_error",
-                 "message": "An unexpected error occurred. Please try again."},
+        content={
+            "request_id": request_id,
+            "error_id": error_id,
+            "error_code": "internal_error",
+            "message": "An unexpected error occurred. Please try again.",
+        },
     )
 
 
@@ -420,12 +438,18 @@ def ready() -> JSONResponse:
         is_prod_persistence = db_config.is_production()
     except Exception as exc:
         _error_logger.warning("Database configuration check failed during /ready: %s", type(exc).__name__)
-        is_prod_persistence = os.environ.get("PERSISTENCE_MODE", "").strip().lower() in {"production", "postgres", "postgresql"}
+        is_prod_persistence = os.environ.get("PERSISTENCE_MODE", "").strip().lower() in {
+            "production",
+            "postgres",
+            "postgresql",
+        }
 
     if is_prod_persistence:
         active_db = _get_active_database()
         if active_db is None:
-            _error_logger.warning("Readiness check failed: PERSISTENCE_MODE is production but no Database instance is available.")
+            _error_logger.warning(
+                "Readiness check failed: PERSISTENCE_MODE is production but no Database instance is available."
+            )
             return JSONResponse(status_code=503, content={"ready": False})
         try:
             if not active_db.health_check():
@@ -477,7 +501,11 @@ def generate(req: ChatRequest, request: Request, identity: AuthContext = Depends
     if not req.stream:
         result = None
         for item in _conversation_manager.handle_turn(
-            req.message, history=req.history, auth=identity, session_id=req.session_id, request_id=request_id,
+            req.message,
+            history=req.history,
+            auth=identity,
+            session_id=req.session_id,
+            request_id=request_id,
         ):
             if not isinstance(item, str):
                 result = item
@@ -501,7 +529,11 @@ def generate(req: ChatRequest, request: Request, identity: AuthContext = Depends
 
     def ndjson():
         for item in _conversation_manager.handle_turn(
-            req.message, history=req.history, auth=identity, session_id=req.session_id, request_id=request_id,
+            req.message,
+            history=req.history,
+            auth=identity,
+            session_id=req.session_id,
+            request_id=request_id,
         ):
             if isinstance(item, str):
                 yield json.dumps({"token": item}) + "\n"
@@ -512,6 +544,7 @@ def generate(req: ChatRequest, request: Request, identity: AuthContext = Depends
 
 
 # ── Telephony / Voice Gateway Endpoints ─────────────────────────────────────
+
 
 @app.api_route("/twiml/inbound-call", methods=["GET", "POST"])
 async def twiml_inbound_call(request: Request):
@@ -605,6 +638,7 @@ async def websocket_call(websocket: WebSocket):
                 await current_handler.handle_start(parsed_data)
                 # Launch STT processing loop in background
                 import asyncio
+
                 stt_task = asyncio.create_task(current_handler.process_stt_events())
 
             elif event_type == TwilioEventType.MEDIA:
@@ -631,7 +665,9 @@ async def websocket_call(websocket: WebSocket):
 
 if __name__ == "__main__":
     uvicorn.run(
-        app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)),
+        app,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8000)),
         # Phase 10 (plan.md Step 10.18): bounded graceful-shutdown window
         # -- never wait indefinitely for in-flight requests to finish.
         timeout_graceful_shutdown=int(_RELIABILITY.graceful_shutdown_timeout_seconds),

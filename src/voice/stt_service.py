@@ -22,10 +22,10 @@ logger = logging.getLogger("ai_voice_agent.voice.stt")
 
 
 class STTEventType(str, Enum):
-    SPEECH_STARTED = "speech_started"      # VAD trigger: Instant barge-in!
-    INTERIM_TRANSCRIPT = "interim"         # Partial: Informational only, NEVER triggers tools
-    FINAL_TRANSCRIPT = "final"             # Finalized turn: Drives ConversationManager
-    UTTERANCE_END = "utterance_end"       # Natural pause boundary
+    SPEECH_STARTED = "speech_started"  # VAD trigger: Instant barge-in!
+    INTERIM_TRANSCRIPT = "interim"  # Partial: Informational only, NEVER triggers tools
+    FINAL_TRANSCRIPT = "final"  # Finalized turn: Drives ConversationManager
+    UTTERANCE_END = "utterance_end"  # Natural pause boundary
     ERROR = "error"
 
 

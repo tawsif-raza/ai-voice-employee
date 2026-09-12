@@ -26,7 +26,6 @@ from telephony_models import (
 
 
 class TestTelephonyModels(unittest.TestCase):
-
     def test_parse_connected_frame(self):
         raw = {"event": "connected", "protocol": "Call", "version": "1.0.0"}
         evt_type, data = parse_twilio_frame(raw)

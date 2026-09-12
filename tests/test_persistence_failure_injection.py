@@ -29,10 +29,10 @@ from audit import AuditLogger  # noqa: E402
 from audit_repository_postgres import PostgresAuditRepository  # noqa: E402
 from db import Database, DatabaseUnavailableError, load_database_config  # noqa: E402
 from db_models import Base  # noqa: E402
-from identity import Role, permissions_for_roles  # noqa: E402
 from idempotency_repository_postgres import PostgresIdempotencyRepository  # noqa: E402
+from identity import Role, permissions_for_roles  # noqa: E402
 from memory_manager import MemoryManager  # noqa: E402
-from memory_models import MemoryCategory, MemoryRecord  # noqa: E402
+from memory_models import MemoryCategory  # noqa: E402
 from memory_repository_postgres import PostgresMemoryRepository  # noqa: E402
 from observability_models import EventType  # noqa: E402
 from policy_engine import PolicyEngine  # noqa: E402
@@ -44,8 +44,11 @@ from tool_registry import ToolRegistry  # noqa: E402
 
 UNREACHABLE_URL = "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"
 AUTHENTICATED_USER = AuthContext(
-    user_id="user-1", authenticated=True, roles=(Role.USER.value,),
-    permissions=permissions_for_roles((Role.USER,)), authentication_method="test",
+    user_id="user-1",
+    authenticated=True,
+    roles=(Role.USER.value,),
+    permissions=permissions_for_roles((Role.USER,)),
+    authentication_method="test",
 )
 
 
@@ -71,13 +74,23 @@ class TestIdempotencyFailsSafe(unittest.TestCase):
 
         registry = ToolRegistry()
         registry.register(
-            ActionSpec(name="CANCEL_APPOINTMENT", description="d", params_schema={"appointment_id": "str"},
-                       required_params=("appointment_id",), requires_confirmation=True, destructive=True),
+            ActionSpec(
+                name="CANCEL_APPOINTMENT",
+                description="d",
+                params_schema={"appointment_id": "str"},
+                required_params=("appointment_id",),
+                requires_confirmation=True,
+                destructive=True,
+            ),
             _cancel,
         )
         database = _unreachable_database()
-        orchestrator = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(database))
-        request = ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": "x"}, confirmed=True, request_id="req-1")
+        orchestrator = ToolOrchestrator(
+            registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(database)
+        )
+        request = ToolRequest(
+            action="CANCEL_APPOINTMENT", params={"appointment_id": "x"}, confirmed=True, request_id="req-1"
+        )
 
         with self.assertRaises(DatabaseUnavailableError):
             orchestrator.invoke(request, auth=AUTHENTICATED_USER)
@@ -133,7 +146,9 @@ class TestOwnershipFailsSafe(unittest.TestCase):
     def test_unreachable_memory_repository_persist_never_silently_succeeds(self):
         database = _unreachable_database()
         manager = MemoryManager(PolicyEngine(), repository=PostgresMemoryRepository(database))
-        record = manager.propose_memory(user_id="user-1", category=MemoryCategory.PREFERENCE, key="k", value="v", source="s")
+        record = manager.propose_memory(
+            user_id="user-1", category=MemoryCategory.PREFERENCE, key="k", value="v", source="s"
+        )
         with self.assertRaises(DatabaseUnavailableError):
             manager.persist_memory(record)
         database.dispose()
@@ -173,10 +188,24 @@ class TestNoInsecureFallback(unittest.TestCase):
         # the ONLY path step 4 uses for that instance -- there is no
         # "try the repository, fall back to the set on failure" branch.
         registry = ToolRegistry()
-        registry.register(ActionSpec(name="CANCEL_APPOINTMENT", description="d", params_schema={"appointment_id": "str"}, required_params=("appointment_id",), requires_confirmation=True, destructive=True), lambda p: {"status": "ok"})
+        registry.register(
+            ActionSpec(
+                name="CANCEL_APPOINTMENT",
+                description="d",
+                params_schema={"appointment_id": "str"},
+                required_params=("appointment_id",),
+                requires_confirmation=True,
+                destructive=True,
+            ),
+            lambda p: {"status": "ok"},
+        )
         database = _unreachable_database()
-        orchestrator = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(database))
-        request = ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": "x"}, confirmed=True, request_id="req-2")
+        orchestrator = ToolOrchestrator(
+            registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(database)
+        )
+        request = ToolRequest(
+            action="CANCEL_APPOINTMENT", params={"appointment_id": "x"}, confirmed=True, request_id="req-2"
+        )
         with self.assertRaises(DatabaseUnavailableError):
             orchestrator.invoke(request, auth=AUTHENTICATED_USER)
         # The raw in-process set must remain untouched/empty -- proof the
@@ -189,7 +218,13 @@ class TestNoPrivacyLeakageOnFailure(unittest.TestCase):
     def test_memory_persist_failure_message_never_contains_the_value(self):
         database = _unreachable_database()
         manager = MemoryManager(PolicyEngine(), repository=PostgresMemoryRepository(database))
-        record = manager.propose_memory(user_id="user-1", category=MemoryCategory.PREFERENCE, key="notes", value="secret-value-should-never-leak", source="s")
+        record = manager.propose_memory(
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="notes",
+            value="secret-value-should-never-leak",
+            source="s",
+        )
         try:
             manager.persist_memory(record)
             self.fail("expected DatabaseUnavailableError")
@@ -201,7 +236,9 @@ class TestNoPrivacyLeakageOnFailure(unittest.TestCase):
         database = _unreachable_database()
         logger = AuditLogger(repository=PostgresAuditRepository(database))
         result = logger.record(
-            EventType.TOOL_REQUESTED, outcome="requested", actor="user-1",
+            EventType.TOOL_REQUESTED,
+            outcome="requested",
+            actor="user-1",
             metadata={"sensitive": "should-never-appear-anywhere"},
         )
         self.assertIsNone(result)  # best-effort: swallowed, not raised, and nothing was ever persisted
@@ -217,11 +254,16 @@ class TestConstraintViolation(unittest.TestCase):
             with database.session_scope() as db_session:
                 from db_models import IdempotencyRecordRow
 
-                db_session.add(IdempotencyRecordRow(
-                    user_id=None, request_id="x", action="CANCEL_APPOINTMENT",
-                    result_status="in_progress", executed_at=datetime.now(timezone.utc),
-                    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-                ))
+                db_session.add(
+                    IdempotencyRecordRow(
+                        user_id=None,
+                        request_id="x",
+                        action="CANCEL_APPOINTMENT",
+                        result_status="in_progress",
+                        executed_at=datetime.now(timezone.utc),
+                        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                    )
+                )
         database.dispose()
 
 
@@ -232,7 +274,11 @@ class TestTransactionRollback(unittest.TestCase):
         database = _fresh_database()
         repo = PostgresSessionRepository(database)
         now = datetime.now(timezone.utc)
-        repo.save(SessionState(session_id="rollback-test", created_at=now, updated_at=now, expires_at=now + timedelta(minutes=30)))
+        repo.save(
+            SessionState(
+                session_id="rollback-test", created_at=now, updated_at=now, expires_at=now + timedelta(minutes=30)
+            )
+        )
 
         from db_models import SessionRow
 
@@ -244,16 +290,25 @@ class TestTransactionRollback(unittest.TestCase):
                 row = db_session.get(SessionRow, "rollback-test")
                 row.current_intent = "SHOULD_NOT_PERSIST"
                 db_session.flush()
-                db_session.add(SessionRow(
-                    session_id="rollback-test",  # duplicate PK -- violates uniqueness
-                    status="ACTIVE", created_at=now, updated_at=now, expires_at=now + timedelta(minutes=30),
-                    pending_parameters={}, confirmation_state={}, metadata_={},
-                ))
+                db_session.add(
+                    SessionRow(
+                        session_id="rollback-test",  # duplicate PK -- violates uniqueness
+                        status="ACTIVE",
+                        created_at=now,
+                        updated_at=now,
+                        expires_at=now + timedelta(minutes=30),
+                        pending_parameters={},
+                        confirmation_state={},
+                        metadata_={},
+                    )
+                )
         except DatabaseUnavailableError:
             pass
 
         reloaded = repo.get("rollback-test")
-        self.assertIsNone(reloaded.current_intent, "the update inside the failed transaction must have been rolled back")
+        self.assertIsNone(
+            reloaded.current_intent, "the update inside the failed transaction must have been rolled back"
+        )
         database.dispose()
 
 
@@ -286,7 +341,9 @@ class TestConnectionPoolExhaustion(unittest.TestCase):
 
             class _TimingOutSession:
                 def execute(self, *a, **k):
-                    raise sqlalchemy.exc.TimeoutError("QueuePool limit of size 1 overflow 0 reached, connection timed out")
+                    raise sqlalchemy.exc.TimeoutError(
+                        "QueuePool limit of size 1 overflow 0 reached, connection timed out"
+                    )
 
                 def commit(self):
                     pass
@@ -303,7 +360,11 @@ class TestConnectionPoolExhaustion(unittest.TestCase):
                 with database.session_scope() as db_session:
                     db_session.execute("irrelevant")
             elapsed = time.monotonic() - start
-            self.assertLess(elapsed, 2, "must fail immediately on a pool timeout, never hang waiting for a connection that will never come")
+            self.assertLess(
+                elapsed,
+                2,
+                "must fail immediately on a pool timeout, never hang waiting for a connection that will never come",
+            )
             database._session_factory = real_session_factory
         finally:
             database.dispose()
@@ -321,10 +382,14 @@ class TestNoAggressiveRetries(unittest.TestCase):
     """
 
     def test_single_failed_attempt_takes_roughly_one_connect_timeout_not_a_multiple(self):
-        database = Database(load_database_config(env={
-            "PERSISTENCE_MODE": "production",
-            "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
-        }))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         start = time.monotonic()
         with self.assertRaises(DatabaseUnavailableError):
             database.health_check()
@@ -338,12 +403,17 @@ class TestNoAggressiveRetries(unittest.TestCase):
     def test_no_retry_related_code_in_repository_modules(self):
         import inspect
 
-        import idempotency_repository_postgres
-        import session_repository_postgres
-        import memory_repository_postgres
         import audit_repository_postgres
+        import idempotency_repository_postgres
+        import memory_repository_postgres
+        import session_repository_postgres
 
-        for module in (idempotency_repository_postgres, session_repository_postgres, memory_repository_postgres, audit_repository_postgres):
+        for module in (
+            idempotency_repository_postgres,
+            session_repository_postgres,
+            memory_repository_postgres,
+            audit_repository_postgres,
+        ):
             source = inspect.getsource(module)
             self.assertNotIn("for attempt in", source)
             self.assertNotIn("while True", source)

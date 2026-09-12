@@ -42,12 +42,20 @@ class Permission(str, Enum):
 # taxonomy itself.
 ROLE_PERMISSIONS: dict[Role, tuple[Permission, ...]] = {
     Role.USER: (
-        Permission.READ_OWN_SESSION, Permission.READ_OWN_MEMORY, Permission.WRITE_OWN_MEMORY,
-        Permission.BOOK_APPOINTMENT, Permission.CANCEL_APPOINTMENT, Permission.READ_ORDER,
+        Permission.READ_OWN_SESSION,
+        Permission.READ_OWN_MEMORY,
+        Permission.WRITE_OWN_MEMORY,
+        Permission.BOOK_APPOINTMENT,
+        Permission.CANCEL_APPOINTMENT,
+        Permission.READ_ORDER,
     ),
     Role.STAFF: (
-        Permission.READ_OWN_SESSION, Permission.READ_OWN_MEMORY, Permission.WRITE_OWN_MEMORY,
-        Permission.BOOK_APPOINTMENT, Permission.CANCEL_APPOINTMENT, Permission.READ_ORDER,
+        Permission.READ_OWN_SESSION,
+        Permission.READ_OWN_MEMORY,
+        Permission.WRITE_OWN_MEMORY,
+        Permission.BOOK_APPOINTMENT,
+        Permission.CANCEL_APPOINTMENT,
+        Permission.READ_ORDER,
     ),
     Role.ADMIN: tuple(Permission),  # every permission, including ADMIN_OPERATIONS
 }
@@ -153,8 +161,11 @@ class DevelopmentAuthenticationProvider(AuthenticationProvider):
             self._security_detector.reset_auth_failures(safe_actor)
         if self._audit_logger is not None:
             from observability_models import EventType
+
             self._audit_logger.record(
-                EventType.AUTH_SUCCESS, outcome="success", actor=identity.user_id,
+                EventType.AUTH_SUCCESS,
+                outcome="success",
+                actor=identity.user_id,
                 reason="Credentials accepted by development authentication provider.",
             )
         return AuthContext(
@@ -168,6 +179,7 @@ class DevelopmentAuthenticationProvider(AuthenticationProvider):
     def _record_failure(self, actor: str, reason: str) -> None:
         if self._audit_logger is not None:
             from observability_models import EventType
+
             self._audit_logger.record(EventType.AUTH_FAILURE, outcome="denied", actor=actor, reason=reason)
         if self._security_detector is not None:
             self._security_detector.record_auth_failure(actor)

@@ -26,7 +26,6 @@ PHASE_6 report's Limitations section — not a silent omission.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class PIIType(str, Enum):

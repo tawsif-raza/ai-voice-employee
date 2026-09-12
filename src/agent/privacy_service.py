@@ -38,8 +38,11 @@ class PrivacyService:
         types = [f.type for f in findings]
         decision = self._policy_engine.evaluate_pii(types, context)
         return PrivacyDecision(
-            allowed=decision.allowed, action=decision.action, reason=decision.reason,
-            policy=decision.policy, findings=tuple(findings),
+            allowed=decision.allowed,
+            action=decision.action,
+            reason=decision.reason,
+            policy=decision.policy,
+            findings=tuple(findings),
         )
 
     def validate_destination(self, text: str, destination: str) -> PrivacyDecision:

@@ -37,7 +37,6 @@ _INFERENCE_DIR = str(Path(__file__).resolve().parents[1] / "inference")
 if _INFERENCE_DIR not in sys.path:
     sys.path.insert(0, _INFERENCE_DIR)
 from handoff_detector import HandoffMatch  # noqa: E402
-
 from intent_engine import Route, RoutingDecision  # noqa: E402
 
 _POLICIES_DIR = Path(__file__).resolve().parents[2] / "configs" / "policies"
@@ -88,8 +87,13 @@ _BUILTIN_GENERATION_CONFIG = {
     "default_rule": "SAFE_GENERAL_INFORMATION",
     "default_action": "ALLOW",
     "rules": [
-        {"match_route": "CLARIFICATION", "rule": "UNKNOWN_REQUEST", "allowed": False, "action": "CLARIFY",
-         "reason": "Request intent is unclear."},
+        {
+            "match_route": "CLARIFICATION",
+            "rule": "UNKNOWN_REQUEST",
+            "allowed": False,
+            "action": "CLARIFY",
+            "reason": "Request intent is unclear.",
+        },
     ],
 }
 _BUILTIN_TOOLS_CONFIG = {
@@ -105,7 +109,12 @@ _BUILTIN_HANDOFF_CONFIG = {
     "default_action": "ALLOW",
     "default_rule": "NO_HANDOFF_SIGNAL",
     "rules": [
-        {"signal": "clinical_triggered", "rule": "CLINICAL_RISK", "action": "HANDOFF", "reason": "Clinical guard fired."},
+        {
+            "signal": "clinical_triggered",
+            "rule": "CLINICAL_RISK",
+            "action": "HANDOFF",
+            "reason": "Clinical guard fired.",
+        },
     ],
 }
 _BUILTIN_PRIVACY_CONFIG = {
@@ -190,12 +199,17 @@ class PolicyEngine:
         """
         if clinical_result is not None and clinical_result.is_handoff:
             return PolicyDecision(
-                allowed=False, policy="clinical", rule="MEDICAL_DOSAGE",
+                allowed=False,
+                policy="clinical",
+                rule="MEDICAL_DOSAGE",
                 action=Action.HANDOFF,
                 reason="Clinical dosage/safety requests require human review.",
             )
         return PolicyDecision(
-            allowed=True, policy="clinical", rule="NO_CLINICAL_RISK", action=Action.ALLOW,
+            allowed=True,
+            policy="clinical",
+            rule="NO_CLINICAL_RISK",
+            action=Action.ALLOW,
             reason="No clinical safety trigger detected.",
         )
 
@@ -247,7 +261,10 @@ class PolicyEngine:
         """
         if not isinstance(action_name, str) or not action_name.strip():
             return PolicyDecision(
-                allowed=False, policy="tool", rule="INVALID_ACTION_NAME", action=Action.BLOCK,
+                allowed=False,
+                policy="tool",
+                rule="INVALID_ACTION_NAME",
+                action=Action.BLOCK,
                 reason="Action name must be a non-empty string.",
             )
 
@@ -258,8 +275,11 @@ class PolicyEngine:
                 # default to ALLOW/BLOCK based on `allowed`.
                 inferred_action = Action.ALLOW if decision.allowed else Action.BLOCK
                 return PolicyDecision(
-                    allowed=decision.allowed, policy="tool", rule=decision.rule,
-                    action=rule.get("action_result", inferred_action), reason=decision.reason,
+                    allowed=decision.allowed,
+                    policy="tool",
+                    rule=decision.rule,
+                    action=rule.get("action_result", inferred_action),
+                    reason=decision.reason,
                 )
 
         return PolicyDecision(
@@ -298,8 +318,10 @@ class PolicyEngine:
             if signal_name and signals.get(signal_name):
                 return PolicyDecision(
                     allowed=(rule.get("action", "HANDOFF") != "HANDOFF"),
-                    policy="handoff", rule=rule.get("rule", "UNNAMED_RULE"),
-                    action=rule.get("action", Action.HANDOFF), reason=rule.get("reason", ""),
+                    policy="handoff",
+                    rule=rule.get("rule", "UNNAMED_RULE"),
+                    action=rule.get("action", Action.HANDOFF),
+                    reason=rule.get("reason", ""),
                 )
 
         return PolicyDecision(
@@ -321,14 +343,20 @@ class PolicyEngine:
         """
         if not isinstance(field_name, str) or not field_name.strip():
             return PolicyDecision(
-                allowed=False, policy="privacy", rule="INVALID_FIELD_NAME", action=Action.BLOCK,
+                allowed=False,
+                policy="privacy",
+                rule="INVALID_FIELD_NAME",
+                action=Action.BLOCK,
                 reason="Field name must be a non-empty string.",
             )
 
         restricted = self._privacy.get("restricted_fields", {}).get(operation, [])
         if field_name in restricted:
             return PolicyDecision(
-                allowed=False, policy="privacy", rule="RESTRICTED_FIELD", action=Action.BLOCK,
+                allowed=False,
+                policy="privacy",
+                rule="RESTRICTED_FIELD",
+                action=Action.BLOCK,
                 reason=f"'{field_name}' is restricted for operation '{operation}'.",
             )
 
@@ -366,7 +394,10 @@ class PolicyEngine:
         type_values = [t.value if hasattr(t, "value") else str(t) for t in (pii_types or [])]
         if not type_values:
             return PolicyDecision(
-                allowed=True, policy="privacy", rule="NO_PII_DETECTED", action=Action.ALLOW,
+                allowed=True,
+                policy="privacy",
+                rule="NO_PII_DETECTED",
+                action=Action.ALLOW,
                 reason=f"No PII detected for context '{context}'.",
             )
 
@@ -383,12 +414,16 @@ class PolicyEngine:
             policy="privacy",
             rule=f"PII_{worst_type}_{context}" if worst_type else "NO_PII_DETECTED",
             action=worst_action,
-            reason=f"{worst_type} detected for context '{context}' -> {worst_action}." if worst_type else "No PII detected.",
+            reason=f"{worst_type} detected for context '{context}' -> {worst_action}."
+            if worst_type
+            else "No PII detected.",
         )
 
     # ── Authorization (Phase 7) ─────────────────────────────────────────────
 
-    def evaluate_authorization(self, identity, permission: str, resource_owner_user_id: Optional[str] = None) -> PolicyDecision:
+    def evaluate_authorization(
+        self, identity, permission: str, resource_owner_user_id: Optional[str] = None
+    ) -> PolicyDecision:
         """
         The single authoritative authorization decision (plan.md Step
         7.6): does `identity` (a trusted AuthContext — see
@@ -407,13 +442,19 @@ class PolicyEngine:
         """
         if identity is None or not getattr(identity, "authenticated", False):
             return PolicyDecision(
-                allowed=False, policy="authorization", rule="AUTHENTICATION_REQUIRED", action=Action.BLOCK,
+                allowed=False,
+                policy="authorization",
+                rule="AUTHENTICATION_REQUIRED",
+                action=Action.BLOCK,
                 reason="Request is not authenticated.",
             )
 
         if permission and not identity.has_permission(permission):
             return PolicyDecision(
-                allowed=False, policy="authorization", rule="INSUFFICIENT_PERMISSIONS", action=Action.BLOCK,
+                allowed=False,
+                policy="authorization",
+                rule="INSUFFICIENT_PERMISSIONS",
+                action=Action.BLOCK,
                 reason=f"Identity lacks permission '{permission}'.",
             )
 
@@ -423,12 +464,18 @@ class PolicyEngine:
             and not identity.has_permission("ADMIN_OPERATIONS")
         ):
             return PolicyDecision(
-                allowed=False, policy="authorization", rule="NOT_RESOURCE_OWNER", action=Action.BLOCK,
+                allowed=False,
+                policy="authorization",
+                rule="NOT_RESOURCE_OWNER",
+                action=Action.BLOCK,
                 reason="Identity does not own this resource.",
             )
 
         return PolicyDecision(
-            allowed=True, policy="authorization", rule="AUTHORIZED", action=Action.ALLOW,
+            allowed=True,
+            policy="authorization",
+            rule="AUTHORIZED",
+            action=Action.ALLOW,
             reason="Identity is authenticated, holds the required permission, and owns (or is exempt from owning) the resource.",
         )
 
@@ -451,14 +498,19 @@ class PolicyEngine:
         """
         if not isinstance(action_name, str) or not action_name.strip():
             return PolicyDecision(
-                allowed=False, policy="confirmation", rule="INVALID_ACTION_NAME", action=Action.BLOCK,
+                allowed=False,
+                policy="confirmation",
+                rule="INVALID_ACTION_NAME",
+                action=Action.BLOCK,
                 reason="Action name must be a non-empty string.",
             )
 
         entry = self._confirmation.get("actions", {}).get(action_name)
         if entry is None:
             requires_confirmation = bool(self._confirmation.get("default_requires_confirmation", True))
-            rule_name = "CONFIRMATION_DEFAULT_REQUIRED" if requires_confirmation else "CONFIRMATION_DEFAULT_NOT_REQUIRED"
+            rule_name = (
+                "CONFIRMATION_DEFAULT_REQUIRED" if requires_confirmation else "CONFIRMATION_DEFAULT_NOT_REQUIRED"
+            )
             reason = f"'{action_name}' has no explicit confirmation rule; defaulting to requires_confirmation={requires_confirmation}."
         else:
             requires_confirmation = bool(entry.get("requires_confirmation", True))
@@ -467,12 +519,16 @@ class PolicyEngine:
 
         if requires_confirmation and not bool(confirmed):
             return PolicyDecision(
-                allowed=False, policy="confirmation", rule=rule_name, action=Action.REQUEST_CONFIRMATION,
+                allowed=False,
+                policy="confirmation",
+                rule=rule_name,
+                action=Action.REQUEST_CONFIRMATION,
                 reason=reason or "Explicit user confirmation is required before executing this action.",
             )
 
         return PolicyDecision(
-            allowed=True, policy="confirmation",
+            allowed=True,
+            policy="confirmation",
             rule=rule_name if requires_confirmation else "NO_CONFIRMATION_REQUIRED",
             action=Action.ALLOW,
             reason="Confirmation satisfied or not required." if requires_confirmation else reason,
@@ -510,7 +566,10 @@ class PolicyEngine:
         """
         if not decisions:
             return PolicyDecision(
-                allowed=True, policy="generation", rule="NO_POLICY_EVALUATED", action=Action.ALLOW,
+                allowed=True,
+                policy="generation",
+                rule="NO_POLICY_EVALUATED",
+                action=Action.ALLOW,
                 reason="No policy categories were evaluated; defaulting to allow.",
             )
 

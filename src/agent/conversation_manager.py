@@ -56,12 +56,10 @@ SessionManager.get_session() itself — see session_manager.py).
 """
 
 import contextlib
-import json
-import logging
+import os
 import re
 import sys
 import threading
-import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -72,18 +70,16 @@ from opentelemetry import trace
 _INFERENCE_DIR = str(Path(__file__).resolve().parents[1] / "inference")
 if _INFERENCE_DIR not in sys.path:
     sys.path.insert(0, _INFERENCE_DIR)
-from handoff_detector import HandoffDetector, HandoffMatch  # noqa: E402
-
 from action_models import ANONYMOUS_CONTEXT, ActionProposal, AuthContext, ToolRequest  # noqa: E402
+from handoff_detector import HandoffDetector, HandoffMatch  # noqa: E402
 from intent_engine import IntentEngine, IntentResult, Route, RoutingDecision  # noqa: E402
 from memory_manager import MemoryManager  # noqa: E402
 from policy_engine import Action, PolicyDecision, PolicyEngine  # noqa: E402
-from session_manager import SessionManager  # noqa: E402
-from session_models import SessionStatus  # noqa: E402
 from privacy_logging import get_privacy_aware_logger, log_event  # noqa: E402
 from privacy_service import PrivacyService  # noqa: E402
+from session_manager import SessionManager  # noqa: E402
 from tool_orchestrator import ToolOrchestrator, ToolValidationError  # noqa: E402
-from tracing import get_tracer, SpanAttributes  # noqa: E402  (Phase 14)
+from tracing import SpanAttributes, get_tracer  # noqa: E402  (Phase 14)
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.yaml"
 _CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "clinical_triggers.yaml"
@@ -143,25 +139,19 @@ class ConversationManager:
     # constants so tests can assert against them without hardcoding strings
     # in two places.
     CLINICAL_HANDOFF_RESPONSE = (
-        "That's a question our pharmacist needs to answer directly "
-        "for your safety — let me connect you with one now."
+        "That's a question our pharmacist needs to answer directly for your safety — let me connect you with one now."
     )
     EMPTY_INPUT_RESPONSE = "I didn't catch that — could you say that again?"
-    LLM_FAILURE_RESPONSE = (
-        "I'm sorry — I'm having trouble responding right now. "
-        "Let me connect you with a human agent."
-    )
+    LLM_FAILURE_RESPONSE = "I'm sorry — I'm having trouble responding right now. Let me connect you with a human agent."
     # Phase 2: pre-generation routes that don't reach the LLM at all.
     CLARIFICATION_RESPONSE = (
-        "I want to make sure I connect you with the right help — "
-        "could you tell me a bit more about what you need?"
+        "I want to make sure I connect you with the right help — could you tell me a bit more about what you need?"
     )
     # Phase 4: templated (never LLM-generated) responses for tool-backed
     # routes — see _handle_tool_action().
     TOOL_CONFIRMATION_RESPONSE = "Before I do that, can you confirm you'd like me to proceed?"
     TOOL_UNAVAILABLE_RESPONSE = (
-        "I'm not able to complete that action for you right now — "
-        "let me connect you with a human agent."
+        "I'm not able to complete that action for you right now — let me connect you with a human agent."
     )
     TOOL_FAILURE_RESPONSE = "I wasn't able to complete that action. Let me connect you with a human agent."
 
@@ -185,10 +175,12 @@ class ConversationManager:
     # confirmation — never the LLM's interpretation (see module docstring).
     _AFFIRMATIVE_PATTERN = re.compile(
         r"^\s*(yes|yeah|yep|yup|confirm(ed)?|go ahead|do it|proceed|"
-        r"please (do|proceed|confirm)|sounds good|that'?s right)\b", re.IGNORECASE,
+        r"please (do|proceed|confirm)|sounds good|that'?s right)\b",
+        re.IGNORECASE,
     )
     _NEGATIVE_PATTERN = re.compile(
-        r"^\s*(no|nope|nah|never\s*mind|cancel that|don'?t|stop|wait)\b", re.IGNORECASE,
+        r"^\s*(no|nope|nah|never\s*mind|cancel that|don'?t|stop|wait)\b",
+        re.IGNORECASE,
     )
 
     def __init__(
@@ -420,6 +412,7 @@ class ConversationManager:
         """
         if request_id is None and self.audit_logger is not None:
             from observability_models import new_request_id
+
             request_id = new_request_id()
 
         # Phase 14: root span for the whole turn. Every span created by
@@ -437,12 +430,17 @@ class ConversationManager:
                 pass
             try:
                 yield from self._handle_turn_body(
-                    user_input, history=history, auth=auth, confirmed=confirmed,
-                    session_id=session_id, request_id=request_id,
+                    user_input,
+                    history=history,
+                    auth=auth,
+                    confirmed=confirmed,
+                    session_id=session_id,
+                    request_id=request_id,
                 )
             except Exception as exc:
                 try:
                     from opentelemetry.trace import StatusCode
+
                     _turn_span.set_status(StatusCode.ERROR, type(exc).__name__)
                     _turn_span.record_exception(exc, attributes={"exception.type": type(exc).__name__})
                 except Exception:
@@ -471,8 +469,12 @@ class ConversationManager:
         if not isinstance(user_input, str) or not user_input.strip():
             yield self.EMPTY_INPUT_RESPONSE
             yield self._final(
-                self.EMPTY_INPUT_RESPONSE, is_handoff=False, confidence=0.0, latency_ms=0.0,
-                retrieved_chunks=[], clinical_guard_triggered=False,
+                self.EMPTY_INPUT_RESPONSE,
+                is_handoff=False,
+                confidence=0.0,
+                latency_ms=0.0,
+                retrieved_chunks=[],
+                clinical_guard_triggered=False,
             )
             return
 
@@ -509,7 +511,10 @@ class ConversationManager:
                     clinical_policy = self.policy_engine.evaluate_clinical(clinical_match)
                 except Exception:
                     clinical_policy = PolicyDecision(
-                        allowed=False, policy="clinical", rule="POLICY_ENGINE_UNAVAILABLE", action=Action.HANDOFF,
+                        allowed=False,
+                        policy="clinical",
+                        rule="POLICY_ENGINE_UNAVAILABLE",
+                        action=Action.HANDOFF,
                         reason="Clinical policy evaluation failed internally -- failing closed.",
                     )
                 try:
@@ -519,9 +524,14 @@ class ConversationManager:
             if not clinical_policy.allowed:
                 if self.audit_logger is not None:
                     from observability_models import EventType
+
                     self.audit_logger.record(
-                        EventType.SAFETY_BLOCK, outcome="blocked", actor=turn_actor,
-                        request_id=request_id, policy=clinical_policy.policy, reason=clinical_policy.reason,
+                        EventType.SAFETY_BLOCK,
+                        outcome="blocked",
+                        actor=turn_actor,
+                        request_id=request_id,
+                        policy=clinical_policy.policy,
+                        reason=clinical_policy.reason,
                         metadata={"confidence": clinical_match.confidence},
                     )
                 if self.metrics is not None:
@@ -529,9 +539,12 @@ class ConversationManager:
                     self.metrics.increment("handoffs_total")
                 yield self.CLINICAL_HANDOFF_RESPONSE
                 yield self._final(
-                    self.CLINICAL_HANDOFF_RESPONSE, is_handoff=True,
-                    confidence=clinical_match.confidence, latency_ms=0.0,
-                    retrieved_chunks=[], clinical_guard_triggered=True,
+                    self.CLINICAL_HANDOFF_RESPONSE,
+                    is_handoff=True,
+                    confidence=clinical_match.confidence,
+                    latency_ms=0.0,
+                    retrieved_chunks=[],
+                    clinical_guard_triggered=True,
                     policy=clinical_policy.to_dict(),
                 )
                 return
@@ -566,19 +579,31 @@ class ConversationManager:
                     reply, tool_metadata = self._execute_pending_action(session, auth)
                     yield reply
                     yield self._final(
-                        reply, is_handoff=False, confidence=0.0, latency_ms=0.0,
-                        retrieved_chunks=[], clinical_guard_triggered=False, tool=tool_metadata,
+                        reply,
+                        is_handoff=False,
+                        confidence=0.0,
+                        latency_ms=0.0,
+                        retrieved_chunks=[],
+                        clinical_guard_triggered=False,
+                        tool=tool_metadata,
                     )
                     return
                 if self._NEGATIVE_PATTERN.match(user_input):
                     self.session_manager.update_session(
-                        session_id, workflow_state=None, pending_action=None, pending_parameters={},
+                        session_id,
+                        workflow_state=None,
+                        pending_action=None,
+                        pending_parameters={},
                     )
                     cancelled_reply = "No problem — I won't go ahead with that."
                     yield cancelled_reply
                     yield self._final(
-                        cancelled_reply, is_handoff=False, confidence=0.0, latency_ms=0.0,
-                        retrieved_chunks=[], clinical_guard_triggered=False,
+                        cancelled_reply,
+                        is_handoff=False,
+                        confidence=0.0,
+                        latency_ms=0.0,
+                        retrieved_chunks=[],
+                        clinical_guard_triggered=False,
                     )
                     return
                 # Ambiguous reply while a confirmation is pending — fall
@@ -599,11 +624,10 @@ class ConversationManager:
                     if pin == "1234":
                         new_metadata = dict(session.metadata)
                         new_metadata["authenticated_caller"] = True
-                        self.session_manager.update_session(
-                            session_id, metadata=new_metadata
-                        )
+                        self.session_manager.update_session(session_id, metadata=new_metadata)
                         # Re-execute with newly authenticated identity
                         from action_models import AuthContext
+
                         new_auth = AuthContext(
                             user_id=session.user_id or "telephony_caller",
                             authenticated=True,
@@ -612,27 +636,43 @@ class ConversationManager:
                         reply, tool_metadata = self._execute_pending_authentication(session, new_auth)
                         yield reply
                         yield self._final(
-                            reply, is_handoff=False, confidence=0.0, latency_ms=0.0,
-                            retrieved_chunks=[], clinical_guard_triggered=False, tool=tool_metadata,
+                            reply,
+                            is_handoff=False,
+                            confidence=0.0,
+                            latency_ms=0.0,
+                            retrieved_chunks=[],
+                            clinical_guard_triggered=False,
+                            tool=tool_metadata,
                         )
                         return
                     else:
                         reply = "That PIN doesn't seem to match. Let me connect you with a human agent."
                         self.session_manager.update_session(
-                            session_id, workflow_state=None, pending_action=None, pending_parameters={},
+                            session_id,
+                            workflow_state=None,
+                            pending_action=None,
+                            pending_parameters={},
                         )
                         yield reply
                         yield self._final(
-                            reply, is_handoff=True, confidence=1.0, latency_ms=0.0,
-                            retrieved_chunks=[], clinical_guard_triggered=False,
+                            reply,
+                            is_handoff=True,
+                            confidence=1.0,
+                            latency_ms=0.0,
+                            retrieved_chunks=[],
+                            clinical_guard_triggered=False,
                         )
                         return
                 else:
                     reply = "I didn't hear a 4-digit PIN. Could you please say your PIN?"
                     yield reply
                     yield self._final(
-                        reply, is_handoff=False, confidence=0.0, latency_ms=0.0,
-                        retrieved_chunks=[], clinical_guard_triggered=False,
+                        reply,
+                        is_handoff=False,
+                        confidence=0.0,
+                        latency_ms=0.0,
+                        retrieved_chunks=[],
+                        clinical_guard_triggered=False,
                     )
                     return
 
@@ -688,28 +728,46 @@ class ConversationManager:
                 generation_policy = self.policy_engine.evaluate_generation(routing)
             except Exception:
                 generation_policy = PolicyDecision(
-                    allowed=False, policy="generation", rule="POLICY_ENGINE_UNAVAILABLE", action=Action.CLARIFY,
+                    allowed=False,
+                    policy="generation",
+                    rule="POLICY_ENGINE_UNAVAILABLE",
+                    action=Action.CLARIFY,
                     reason="Generation policy evaluation failed internally -- failing closed to clarification.",
                 )
             try:
-                _span.set_attribute(SpanAttributes.POLICY_OUTCOME, generation_policy.action.value if hasattr(generation_policy.action, "value") else str(generation_policy.action))
+                _span.set_attribute(
+                    SpanAttributes.POLICY_OUTCOME,
+                    generation_policy.action.value
+                    if hasattr(generation_policy.action, "value")
+                    else str(generation_policy.action),
+                )
                 _span.set_attribute(SpanAttributes.POLICY_NAME, generation_policy.policy or "")
             except Exception:
                 pass
         if generation_policy.action == Action.CLARIFY:
             if self.audit_logger is not None:
                 from observability_models import EventType
+
                 self.audit_logger.record(
-                    EventType.POLICY_DENY, outcome="denied", actor=turn_actor,
-                    request_id=request_id, policy=generation_policy.policy, reason=generation_policy.reason,
+                    EventType.POLICY_DENY,
+                    outcome="denied",
+                    actor=turn_actor,
+                    request_id=request_id,
+                    policy=generation_policy.policy,
+                    reason=generation_policy.reason,
                     metadata={"intent": routing.intent},
                 )
             if self.metrics is not None:
                 self.metrics.increment("policy_denials_total")
             yield self.CLARIFICATION_RESPONSE
             yield self._final(
-                self.CLARIFICATION_RESPONSE, is_handoff=False, confidence=0.0, latency_ms=0.0,
-                retrieved_chunks=[], clinical_guard_triggered=False, intent=routing.to_dict(),
+                self.CLARIFICATION_RESPONSE,
+                is_handoff=False,
+                confidence=0.0,
+                latency_ms=0.0,
+                retrieved_chunks=[],
+                clinical_guard_triggered=False,
+                intent=routing.to_dict(),
                 policy=generation_policy.to_dict(),
             )
             return
@@ -731,8 +789,13 @@ class ConversationManager:
                 reply, tool_metadata = self._handle_tool_action(action_name, user_input, auth, confirmed, session)
                 yield reply
                 yield self._final(
-                    reply, is_handoff=False, confidence=0.0, latency_ms=0.0,
-                    retrieved_chunks=[], clinical_guard_triggered=False, intent=routing.to_dict(),
+                    reply,
+                    is_handoff=False,
+                    confidence=0.0,
+                    latency_ms=0.0,
+                    retrieved_chunks=[],
+                    clinical_guard_triggered=False,
+                    intent=routing.to_dict(),
                     tool=tool_metadata,
                 )
                 return
@@ -757,8 +820,7 @@ class ConversationManager:
                     "content": (
                         "Reference information that may help answer the "
                         "customer's question, if relevant. Use it naturally "
-                        "without mentioning that you looked anything up:\n"
-                        + context_lines
+                        "without mentioning that you looked anything up:\n" + context_lines
                     ),
                 }
 
@@ -775,7 +837,9 @@ class ConversationManager:
         if context_message is not None:
             messages.append(context_message)
         if self.memory_manager is not None:
-            memory_user_id = (auth.user_id if auth is not None else None) or (session.user_id if session is not None else None)
+            memory_user_id = (auth.user_id if auth is not None else None) or (
+                session.user_id if session is not None else None
+            )
             if memory_user_id:
                 memory_records = self.memory_manager.get_allowed_context(memory_user_id)
                 # Phase 6 (only when configured): a second, content-level
@@ -798,10 +862,13 @@ class ConversationManager:
                             value = self.privacy_service.redact(value, list(pii_decision.findings))
                     lines.append(f"- {r.key}: {value}")
                 if lines:
-                    messages.append({
-                        "role": "system",
-                        "content": "Known preferences for this customer (not from the knowledge base):\n" + "\n".join(lines),
-                    })
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": "Known preferences for this customer (not from the knowledge base):\n"
+                            + "\n".join(lines),
+                        }
+                    )
         messages += normalized_history + [{"role": "user", "content": user_input}]
 
         # 5. LLM inference — a generation failure degrades to a fixed
@@ -838,24 +905,37 @@ class ConversationManager:
                 if self.llm_circuit_breaker is not None and not self.llm_circuit_breaker.allow_request():
                     if self.audit_logger is not None:
                         from observability_models import EventType
+
                         self.audit_logger.record(
-                            EventType.DEPENDENCY_FAILURE, outcome="denied", actor=turn_actor, action="llm_generate",
-                            request_id=request_id, reason="Circuit breaker open for LLM generation.",
+                            EventType.DEPENDENCY_FAILURE,
+                            outcome="denied",
+                            actor=turn_actor,
+                            action="llm_generate",
+                            request_id=request_id,
+                            reason="Circuit breaker open for LLM generation.",
                         )
                     if self.metrics is not None:
                         self.metrics.increment("dependency_failures_total")
                         self.metrics.increment("requests_failed")
                     try:
-                        _llm_span.set_attribute(SpanAttributes.CIRCUIT_BREAKER_STATE, str(self.llm_circuit_breaker.state))
+                        _llm_span.set_attribute(
+                            SpanAttributes.CIRCUIT_BREAKER_STATE, str(self.llm_circuit_breaker.state)
+                        )
                         from opentelemetry.trace import StatusCode
+
                         _llm_span.set_status(StatusCode.ERROR, "DependencyUnavailableError")
                     except Exception:
                         pass
                     yield self.LLM_FAILURE_RESPONSE
                     yield self._final(
-                        self.LLM_FAILURE_RESPONSE, is_handoff=True, confidence=1.0, latency_ms=0.0,
+                        self.LLM_FAILURE_RESPONSE,
+                        is_handoff=True,
+                        confidence=1.0,
+                        latency_ms=0.0,
                         retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
-                        clinical_guard_triggered=False, degraded=True, error="llm_generation_failed",
+                        clinical_guard_triggered=False,
+                        degraded=True,
+                        error="llm_generation_failed",
                     )
                     return
 
@@ -876,9 +956,14 @@ class ConversationManager:
                     except Exception as _llm_exc:
                         if self.audit_logger is not None:
                             from observability_models import EventType
+
                             self.audit_logger.record(
-                                EventType.DEPENDENCY_FAILURE, outcome="failed", actor=turn_actor, action="llm_generate",
-                                request_id=request_id, reason="LLM generation raised an exception.",
+                                EventType.DEPENDENCY_FAILURE,
+                                outcome="failed",
+                                actor=turn_actor,
+                                action="llm_generate",
+                                request_id=request_id,
+                                reason="LLM generation raised an exception.",
                             )
                         if self.metrics is not None:
                             self.metrics.increment("dependency_failures_total")
@@ -893,15 +978,23 @@ class ConversationManager:
                                 self.metrics.increment("requests_failed")
                             try:
                                 from opentelemetry.trace import StatusCode
+
                                 _llm_span.set_status(StatusCode.ERROR, type(_llm_exc).__name__)
-                                _llm_span.record_exception(_llm_exc, attributes={"exception.type": type(_llm_exc).__name__})
+                                _llm_span.record_exception(
+                                    _llm_exc, attributes={"exception.type": type(_llm_exc).__name__}
+                                )
                             except Exception:
                                 pass
                             yield self.LLM_FAILURE_RESPONSE
                             yield self._final(
-                                self.LLM_FAILURE_RESPONSE, is_handoff=True, confidence=1.0, latency_ms=0.0,
+                                self.LLM_FAILURE_RESPONSE,
+                                is_handoff=True,
+                                confidence=1.0,
+                                latency_ms=0.0,
                                 retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
-                                clinical_guard_triggered=False, degraded=True, error="llm_generation_failed",
+                                clinical_guard_triggered=False,
+                                degraded=True,
+                                error="llm_generation_failed",
                             )
                             return
 
@@ -912,23 +1005,36 @@ class ConversationManager:
                             try:
                                 _llm_span.set_attribute(SpanAttributes.RETRY_ATTEMPT, attempt)
                                 from opentelemetry.trace import StatusCode
+
                                 _llm_span.set_status(StatusCode.ERROR, type(_llm_exc).__name__)
-                                _llm_span.record_exception(_llm_exc, attributes={"exception.type": type(_llm_exc).__name__})
+                                _llm_span.record_exception(
+                                    _llm_exc, attributes={"exception.type": type(_llm_exc).__name__}
+                                )
                             except Exception:
                                 pass
                             yield self.LLM_FAILURE_RESPONSE
                             yield self._final(
-                                self.LLM_FAILURE_RESPONSE, is_handoff=True, confidence=1.0, latency_ms=0.0,
+                                self.LLM_FAILURE_RESPONSE,
+                                is_handoff=True,
+                                confidence=1.0,
+                                latency_ms=0.0,
                                 retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
-                                clinical_guard_triggered=False, degraded=True, error="llm_generation_failed",
+                                clinical_guard_triggered=False,
+                                degraded=True,
+                                error="llm_generation_failed",
                             )
                             return
 
                         if self.audit_logger is not None:
                             from observability_models import EventType
+
                             self.audit_logger.record(
-                                EventType.RETRY_ATTEMPT, outcome="retrying", actor=turn_actor, action="llm_generate",
-                                request_id=request_id, metadata={"attempt": attempt + 1, "max_attempts": decision.max_attempts},
+                                EventType.RETRY_ATTEMPT,
+                                outcome="retrying",
+                                actor=turn_actor,
+                                action="llm_generate",
+                                request_id=request_id,
+                                metadata={"attempt": attempt + 1, "max_attempts": decision.max_attempts},
                             )
                         if self.metrics is not None:
                             self.metrics.increment("retries_total")
@@ -975,27 +1081,38 @@ class ConversationManager:
         # the turn's actual outcome.
         try:
             handoff_policy = self.policy_engine.evaluate_handoff(
-                intent_routing=routing, post_generation_handoff=handoff_match,
+                intent_routing=routing,
+                post_generation_handoff=handoff_match,
             )
         except Exception:
             handoff_policy = PolicyDecision(
-                allowed=not handoff_match.is_handoff, policy="handoff", rule="POLICY_ENGINE_UNAVAILABLE",
+                allowed=not handoff_match.is_handoff,
+                policy="handoff",
+                rule="POLICY_ENGINE_UNAVAILABLE",
                 action=Action.HANDOFF if handoff_match.is_handoff else Action.ALLOW,
                 reason="Handoff policy evaluation failed internally.",
             )
 
         if self.audit_logger is not None:
             from observability_models import EventType
+
             if handoff_match.is_handoff:
                 self.audit_logger.record(
-                    EventType.SAFETY_HANDOFF, outcome="handoff", actor=turn_actor,
-                    request_id=request_id, policy=handoff_policy.policy, reason=handoff_policy.reason,
+                    EventType.SAFETY_HANDOFF,
+                    outcome="handoff",
+                    actor=turn_actor,
+                    request_id=request_id,
+                    policy=handoff_policy.policy,
+                    reason=handoff_policy.reason,
                     metadata={"confidence": handoff_match.confidence},
                 )
             else:
                 self.audit_logger.record(
-                    EventType.POLICY_ALLOW, outcome="allowed", actor=turn_actor,
-                    request_id=request_id, policy=handoff_policy.policy,
+                    EventType.POLICY_ALLOW,
+                    outcome="allowed",
+                    actor=turn_actor,
+                    request_id=request_id,
+                    policy=handoff_policy.policy,
                 )
         if self.metrics is not None:
             self.metrics.observe("generation_latency_ms", latency_ms)
@@ -1019,10 +1136,14 @@ class ConversationManager:
 
         # 7 + 8. Response metadata.
         yield self._final(
-            response_text, is_handoff=handoff_match.is_handoff,
-            confidence=handoff_match.confidence, latency_ms=latency_ms,
+            response_text,
+            is_handoff=handoff_match.is_handoff,
+            confidence=handoff_match.confidence,
+            latency_ms=latency_ms,
             retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
-            clinical_guard_triggered=False, degraded=degraded, intent=routing.to_dict(),
+            clinical_guard_triggered=False,
+            degraded=degraded,
+            intent=routing.to_dict(),
             policy=handoff_policy.to_dict(),
         )
 
@@ -1070,7 +1191,11 @@ class ConversationManager:
         return "That action completed successfully."
 
     def _handle_tool_action(
-        self, action_name: str, user_input: str, auth: Optional[AuthContext], confirmed: bool,
+        self,
+        action_name: str,
+        user_input: str,
+        auth: Optional[AuthContext],
+        confirmed: bool,
         session=None,
     ) -> tuple[str, dict]:
         """
@@ -1093,7 +1218,8 @@ class ConversationManager:
         except ToolValidationError:
             spec = self.tool_orchestrator.get_action_spec(action_name)
             return self._missing_info_response(action_name, spec), {
-                "status": "missing_information", "action": action_name,
+                "status": "missing_information",
+                "action": action_name,
             }
 
         # Re-issue with the caller's trusted confirmation state -- never
@@ -1112,8 +1238,10 @@ class ConversationManager:
         if action_name == "BOOK_APPOINTMENT" and auth is not None:
             trusted_params["owner_user_id"] = auth.user_id
         trusted_request = ToolRequest(
-            action=tool_request.action, params=trusted_params,
-            session_id=tool_request.session_id, confirmed=bool(confirmed),
+            action=tool_request.action,
+            params=trusted_params,
+            session_id=tool_request.session_id,
+            confirmed=bool(confirmed),
             request_id=tool_request.request_id,
         )
         result = self.tool_orchestrator.invoke(trusted_request, auth=auth or ANONYMOUS_CONTEXT)
@@ -1121,17 +1249,24 @@ class ConversationManager:
         if session is not None and self.session_manager is not None:
             if result.status == "confirmation_required":
                 self.session_manager.update_session(
-                    session.session_id, workflow_state="AWAITING_CONFIRMATION",
-                    pending_action=action_name, pending_parameters=tool_request.params,
+                    session.session_id,
+                    workflow_state="AWAITING_CONFIRMATION",
+                    pending_action=action_name,
+                    pending_parameters=tool_request.params,
                 )
             elif result.error == "AUTHENTICATION_REQUIRED":
                 self.session_manager.update_session(
-                    session.session_id, workflow_state="AWAITING_AUTHENTICATION",
-                    pending_action=action_name, pending_parameters=tool_request.params,
+                    session.session_id,
+                    workflow_state="AWAITING_AUTHENTICATION",
+                    pending_action=action_name,
+                    pending_parameters=tool_request.params,
                 )
             else:
                 self.session_manager.update_session(
-                    session.session_id, workflow_state=None, pending_action=None, pending_parameters={},
+                    session.session_id,
+                    workflow_state=None,
+                    pending_action=None,
+                    pending_parameters={},
                 )
 
         if result.status == "confirmation_required":
@@ -1177,7 +1312,10 @@ class ConversationManager:
 
         if result.success:
             return self._tool_success_response(action_name, result.result), result.to_dict()
-        if result.status in ("policy_denied",) or result.error in ("AUTHENTICATION_REQUIRED", "INSUFFICIENT_PERMISSIONS"):
+        if result.status in ("policy_denied",) or result.error in (
+            "AUTHENTICATION_REQUIRED",
+            "INSUFFICIENT_PERMISSIONS",
+        ):
             return self.TOOL_UNAVAILABLE_RESPONSE, result.to_dict()
         return self.TOOL_FAILURE_RESPONSE, result.to_dict()
 
@@ -1191,7 +1329,7 @@ class ConversationManager:
             return self.TOOL_UNAVAILABLE_RESPONSE, {"status": "already_consumed"}
 
         action_name, params = consumed
-        
+
         # When a user authenticates, they shouldn't automatically confirm the action.
         # But wait, if they were asked to authenticate to do an action, do we ask for confirmation immediately?
         # A tool might still require confirmation. We invoke it with confirmed=False first,
@@ -1202,17 +1340,25 @@ class ConversationManager:
         if session is not None and self.session_manager is not None:
             if result.status == "confirmation_required":
                 self.session_manager.update_session(
-                    session.session_id, workflow_state="AWAITING_CONFIRMATION",
-                    pending_action=action_name, pending_parameters=trusted_request.params,
+                    session.session_id,
+                    workflow_state="AWAITING_CONFIRMATION",
+                    pending_action=action_name,
+                    pending_parameters=trusted_request.params,
                 )
             else:
                 self.session_manager.update_session(
-                    session.session_id, workflow_state=None, pending_action=None, pending_parameters={},
+                    session.session_id,
+                    workflow_state=None,
+                    pending_action=None,
+                    pending_parameters={},
                 )
 
         if result.status == "confirmation_required":
             return self.TOOL_CONFIRMATION_RESPONSE, result.to_dict()
-        if result.status in ("policy_denied",) or result.error in ("AUTHENTICATION_REQUIRED", "INSUFFICIENT_PERMISSIONS"):
+        if result.status in ("policy_denied",) or result.error in (
+            "AUTHENTICATION_REQUIRED",
+            "INSUFFICIENT_PERMISSIONS",
+        ):
             return self.TOOL_UNAVAILABLE_RESPONSE, result.to_dict()
         if result.success:
             return self._tool_success_response(action_name, result.result), result.to_dict()
@@ -1220,7 +1366,9 @@ class ConversationManager:
 
     # ── Reliability (Phase 10) ──────────────────────────────────────────────
 
-    def _retrieve_with_reliability(self, user_input: str, actor: Optional[str], request_id: Optional[str]) -> tuple[list, bool]:
+    def _retrieve_with_reliability(
+        self, user_input: str, actor: Optional[str], request_id: Optional[str]
+    ) -> tuple[list, bool]:
         """
         Returns (retrieved_chunks, degraded). Retrieval is always
         read-only, so a bounded retry is always safe -- this never
@@ -1235,6 +1383,7 @@ class ConversationManager:
         # is unchanged from pre-Phase-14 behavior, this only annotates the
         # span each exit path already takes.
         with _traced("conversation.rag_retrieve") as _span:
+
             def _record(chunks_len: int, degraded: bool, retry_attempt: int = 0) -> None:
                 try:
                     _span.set_attribute(SpanAttributes.RAG_CHUNKS_RETRIEVED, chunks_len)
@@ -1249,9 +1398,14 @@ class ConversationManager:
             if self.rag_circuit_breaker is not None and not self.rag_circuit_breaker.allow_request():
                 if self.audit_logger is not None:
                     from observability_models import EventType
+
                     self.audit_logger.record(
-                        EventType.DEPENDENCY_FAILURE, outcome="denied", actor=actor, action="rag_retrieve",
-                        request_id=request_id, reason="Circuit breaker open for RAG retrieval.",
+                        EventType.DEPENDENCY_FAILURE,
+                        outcome="denied",
+                        actor=actor,
+                        action="rag_retrieve",
+                        request_id=request_id,
+                        reason="Circuit breaker open for RAG retrieval.",
                     )
                 if self.metrics is not None:
                     self.metrics.increment("dependency_failures_total")
@@ -1265,9 +1419,14 @@ class ConversationManager:
                 except Exception:
                     if self.audit_logger is not None:
                         from observability_models import EventType
+
                         self.audit_logger.record(
-                            EventType.DEPENDENCY_FAILURE, outcome="failed", actor=actor, action="rag_retrieve",
-                            request_id=request_id, reason="RAG retrieval raised an exception.",
+                            EventType.DEPENDENCY_FAILURE,
+                            outcome="failed",
+                            actor=actor,
+                            action="rag_retrieve",
+                            request_id=request_id,
+                            reason="RAG retrieval raised an exception.",
                         )
                     if self.metrics is not None:
                         self.metrics.increment("dependency_failures_total")
@@ -1279,9 +1438,14 @@ class ConversationManager:
                         return [], True
                     if self.audit_logger is not None:
                         from observability_models import EventType
+
                         self.audit_logger.record(
-                            EventType.RETRY_ATTEMPT, outcome="retrying", actor=actor, action="rag_retrieve",
-                            request_id=request_id, metadata={"attempt": attempt + 1, "max_attempts": decision.max_attempts},
+                            EventType.RETRY_ATTEMPT,
+                            outcome="retrying",
+                            actor=actor,
+                            action="rag_retrieve",
+                            request_id=request_id,
+                            metadata={"attempt": attempt + 1, "max_attempts": decision.max_attempts},
                         )
                     if self.metrics is not None:
                         self.metrics.increment("retries_total")
@@ -1312,11 +1476,7 @@ class ConversationManager:
         except TypeError:
             return []
         for turn in iterator:
-            if (
-                isinstance(turn, dict)
-                and isinstance(turn.get("role"), str)
-                and isinstance(turn.get("content"), str)
-            ):
+            if isinstance(turn, dict) and isinstance(turn.get("role"), str) and isinstance(turn.get("content"), str):
                 normalized.append({"role": turn["role"], "content": turn["content"]})
         return normalized
 
@@ -1351,6 +1511,7 @@ class ConversationManager:
 
 
 # ── Factory ──────────────────────────────────────────────────────────────────
+
 
 def _load_rag_config() -> dict:
     if not _CONFIG_PATH.exists():
@@ -1496,9 +1657,11 @@ def build_conversation_manager(
         and (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GEMINI_API_KEY"))
     ):
         from llm_provider import build_llm_provider
+
         llm_service = build_llm_provider(audit_logger=audit_logger, metrics=metrics)
     else:
         from llm_service import LLMService  # noqa: E402
+
         llm_service = LLMService(
             base_model_name=base_model_name,
             adapter_path=adapter_path,
@@ -1559,13 +1722,16 @@ def build_conversation_manager(
     tool_retry_policy = tool_circuit_breaker = None
     max_concurrent_generations = 1
     if reliability_enabled:
-        from reliability import CircuitBreaker  # noqa: E402
-        from reliability import RetryPolicy  # noqa: E402
+        from reliability import (
+            CircuitBreaker,  # noqa: E402
+            RetryPolicy,  # noqa: E402
+        )
         from reliability_config import load_reliability_config  # noqa: E402
 
         rel = load_reliability_config()
         rag_retry_policy = RetryPolicy(
-            max_attempts=rel.rag.max_retries + 1, base_delay_seconds=rel.rag.base_delay_seconds,
+            max_attempts=rel.rag.max_retries + 1,
+            base_delay_seconds=rel.rag.base_delay_seconds,
             max_delay_seconds=rel.rag.max_delay_seconds,
         )
         rag_circuit_breaker = CircuitBreaker(
@@ -1573,7 +1739,8 @@ def build_conversation_manager(
             recovery_timeout_seconds=rel.rag.circuit_recovery_timeout_seconds,
         )
         llm_retry_policy = RetryPolicy(
-            max_attempts=rel.llm.max_retries + 1, base_delay_seconds=rel.llm.base_delay_seconds,
+            max_attempts=rel.llm.max_retries + 1,
+            base_delay_seconds=rel.llm.base_delay_seconds,
             max_delay_seconds=rel.llm.max_delay_seconds,
         )
         llm_circuit_breaker = CircuitBreaker(
@@ -1581,7 +1748,8 @@ def build_conversation_manager(
             recovery_timeout_seconds=rel.llm.circuit_recovery_timeout_seconds,
         )
         tool_retry_policy = RetryPolicy(
-            max_attempts=rel.tools.max_retries + 1, base_delay_seconds=rel.tools.base_delay_seconds,
+            max_attempts=rel.tools.max_retries + 1,
+            base_delay_seconds=rel.tools.base_delay_seconds,
             max_delay_seconds=rel.tools.max_delay_seconds,
         )
         tool_circuit_breaker = CircuitBreaker(
@@ -1597,9 +1765,14 @@ def build_conversation_manager(
         from mock_tools import build_default_tool_registry  # noqa: E402
 
         tool_orchestrator = ToolOrchestrator(
-            build_default_tool_registry(), policy_engine, privacy_service=privacy_service,
-            audit_logger=audit_logger, security_detector=security_detector,
-            retry_policy=tool_retry_policy, circuit_breaker=tool_circuit_breaker, metrics=metrics,
+            build_default_tool_registry(),
+            policy_engine,
+            privacy_service=privacy_service,
+            audit_logger=audit_logger,
+            security_detector=security_detector,
+            retry_policy=tool_retry_policy,
+            circuit_breaker=tool_circuit_breaker,
+            metrics=metrics,
             idempotency_repository=persistence.idempotency,
         )
 
@@ -1609,14 +1782,19 @@ def build_conversation_manager(
     # for every existing caller (src/api/server.py doesn't pass one yet).
     session_manager = (
         SessionManager(repository=persistence.session, audit_logger=audit_logger, security_detector=security_detector)
-        if session_enabled else None
+        if session_enabled
+        else None
     )
     memory_manager = (
         MemoryManager(
-            policy_engine, repository=persistence.memory, privacy_service=privacy_service,
-            audit_logger=audit_logger, security_detector=security_detector,
+            policy_engine,
+            repository=persistence.memory,
+            privacy_service=privacy_service,
+            audit_logger=audit_logger,
+            security_detector=security_detector,
         )
-        if memory_enabled else None
+        if memory_enabled
+        else None
     )
 
     rag_config = _load_rag_config()
@@ -1634,9 +1812,7 @@ def build_conversation_manager(
             embedding_model=rag_config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2"),
         )
         clinical_guard = HandoffDetector(
-            config_path=clinical_config_path
-            or rag_config.get("clinical_triggers_path")
-            or str(_CLINICAL_CONFIG_PATH)
+            config_path=clinical_config_path or rag_config.get("clinical_triggers_path") or str(_CLINICAL_CONFIG_PATH)
         )
 
     return ConversationManager(

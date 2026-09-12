@@ -20,20 +20,19 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock
 from pathlib import Path
+from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "api"))
 import server  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
-from db import DatabaseUnavailableError  # noqa: E402
 from conversation_manager import ConversationManager  # noqa: E402
+from db import DatabaseUnavailableError  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "inference"))
-from handoff_detector import HandoffDetector  # noqa: E402
-
 from fastapi.testclient import TestClient  # noqa: E402
+from handoff_detector import HandoffDetector  # noqa: E402
 
 CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "clinical_triggers.yaml"
 HANDOFF_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "handoff_phrases.yaml"
@@ -87,7 +86,9 @@ class TestResourceLimits(unittest.TestCase):
     def test_history_turn_content_over_limit_rejected(self):
         server._conversation_manager = _build_fake_conversation_manager()
         client = TestClient(server.app)
-        oversized_turn = [{"role": "user", "content": "x" * (server._RELIABILITY.request_limits.max_history_turn_length + 1)}]
+        oversized_turn = [
+            {"role": "user", "content": "x" * (server._RELIABILITY.request_limits.max_history_turn_length + 1)}
+        ]
         resp = client.post("/generate", json={"message": "hi", "history": oversized_turn})
         self.assertEqual(resp.status_code, 422)
 
@@ -121,12 +122,14 @@ class TestGracefulShutdown(unittest.TestCase):
 
     def test_lifespan_source_emits_graceful_shutdown_after_yield(self):
         import inspect
+
         source = inspect.getsource(server.lifespan)
         after_yield = source.split("yield", 1)[1]
         self.assertIn("GRACEFUL_SHUTDOWN", after_yield)
 
     def test_uvicorn_run_uses_bounded_graceful_shutdown_timeout(self):
         import inspect
+
         source = inspect.getsource(server)
         self.assertIn("timeout_graceful_shutdown", source)
         self.assertGreater(server._RELIABILITY.graceful_shutdown_timeout_seconds, 0)
@@ -320,15 +323,28 @@ class RecordingConversationManager:
         self.calls: list[dict] = []
 
     def handle_turn(self, message, history=None, auth=None, confirmed=False, session_id=None, request_id=None):
-        self.calls.append({
-            "message": message, "auth": auth, "session_id": session_id,
-            "confirmed": confirmed, "request_id": request_id,
-        })
+        self.calls.append(
+            {
+                "message": message,
+                "auth": auth,
+                "session_id": session_id,
+                "confirmed": confirmed,
+                "request_id": request_id,
+            }
+        )
         yield self.response_text
         yield {
-            "response": self.response_text, "is_handoff": False, "handoff_confidence": 0.0,
-            "latency_ms": 5.0, "retrieved_chunks": [], "clinical_guard_triggered": False,
-            "degraded": False, "error": None, "intent": None, "policy": None, "tool": None,
+            "response": self.response_text,
+            "is_handoff": False,
+            "handoff_confidence": 0.0,
+            "latency_ms": 5.0,
+            "retrieved_chunks": [],
+            "clinical_guard_triggered": False,
+            "degraded": False,
+            "error": None,
+            "intent": None,
+            "policy": None,
+            "tool": None,
         }
 
 
@@ -348,7 +364,8 @@ class TestAuthenticationBoundary(unittest.TestCase):
 
     def test_valid_bearer_token_resolves_real_identity(self):
         resp = self.client.post(
-            "/generate", json={"message": "Hello"},
+            "/generate",
+            json={"message": "Hello"},
             headers={"Authorization": "Bearer test-user-token"},
         )
         self.assertEqual(resp.status_code, 200)
@@ -358,7 +375,8 @@ class TestAuthenticationBoundary(unittest.TestCase):
 
     def test_invalid_bearer_token_returns_401(self):
         resp = self.client.post(
-            "/generate", json={"message": "Hello"},
+            "/generate",
+            json={"message": "Hello"},
             headers={"Authorization": "Bearer not-a-real-token"},
         )
         self.assertEqual(resp.status_code, 401)
@@ -366,7 +384,8 @@ class TestAuthenticationBoundary(unittest.TestCase):
 
     def test_malformed_authorization_scheme_returns_401(self):
         resp = self.client.post(
-            "/generate", json={"message": "Hello"},
+            "/generate",
+            json={"message": "Hello"},
             headers={"Authorization": "NotBearer test-user-token"},
         )
         self.assertEqual(resp.status_code, 401)
@@ -374,7 +393,8 @@ class TestAuthenticationBoundary(unittest.TestCase):
     def test_401_response_does_not_echo_submitted_token(self):
         secret_looking_token = "sk-super-secret-value-12345"
         resp = self.client.post(
-            "/generate", json={"message": "Hello"},
+            "/generate",
+            json={"message": "Hello"},
             headers={"Authorization": f"Bearer {secret_looking_token}"},
         )
         self.assertEqual(resp.status_code, 401)
@@ -407,7 +427,8 @@ class TestAuthenticationBoundary(unittest.TestCase):
         server._authentication_provider.enabled = False
         try:
             resp = self.client.post(
-                "/generate", json={"message": "Hello"},
+                "/generate",
+                json={"message": "Hello"},
                 headers={"Authorization": "Bearer test-user-token"},  # a token that would otherwise be valid
             )
             self.assertEqual(resp.status_code, 401)
@@ -432,9 +453,7 @@ class TestGenerateEndpoint(unittest.TestCase):
         self.assertFalse(body["is_handoff"])
 
     def test_streaming_response_is_ndjson(self):
-        resp = self.client.post(
-            "/generate", json={"message": "What's your return policy?", "stream": True}
-        )
+        resp = self.client.post("/generate", json={"message": "What's your return policy?", "stream": True})
         self.assertEqual(resp.status_code, 200)
         lines = [json.loads(line) for line in resp.text.strip().split("\n") if line]
         self.assertTrue(any("token" in line for line in lines), "expected at least one token line")
@@ -450,18 +469,14 @@ class TestGenerateEndpoint(unittest.TestCase):
         ConversationManager's internal policy/intent reasoning, or a raw
         tool result payload, to API clients.
         """
-        resp = self.client.post(
-            "/generate", json={"message": "What's your return policy?", "stream": True}
-        )
+        resp = self.client.post("/generate", json={"message": "What's your return policy?", "stream": True})
         lines = [json.loads(line) for line in resp.text.strip().split("\n") if line]
         done_event = next(line for line in lines if line.get("done"))
         for internal_key in ("policy", "intent", "degraded", "error", "tool"):
             self.assertNotIn(internal_key, done_event)
 
     def test_clinical_question_returns_handoff(self):
-        resp = self.client.post(
-            "/generate", json={"message": "How many mg of ibuprofen should I take?"}
-        )
+        resp = self.client.post("/generate", json={"message": "How many mg of ibuprofen should I take?"})
         self.assertTrue(resp.json()["is_handoff"])
 
     def test_empty_message_does_not_500(self):

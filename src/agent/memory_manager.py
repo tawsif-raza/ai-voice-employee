@@ -110,8 +110,12 @@ class MemoryRepository:
 
 class MemoryManager:
     def __init__(
-        self, policy_engine, repository: Optional[MemoryRepository] = None, privacy_service=None,
-        audit_logger=None, security_detector=None,
+        self,
+        policy_engine,
+        repository: Optional[MemoryRepository] = None,
+        privacy_service=None,
+        audit_logger=None,
+        security_detector=None,
     ):
         self._policy_engine = policy_engine
         self._repository = repository or MemoryRepository()
@@ -133,8 +137,14 @@ class MemoryManager:
         self._security_detector = security_detector
 
     def propose_memory(
-        self, user_id: str, category: MemoryCategory, key: str, value: str,
-        source: str, expires_at: Optional[datetime] = None, metadata: Optional[dict] = None,
+        self,
+        user_id: str,
+        category: MemoryCategory,
+        key: str,
+        value: str,
+        source: str,
+        expires_at: Optional[datetime] = None,
+        metadata: Optional[dict] = None,
     ) -> MemoryRecord:
         """
         Builds an untrusted candidate MemoryRecord. Constructing this
@@ -151,8 +161,16 @@ class MemoryManager:
             raise MemoryValidationError("value must be a string")
         now = datetime.now(timezone.utc)
         return MemoryRecord(
-            id=new_memory_id(), user_id=user_id, category=category, key=key, value=value,
-            source=source, created_at=now, updated_at=now, expires_at=expires_at, metadata=metadata or {},
+            id=new_memory_id(),
+            user_id=user_id,
+            category=category,
+            key=key,
+            value=value,
+            source=source,
+            created_at=now,
+            updated_at=now,
+            expires_at=expires_at,
+            metadata=metadata or {},
         )
 
     def validate_memory(self, record: MemoryRecord):
@@ -201,10 +219,16 @@ class MemoryManager:
                 raise MemoryPolicyDeniedError(f"Memory write denied by PII policy: {pii_decision.reason}")
             if pii_decision.action in ("REDACT", "RESTRICT") and pii_decision.findings:
                 record = MemoryRecord(
-                    id=record.id, user_id=record.user_id, category=record.category, key=record.key,
+                    id=record.id,
+                    user_id=record.user_id,
+                    category=record.category,
+                    key=record.key,
                     value=self._privacy_service.redact(record.value, list(pii_decision.findings)),
-                    source=record.source, created_at=record.created_at, updated_at=record.updated_at,
-                    expires_at=record.expires_at, metadata=record.metadata,
+                    source=record.source,
+                    created_at=record.created_at,
+                    updated_at=record.updated_at,
+                    expires_at=record.expires_at,
+                    metadata=record.metadata,
                     version=getattr(record, "version", 1),
                 )
 
@@ -222,27 +246,40 @@ class MemoryManager:
         if self._audit_logger is None:
             return
         from observability_models import EventType
+
         pii_types = sorted({f.type.value for f in pii_decision.findings})
         self._audit_logger.record(
-            EventType.PII_DETECTED, outcome="detected", actor=record.user_id,
-            resource="memory", action=pii_decision.action,
+            EventType.PII_DETECTED,
+            outcome="detected",
+            actor=record.user_id,
+            resource="memory",
+            action=pii_decision.action,
             metadata={"pii_types": pii_types, "context": "MEMORY"},
         )
         if pii_decision.action == "BLOCK":
             self._audit_logger.record(
-                EventType.PRIVACY_BLOCK, outcome="denied", actor=record.user_id,
-                resource="memory", reason=pii_decision.reason,
+                EventType.PRIVACY_BLOCK,
+                outcome="denied",
+                actor=record.user_id,
+                resource="memory",
+                reason=pii_decision.reason,
                 metadata={"pii_types": pii_types, "context": "MEMORY"},
             )
         elif pii_decision.action == "REDACT":
             self._audit_logger.record(
-                EventType.PII_REDACTED, outcome="redacted", actor=record.user_id,
-                resource="memory", metadata={"pii_types": pii_types, "context": "MEMORY"},
+                EventType.PII_REDACTED,
+                outcome="redacted",
+                actor=record.user_id,
+                resource="memory",
+                metadata={"pii_types": pii_types, "context": "MEMORY"},
             )
         elif pii_decision.action == "RESTRICT":
             self._audit_logger.record(
-                EventType.PRIVACY_RESTRICT, outcome="restricted", actor=record.user_id,
-                resource="memory", metadata={"pii_types": pii_types, "context": "MEMORY"},
+                EventType.PRIVACY_RESTRICT,
+                outcome="restricted",
+                actor=record.user_id,
+                resource="memory",
+                metadata={"pii_types": pii_types, "context": "MEMORY"},
             )
 
     def remove_memory(self, memory_id: str, user_id: str) -> bool:

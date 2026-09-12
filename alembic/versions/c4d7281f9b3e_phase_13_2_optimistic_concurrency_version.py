@@ -1,4 +1,4 @@
-﻿"""phase 13.2: add version column to sessions and memory_records for optimistic concurrency
+"""phase 13.2: add version column to sessions and memory_records for optimistic concurrency
 
 Revision ID: c4d7281f9b3e
 Revises: e6799137d151

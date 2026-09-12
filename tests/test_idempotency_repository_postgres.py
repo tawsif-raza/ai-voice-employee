@@ -22,15 +22,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from action_models import AuthContext, ToolRequest  # noqa: E402
 from db import Database, DatabaseUnavailableError, load_database_config  # noqa: E402
 from db_models import Base  # noqa: E402
-from identity import Role, permissions_for_roles  # noqa: E402
 from idempotency_repository import InMemoryIdempotencyRepository  # noqa: E402
 from idempotency_repository_postgres import PostgresIdempotencyRepository  # noqa: E402
+from identity import Role, permissions_for_roles  # noqa: E402
 from mock_tools import MockAppointmentStore, build_default_tool_registry  # noqa: E402
 from policy_engine import PolicyEngine  # noqa: E402
 from tool_orchestrator import ToolOrchestrator  # noqa: E402
 
-USER_A = AuthContext(user_id="user-a", authenticated=True, roles=(Role.USER.value,), permissions=permissions_for_roles((Role.USER,)), authentication_method="test")
-USER_B = AuthContext(user_id="user-b", authenticated=True, roles=(Role.USER.value,), permissions=permissions_for_roles((Role.USER,)), authentication_method="test")
+USER_A = AuthContext(
+    user_id="user-a",
+    authenticated=True,
+    roles=(Role.USER.value,),
+    permissions=permissions_for_roles((Role.USER,)),
+    authentication_method="test",
+)
+USER_B = AuthContext(
+    user_id="user-b",
+    authenticated=True,
+    roles=(Role.USER.value,),
+    permissions=permissions_for_roles((Role.USER,)),
+    authentication_method="test",
+)
 
 
 def _fresh_database() -> Database:
@@ -87,7 +99,9 @@ class TestRequiredScopingScenarios(unittest.TestCase):
     def test_expired_key_can_be_reclaimed(self):
         for name, repo, database in _repos():
             with self.subTest(backend=name):
-                first = repo.try_reserve("req-3", user_id="user-a", action="CANCEL_APPOINTMENT", ttl=timedelta(seconds=-1))
+                first = repo.try_reserve(
+                    "req-3", user_id="user-a", action="CANCEL_APPOINTMENT", ttl=timedelta(seconds=-1)
+                )
                 self.assertTrue(first)
                 # ttl already in the past -- the record is expired the instant it's written.
                 second = repo.try_reserve("req-3", user_id="user-a", action="CANCEL_APPOINTMENT")
@@ -147,7 +161,9 @@ class TestConcurrency(unittest.TestCase):
         os.remove(path)
         db_path = Path(path)
         try:
-            database = Database(load_database_config(env={"DATABASE_URL": f"sqlite:///{db_path.as_posix()}", "DB_POOL_SIZE": "10"}))
+            database = Database(
+                load_database_config(env={"DATABASE_URL": f"sqlite:///{db_path.as_posix()}", "DB_POOL_SIZE": "10"})
+            )
             Base.metadata.create_all(database.engine)
             repo = PostgresIdempotencyRepository(database)
 
@@ -219,7 +235,12 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
         registry = build_default_tool_registry(appointment_store=appointments)
         orchestrator = ToolOrchestrator(registry, PolicyEngine())  # no idempotency_repository
         self.assertIsNone(orchestrator._idempotency_repository)
-        request = ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]}, confirmed=True, request_id="req-x")
+        request = ToolRequest(
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            request_id="req-x",
+        )
         first = orchestrator.invoke(request, auth=USER_A)
         self.assertTrue(first.success)
         second = orchestrator.invoke(request, auth=USER_A)
@@ -227,7 +248,12 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
 
     def test_persisted_repository_blocks_duplicate_for_same_user(self):
         orchestrator, booked = self._orchestrator_with(InMemoryIdempotencyRepository())
-        request = ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]}, confirmed=True, request_id="req-y")
+        request = ToolRequest(
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            request_id="req-y",
+        )
         first = orchestrator.invoke(request, auth=USER_A)
         self.assertTrue(first.success)
         second = orchestrator.invoke(request, auth=USER_A)
@@ -242,7 +268,9 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
         appointments = MockAppointmentStore()
         registry = build_default_tool_registry(appointment_store=appointments)
         orchestrator = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=repo)
-        request = ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": "does-not-exist"}, confirmed=True, request_id="req-z")
+        request = ToolRequest(
+            action="CANCEL_APPOINTMENT", params={"appointment_id": "does-not-exist"}, confirmed=True, request_id="req-z"
+        )
         first = orchestrator.invoke(request, auth=USER_A)
         self.assertFalse(first.success)
         self.assertFalse(repo.has_executed("req-z", user_id="user-a", action="CANCEL_APPOINTMENT"))
@@ -265,15 +293,24 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
             appointments = MockAppointmentStore()
             booked = appointments.book({"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"})
             registry = build_default_tool_registry(appointment_store=appointments)
-            orchestrator1 = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(db1))
-            request = ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]}, confirmed=True, request_id="req-restart")
+            orchestrator1 = ToolOrchestrator(
+                registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(db1)
+            )
+            request = ToolRequest(
+                action="CANCEL_APPOINTMENT",
+                params={"appointment_id": booked["appointment_id"]},
+                confirmed=True,
+                request_id="req-restart",
+            )
             first = orchestrator1.invoke(request, auth=USER_A)
             self.assertTrue(first.success)
 
             # "Restart": brand-new Database + repository + orchestrator against the same file.
             db2 = Database(load_database_config(env={"DATABASE_URL": url}))
             databases.append(db2)
-            orchestrator2 = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(db2))
+            orchestrator2 = ToolOrchestrator(
+                registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(db2)
+            )
             second = orchestrator2.invoke(request, auth=USER_A)
             self.assertFalse(second.success)
             self.assertEqual(second.status, "duplicate")
@@ -286,7 +323,14 @@ class TestToolOrchestratorIntegration(unittest.TestCase):
 
 class TestDatabaseFailure(unittest.TestCase):
     def test_try_reserve_raises_database_unavailable(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         repo = PostgresIdempotencyRepository(database)
         try:
             with self.assertRaises(DatabaseUnavailableError):

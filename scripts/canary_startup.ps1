@@ -1,4 +1,4 @@
-﻿param (
+param (
     [string]$Port = $env:PORT,
     [string]$HostName = "localhost"
 )

@@ -15,21 +15,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from action_models import (  # noqa: E402
-    ActionProposal, ActionSpec, AuthContext, ToolExecutionResult, ToolRequest, ANONYMOUS_CONTEXT,
+    ANONYMOUS_CONTEXT,
+    ActionProposal,
+    ActionSpec,
+    AuthContext,
+    ToolRequest,
 )
 from identity import Role, permissions_for_roles  # noqa: E402
-from mock_tools import MockAppointmentStore, MockOrderStore, build_default_tool_registry  # noqa: E402
+from mock_tools import MockAppointmentStore, build_default_tool_registry  # noqa: E402
 from policy_engine import PolicyEngine  # noqa: E402
 from tool_orchestrator import ToolOrchestrator, ToolValidationError  # noqa: E402
-from tool_registry import ToolRegistry, ToolRegistrationError  # noqa: E402
-
+from tool_registry import ToolRegistrationError, ToolRegistry  # noqa: E402
 
 # A fully-permissioned USER identity (Phase 7) -- uses identity.py's real
 # Role/Permission taxonomy so these Phase 4 tests stay accurate if the
 # role->permission mapping ever changes, rather than a hand-rolled list.
 AUTHENTICATED_USER = AuthContext(
-    user_id="user-1", authenticated=True, roles=(Role.USER.value,),
-    permissions=permissions_for_roles((Role.USER,)), authentication_method="test",
+    user_id="user-1",
+    authenticated=True,
+    roles=(Role.USER.value,),
+    permissions=permissions_for_roles((Role.USER,)),
+    authentication_method="test",
 )
 
 
@@ -51,7 +57,9 @@ def _permissive_policy(*action_names: str) -> PolicyEngine:
     to pass first so the gate under test is actually reached.
     """
     policy = PolicyEngine()
-    extra_rules = [{"action": name, "rule": "TEST_TOOL_ALLOWED", "allowed": True, "reason": "test"} for name in action_names]
+    extra_rules = [
+        {"action": name, "rule": "TEST_TOOL_ALLOWED", "allowed": True, "reason": "test"} for name in action_names
+    ]
     policy._tools = {**policy._tools, "rules": [*policy._tools.get("rules", []), *extra_rules]}
     return policy
 
@@ -101,7 +109,9 @@ class TestToolRegistry(unittest.TestCase):
     def test_lookup_never_executes(self):
         calls = []
         registry = ToolRegistry()
-        registry.register(ActionSpec(name="X", description="d", params_schema={}), lambda params: calls.append(params) or {})
+        registry.register(
+            ActionSpec(name="X", description="d", params_schema={}), lambda params: calls.append(params) or {}
+        )
         registry.get_spec("X")
         registry.get_callable("X")
         registry.is_registered("X")
@@ -112,7 +122,9 @@ class TestToolRegistry(unittest.TestCase):
 class TestActionProposalValidation(unittest.TestCase):
     def test_valid_proposal_validates(self):
         orchestrator, _, _ = _orchestrator()
-        proposal = ActionProposal(action="BOOK_APPOINTMENT", parameters={"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"})
+        proposal = ActionProposal(
+            action="BOOK_APPOINTMENT", parameters={"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"}
+        )
         tool_request = orchestrator.validate_proposal(proposal)
         self.assertIsInstance(tool_request, ToolRequest)
         self.assertEqual(tool_request.action, "BOOK_APPOINTMENT")
@@ -137,7 +149,9 @@ class TestActionProposalValidation(unittest.TestCase):
         orchestrator, _, _ = _orchestrator()
         with self.assertRaises(ToolValidationError):
             orchestrator.validate_proposal(
-                ActionProposal(action="BOOK_APPOINTMENT", parameters={"doctor_id": 123, "date": "2026-08-18", "time": "17:00"})
+                ActionProposal(
+                    action="BOOK_APPOINTMENT", parameters={"doctor_id": 123, "date": "2026-08-18", "time": "17:00"}
+                )
             )
 
     def test_unexpected_parameter_rejected(self):
@@ -171,7 +185,9 @@ class TestPolicyIntegration(unittest.TestCase):
         registry2 = build_default_tool_registry(appointment_store=appointments)
         orchestrator2 = ToolOrchestrator(registry2, PolicyEngine())
         tool_request = orchestrator2.validate_proposal(
-            ActionProposal(action="BOOK_APPOINTMENT", parameters={"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"})
+            ActionProposal(
+                action="BOOK_APPOINTMENT", parameters={"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"}
+            )
         )
         result = orchestrator2.invoke(tool_request, auth=AUTHENTICATED_USER)
         self.assertTrue(result.success)
@@ -216,7 +232,9 @@ class TestPolicyIntegration(unittest.TestCase):
         )
         orchestrator = ToolOrchestrator(registry, _permissive_policy("ADMIN_ONLY_ACTION"))
         tool_request = ToolRequest(action="ADMIN_ONLY_ACTION", params={}, confirmed=True)
-        result = orchestrator.invoke(tool_request, auth=AuthContext(user_id="u", authenticated=True, roles=("customer",)))
+        result = orchestrator.invoke(
+            tool_request, auth=AuthContext(user_id="u", authenticated=True, roles=("customer",))
+        )
         self.assertFalse(result.success)
         self.assertEqual(result.error, "INSUFFICIENT_PERMISSIONS")
 
@@ -232,8 +250,10 @@ class TestPolicyIntegration(unittest.TestCase):
         the tool-proposal step at all, not by ToolOrchestrator.
         """
         orchestrator, _, policy = _orchestrator()
-        from action_models import ANONYMOUS_CONTEXT as _  # noqa: F401
         import inspect
+
+        from action_models import ANONYMOUS_CONTEXT as _  # noqa: F401
+
         invoke_source = inspect.getsource(ToolOrchestrator.invoke)
         self.assertNotIn("evaluate_clinical", invoke_source)
 
@@ -261,8 +281,11 @@ class TestConfirmation(unittest.TestCase):
         # trusted confirmation state (Phase 5 territory; simulated here
         # via direct construction).
         confirmed_request = ToolRequest(
-            action=tool_request.action, params=tool_request.params,
-            session_id=tool_request.session_id, confirmed=True, request_id="req-1",
+            action=tool_request.action,
+            params=tool_request.params,
+            session_id=tool_request.session_id,
+            confirmed=True,
+            request_id="req-1",
         )
         result = orchestrator.invoke(confirmed_request, auth=AUTHENTICATED_USER)
         self.assertTrue(result.success)
@@ -285,14 +308,18 @@ class TestConfirmation(unittest.TestCase):
 class TestAuthentication(unittest.TestCase):
     def test_unauthenticated_user_blocked(self):
         orchestrator, _, _ = _orchestrator()
-        tool_request = orchestrator.validate_proposal(ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "order_1001"}))
+        tool_request = orchestrator.validate_proposal(
+            ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "order_1001"})
+        )
         result = orchestrator.invoke(tool_request, auth=AuthContext(user_id="u", authenticated=False))
         self.assertFalse(result.success)
         self.assertEqual(result.error, "AUTHENTICATION_REQUIRED")
 
     def test_authenticated_user_allowed(self):
         orchestrator, _, _ = _orchestrator()
-        tool_request = orchestrator.validate_proposal(ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "order_1001"}))
+        tool_request = orchestrator.validate_proposal(
+            ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "order_1001"})
+        )
         result = orchestrator.invoke(tool_request, auth=AUTHENTICATED_USER)
         self.assertTrue(result.success)
 
@@ -303,14 +330,18 @@ class TestAuthentication(unittest.TestCase):
 class TestExecution(unittest.TestCase):
     def test_successful_tool_execution(self):
         orchestrator, _, _ = _orchestrator()
-        tool_request = orchestrator.validate_proposal(ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "order_1001"}))
+        tool_request = orchestrator.validate_proposal(
+            ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "order_1001"})
+        )
         result = orchestrator.invoke(tool_request, auth=AUTHENTICATED_USER)
         self.assertTrue(result.success)
         self.assertEqual(result.result["order_id"], "order_1001")
 
     def test_tool_failure_is_captured_not_raised(self):
         orchestrator, _, _ = _orchestrator()
-        tool_request = orchestrator.validate_proposal(ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "unknown_order"}))
+        tool_request = orchestrator.validate_proposal(
+            ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "unknown_order"})
+        )
         result = orchestrator.invoke(tool_request, auth=AUTHENTICATED_USER)
         self.assertFalse(result.success)
         self.assertEqual(result.status, "failure")
@@ -325,7 +356,9 @@ class TestExecution(unittest.TestCase):
         # tested directly). This test targets invoke()'s exception
         # handling specifically, given an already-valid ToolRequest.
         orchestrator, _, _ = _orchestrator()
-        tool_request = ToolRequest(action="ORDER_LOOKUP", params={"order_id": "order_1001", "_simulate_failure": True}, confirmed=True)
+        tool_request = ToolRequest(
+            action="ORDER_LOOKUP", params={"order_id": "order_1001", "_simulate_failure": True}, confirmed=True
+        )
         result = orchestrator.invoke(tool_request, auth=AUTHENTICATED_USER)
         self.assertFalse(result.success)
         self.assertEqual(result.error, "TOOL_EXECUTION_FAILED")
@@ -338,15 +371,21 @@ class TestExecution(unittest.TestCase):
             lambda params: __import__("time").sleep(0.5) or {"ok": True},
         )
         orchestrator = ToolOrchestrator(registry, _permissive_policy("SLOW_ACTION"))
-        result = orchestrator.invoke(ToolRequest(action="SLOW_ACTION", params={}, confirmed=True), auth=AUTHENTICATED_USER)
+        result = orchestrator.invoke(
+            ToolRequest(action="SLOW_ACTION", params={}, confirmed=True), auth=AUTHENTICATED_USER
+        )
         self.assertFalse(result.success)
         self.assertEqual(result.status, "timeout")
 
     def test_malformed_tool_result_rejected(self):
         registry = ToolRegistry()
-        registry.register(ActionSpec(name="BAD_RESULT_ACTION", description="d", params_schema={}), lambda params: "not a dict")
+        registry.register(
+            ActionSpec(name="BAD_RESULT_ACTION", description="d", params_schema={}), lambda params: "not a dict"
+        )
         orchestrator = ToolOrchestrator(registry, _permissive_policy("BAD_RESULT_ACTION"))
-        result = orchestrator.invoke(ToolRequest(action="BAD_RESULT_ACTION", params={}, confirmed=True), auth=AUTHENTICATED_USER)
+        result = orchestrator.invoke(
+            ToolRequest(action="BAD_RESULT_ACTION", params={}, confirmed=True), auth=AUTHENTICATED_USER
+        )
         self.assertFalse(result.success)
         self.assertEqual(result.error, "MALFORMED_TOOL_RESULT")
 
@@ -356,8 +395,10 @@ class TestExecution(unittest.TestCase):
         registry = build_default_tool_registry(appointment_store=appointments)
         orchestrator = ToolOrchestrator(registry, PolicyEngine())
         request = ToolRequest(
-            action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]},
-            confirmed=True, request_id="dup-1",
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            request_id="dup-1",
         )
         first = orchestrator.invoke(request, auth=AUTHENTICATED_USER)
         self.assertTrue(first.success)
@@ -374,8 +415,14 @@ class TestExecution(unittest.TestCase):
 
         registry = ToolRegistry()
         registry.register(
-            ActionSpec(name="CANCEL_APPOINTMENT", description="d", params_schema={"appointment_id": "str"},
-                       required_params=("appointment_id",), requires_confirmation=True, destructive=True),
+            ActionSpec(
+                name="CANCEL_APPOINTMENT",
+                description="d",
+                params_schema={"appointment_id": "str"},
+                required_params=("appointment_id",),
+                requires_confirmation=True,
+                destructive=True,
+            ),
             flaky_cancel,
         )
         orchestrator = ToolOrchestrator(registry, PolicyEngine())
@@ -412,8 +459,6 @@ class TestLLMTrustBoundary(unittest.TestCase):
         self.assertFalse(result.success)
 
     def test_attack_2_fake_authentication_does_not_execute(self):
-        orchestrator, _, _ = _orchestrator()
-        tool_request = orchestrator.validate_proposal(ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "order_1001"}))
         # "LLM output": {"user_id": "admin", "role": "administrator"} --
         # this is never accepted as an `auth` argument; only a real
         # AuthContext instance is. Simulate the actual trusted context
@@ -431,6 +476,7 @@ class TestLLMTrustBoundary(unittest.TestCase):
         # Confirm invoke()'s signature only accepts a typed AuthContext,
         # not an arbitrary dict that could carry a forged role claim.
         import inspect
+
         sig = inspect.signature(ToolOrchestrator.invoke)
         self.assertEqual(sig.parameters["auth"].default, ANONYMOUS_CONTEXT)
 
@@ -450,7 +496,9 @@ class TestLLMTrustBoundary(unittest.TestCase):
     def test_attack_4_arbitrary_tool_not_found(self):
         orchestrator, _, _ = _orchestrator()
         with self.assertRaises(ToolValidationError):
-            orchestrator.validate_proposal(ActionProposal(action="execute_python", parameters={"code": "import os; os.system('rm -rf /')"}))
+            orchestrator.validate_proposal(
+                ActionProposal(action="execute_python", parameters={"code": "import os; os.system('rm -rf /')"})
+            )
 
     def test_attack_5_arbitrary_url_rejected(self):
         # No registered tool accepts a free-form URL parameter at all --
@@ -459,7 +507,10 @@ class TestLLMTrustBoundary(unittest.TestCase):
         orchestrator, _, _ = _orchestrator()
         with self.assertRaises(ToolValidationError):
             orchestrator.validate_proposal(
-                ActionProposal(action="ORDER_LOOKUP", parameters={"order_id": "order_1001", "callback_url": "http://evil.example/exfiltrate"})
+                ActionProposal(
+                    action="ORDER_LOOKUP",
+                    parameters={"order_id": "order_1001", "callback_url": "http://evil.example/exfiltrate"},
+                )
             )
 
     def test_attack_6_policy_override_instruction_ignored(self):

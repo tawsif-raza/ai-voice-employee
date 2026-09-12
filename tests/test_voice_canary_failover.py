@@ -1,4 +1,4 @@
-﻿"""
+"""
 Claude -> Gemini Failover Canary Test Suite (tests/test_voice_canary_failover.py)
 
 Validates Criterion 4:
@@ -44,6 +44,7 @@ HANDOFF_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "handoff_phra
 
 class FailingClaudeProvider(BaseLLMProvider):
     """Simulates Claude returning HTTP 429 (Rate Limit / Quota Exceeded)."""
+
     provider_name = "claude_primary_simulated"
 
     def __init__(self, should_fail: bool = True):
@@ -64,6 +65,7 @@ class FailingClaudeProvider(BaseLLMProvider):
 
 class HealthyGeminiProvider(BaseLLMProvider):
     """Simulates Google Gemini serving the fallback turn."""
+
     provider_name = "gemini_fallback_simulated"
 
     def __init__(self, reply: str = "Hello from Gemini fallback! Your appointment is confirmed."):
@@ -78,7 +80,6 @@ class HealthyGeminiProvider(BaseLLMProvider):
 
 
 class TestVoiceCanaryFailover(unittest.IsolatedAsyncioTestCase):
-
     async def test_claude_quota_exhaustion_failover_to_gemini_in_voice_call(self):
         """
         Controlled failure test:
@@ -90,7 +91,9 @@ class TestVoiceCanaryFailover(unittest.IsolatedAsyncioTestCase):
         6. Audit logger records RETRY_ATTEMPT failover event
         """
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         audit = AuditLogger()
         metrics = MetricsRegistry()

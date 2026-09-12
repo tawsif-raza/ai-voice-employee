@@ -18,7 +18,6 @@ import asyncio
 import sys
 import unittest
 from pathlib import Path
-from typing import Iterator
 
 _VOICE_DIR = str(Path(__file__).resolve().parents[1] / "src" / "voice")
 _AGENT_DIR = str(Path(__file__).resolve().parents[1] / "src" / "agent")
@@ -31,7 +30,7 @@ from conversation_manager import ConversationManager
 from handoff_detector import HandoffDetector
 from metrics import MetricsRegistry
 from stt_service import DeepgramSTTService, MockSTTService, STTEvent, STTEventType
-from telephony_models import CallSession, CallStatus, TwilioStartData
+from telephony_models import CallSession, CallStatus
 from tts_service import BaseTTSService, MockTTSService
 from voice_pipeline import VoiceCallHandler
 
@@ -41,12 +40,14 @@ HANDOFF_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "handoff_phra
 
 class FailingCM:
     """Simulates internal ConversationManager or upstream LLM failure."""
+
     def handle_turn(self, *args, **kwargs):
         raise RuntimeError("Claude and Gemini providers are temporarily unreachable")
 
 
 class MalformedResponseCM:
     """Yields unexpected malformed payloads."""
+
     def handle_turn(self, *args, **kwargs):
         yield 12345  # invalid token type
         yield {"invalid_key": True}  # missing response dict
@@ -56,6 +57,7 @@ class MalformedResponseCM:
 
 class FailingTTSService(BaseTTSService):
     """Simulates ElevenLabs 500 error / network failure."""
+
     async def synthesize_stream(self, token_stream, cancellation_event=None):
         if False:
             yield b""
@@ -63,10 +65,10 @@ class FailingTTSService(BaseTTSService):
 
 
 class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
-
     async def test_twilio_disconnect_handled_gracefully(self):
         """When Twilio WebSocket disconnects during audio streaming, handler does not crash."""
         call_count = 0
+
         async def failing_send(msg):
             nonlocal call_count
             call_count += 1
@@ -104,6 +106,7 @@ class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
 
     async def test_websocket_timeout_handled_gracefully(self):
         """When Twilio WebSocket times out on clear event, pipeline does not raise unhandled error."""
+
         async def timeout_send(msg):
             if msg.get("event") == "clear":
                 raise asyncio.TimeoutError("Twilio clear frame send timed out")
@@ -146,7 +149,9 @@ class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
     async def test_claude_total_failure_speaks_polite_apology(self):
         """When ConversationManager/LLM fails completely, pipeline speaks an apology rather than dropping call."""
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         cm = FailingCM()
         stt = MockSTTService()
@@ -184,7 +189,9 @@ class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
     async def test_tts_failure_degrades_gracefully(self):
         """When ElevenLabs TTS synthesis fails, pipeline logs error and does not drop call."""
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         cm = ConversationManager(
             llm_service=None,
@@ -217,7 +224,9 @@ class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
     async def test_malformed_provider_response_handled_gracefully(self):
         """Malformed dictionary chunks or non-string tokens from CM are skipped safely."""
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         cm = MalformedResponseCM()
         stt = MockSTTService()
@@ -251,7 +260,9 @@ class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
     async def test_caller_silence_maintains_ready_state(self):
         """Caller silence generates no spurious turns and keeps call ready."""
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         cm = ConversationManager(
             llm_service=None,

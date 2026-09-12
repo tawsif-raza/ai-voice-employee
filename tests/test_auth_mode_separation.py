@@ -34,7 +34,11 @@ def _run(env_overrides: dict) -> subprocess.CompletedProcess:
     env.update(env_overrides)
     return subprocess.run(
         [sys.executable, "-c", _IMPORT_SNIPPET],
-        cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, timeout=60,
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 

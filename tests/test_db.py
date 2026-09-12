@@ -19,7 +19,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from db import (  # noqa: E402
     Database,
-    DatabaseConfig,
     DatabaseConfigurationError,
     DatabaseUnavailableError,
     load_database_config,

@@ -27,6 +27,7 @@ SENTENCE_ENDINGS = (".", "!", "?", "\n")
 
 # ── Streaming client for the inference API ──────────────────────────────────
 
+
 def iter_text_chunks(message: str, history=None, api_url: str = API_URL):
     """
     POST to the inference API with stream=True and yield (kind, payload)
@@ -84,6 +85,7 @@ class SentenceChunker:
 
 # ── Text-to-speech playback ──────────────────────────────────────────────────
 
+
 def play_with_pygame(audio_bytes: bytes) -> None:
     if not audio_bytes:
         return
@@ -98,7 +100,7 @@ def play_with_pygame(audio_bytes: bytes) -> None:
 def synthesize_and_play(client: ElevenLabs, text: str, voice_id: str, player: str) -> None:
     if not text.strip():
         return
-    print(f"  [TTS] \"{text}\"")
+    print(f'  [TTS] "{text}"')
     audio_stream = client.text_to_speech.stream(
         voice_id=voice_id,
         text=text,
@@ -115,6 +117,7 @@ def synthesize_and_play(client: ElevenLabs, text: str, voice_id: str, player: st
 
 
 # ── Chat loop ────────────────────────────────────────────────────────────────
+
 
 def chat_once(
     client: ElevenLabs,
@@ -174,6 +177,7 @@ def run_interactive(client: ElevenLabs, voice_id: str, player: str, api_url: str
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stream voice-assistant replies through ElevenLabs TTS")
     parser.add_argument("--message", default=None, help="Single message to send, then exit. Omit for interactive chat.")
@@ -184,7 +188,7 @@ def parse_args() -> argparse.Namespace:
         choices=["pygame", "elevenlabs"],
         default="pygame",
         help="Audio backend: pygame-ce (default, no external binary) or "
-             "ElevenLabs' native player (requires mpv on PATH).",
+        "ElevenLabs' native player (requires mpv on PATH).",
     )
     return parser.parse_args()
 

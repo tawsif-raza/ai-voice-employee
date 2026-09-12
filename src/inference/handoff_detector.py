@@ -225,6 +225,7 @@ _BUILTIN_DEFAULT_CONFIG: dict = {
 
 # ── Result type ──────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class HandoffMatch:
     """Result of scoring one response. `bool(match)` behaves like `is_handoff` for backward compatibility."""
@@ -239,6 +240,7 @@ class HandoffMatch:
 
 
 # ── Detector ─────────────────────────────────────────────────────────────────
+
 
 class HandoffDetector:
     """Layered handoff-intent detector. See module docstring for the layer order."""

@@ -1,4 +1,4 @@
-﻿"""
+"""
 CLI Tool: Canary Latency Report Generator (scripts/latency_report.py)
 
 Parses recorded voice session events and outputs an executive latency report

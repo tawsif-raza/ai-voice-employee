@@ -23,8 +23,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from alembic import command
 from alembic.config import Config
+
+from alembic import command
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
@@ -104,9 +105,11 @@ class TestCleanDatabaseMigration(_IsolatedSQLiteMigration):
         command.upgrade(self.config, "head")
         indexes = self._indexes()
         for expected in (
-            "ix_sessions_user_id", "ix_sessions_expires_at",
+            "ix_sessions_user_id",
+            "ix_sessions_expires_at",
             "ix_memory_records_user_id",
-            "ix_audit_events_event_type", "ix_audit_events_request_id",
+            "ix_audit_events_event_type",
+            "ix_audit_events_request_id",
             "ix_security_events_type",
         ):
             self.assertIn(expected, indexes)

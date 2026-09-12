@@ -14,9 +14,8 @@ from typing import Any, Optional
 
 import torch
 import yaml
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
-
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ── Config ───────────────────────────────────────────────────────────────────
 # Defaults for this script's CLI flags live in configs/config.yaml under
@@ -82,9 +81,7 @@ def resolve_adapter_path(explicit_path: Optional[str]) -> Path:
     if explicit_path:
         path = Path(explicit_path)
         if not (path / "adapter_config.json").exists():
-            raise FileNotFoundError(
-                f"No adapter_config.json found in {path} — not a LoRA checkpoint dir."
-            )
+            raise FileNotFoundError(f"No adapter_config.json found in {path} — not a LoRA checkpoint dir.")
         return path
 
     for root in DEFAULT_SEARCH_ROOTS:
@@ -106,6 +103,7 @@ def resolve_adapter_path(explicit_path: Optional[str]) -> Path:
 
 
 # ── Merge ────────────────────────────────────────────────────────────────────
+
 
 def merge_lora(
     base_model_name: str,
@@ -192,12 +190,13 @@ def verify_export(output_dir: Path, run_smoke_test: bool) -> None:
         )
         with torch.no_grad():
             out = model.generate(input_ids, max_new_tokens=10, do_sample=False)
-        text = tokenizer.decode(out[0][input_ids.shape[1]:], skip_special_tokens=True)
+        text = tokenizer.decode(out[0][input_ids.shape[1] :], skip_special_tokens=True)
         print(f"  Sample output: {text!r}")
         print("  Smoke test passed — merged model loads and generates.")
 
 
 # ── GGUF conversion ──────────────────────────────────────────────────────────
+
 
 def find_llama_cpp_tools(llama_cpp_dir: Optional[str]) -> tuple[Path, Path]:
     """
@@ -287,10 +286,13 @@ def export_gguf(
     print(f"\nConverting merged model -> GGUF fp16: {fp16_path}")
     subprocess.run(
         [
-            sys.executable, str(convert_script),
+            sys.executable,
+            str(convert_script),
             str(merged_model_dir),
-            "--outfile", str(fp16_path),
-            "--outtype", "f16",
+            "--outfile",
+            str(fp16_path),
+            "--outtype",
+            "f16",
         ],
         check=True,
     )
@@ -307,6 +309,7 @@ def export_gguf(
 
 
 # ── Reporting ────────────────────────────────────────────────────────────────
+
 
 def print_file_sizes(label: str, directory: Path) -> None:
     if not directory.exists():
@@ -329,7 +332,7 @@ def print_usage_instructions(merged_dir: Path, gguf_dir: Path, quant_types: list
     print("=" * 60)
     print(f"\nMerged HF model : {merged_dir}")
     print("  Load with transformers:")
-    print(f"    AutoModelForCausalLM.from_pretrained(\"{merged_dir}\")")
+    print(f'    AutoModelForCausalLM.from_pretrained("{merged_dir}")')
 
     if not gguf_exported:
         print("\nGGUF not exported (run with --export-gguf to produce it).")
@@ -340,7 +343,7 @@ def print_usage_instructions(merged_dir: Path, gguf_dir: Path, quant_types: list
 
     print(f"\nGGUF model(s)   : {gguf_dir}")
     print("\n  --- llama.cpp ---")
-    print(f"    ./llama-cli -m {gguf_file} -p \"Hello\" -cnv")
+    print(f'    ./llama-cli -m {gguf_file} -p "Hello" -cnv')
     print(f"    ./llama-server -m {gguf_file} --port 8080")
 
     print("\n  --- Ollama ---")
@@ -354,6 +357,7 @@ def print_usage_instructions(merged_dir: Path, gguf_dir: Path, quant_types: list
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Merge LoRA adapter into base model and optionally export to GGUF")
     parser.add_argument("--base_model", default=_get("base_model_name", "Qwen/Qwen2.5-0.5B-Instruct"))
@@ -361,10 +365,11 @@ def parse_args() -> argparse.Namespace:
         "--adapter_path",
         default=None,
         help="LoRA checkpoint directory. Auto-resolved from outputs/checkpoint-final "
-             "or the latest outputs/checkpoint-* if omitted.",
+        "or the latest outputs/checkpoint-* if omitted.",
     )
-    parser.add_argument("--output_dir", default=_get("output_dir", "outputs/merged_model"),
-                         help="Where to save the fused HF model.")
+    parser.add_argument(
+        "--output_dir", default=_get("output_dir", "outputs/merged_model"), help="Where to save the fused HF model."
+    )
     parser.add_argument("--dtype", choices=["bf16", "fp16"], default=_get("dtype", "bf16"))
     parser.add_argument("--skip-verify", action="store_true", help="Skip the post-merge smoke-test generation.")
 
@@ -380,7 +385,7 @@ def parse_args() -> argparse.Namespace:
         "--llama_cpp_dir",
         default=None,
         help="Path to a built llama.cpp checkout. Falls back to $LLAMA_CPP_DIR "
-             "or a llama.cpp/ dir next to the repo root.",
+        "or a llama.cpp/ dir next to the repo root.",
     )
     return parser.parse_args()
 

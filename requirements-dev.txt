@@ -1,9 +1,18 @@
-# Test tooling only. Not required to run the agent/API — see requirements.txt
-# for that. Install after requirements.txt: pip install -r requirements-dev.txt
+# Test and code-quality tooling only. Not required to run the agent/API —
+# see requirements.txt for that. Install after requirements.txt:
+#   pip install -r requirements-dev.txt
 #
-# These were previously undeclared: the test suite uses pytest and
-# @pytest.mark.asyncio (tests/test_voice_canary_auth.py) but neither package
-# appeared in any requirements file, so a clean `pip install -r
-# requirements.txt` followed by `pytest tests/` failed on a fresh checkout.
+# pytest/pytest-asyncio were previously undeclared: the test suite uses
+# pytest and @pytest.mark.asyncio (tests/test_voice_canary_auth.py) but
+# neither package appeared in any requirements file, so a clean `pip
+# install -r requirements.txt` followed by `pytest tests/` failed on a
+# fresh checkout. See PHASE_14_1_WORKFLOW_HARDENING_REPORT.md for why
+# ruff/mypy were chosen and how CI enforces them (pyproject.toml, .github/
+# workflows/ci.yml).
 pytest==9.1.1
 pytest-asyncio==1.4.0
+ruff==0.16.4
+mypy==2.3.1
+# No separate sqlalchemy[mypy] extra needed -- the mypy plugin
+# (sqlalchemy.ext.mypy.plugin, configured in pyproject.toml) ships inside
+# the base sqlalchemy package already declared in requirements.txt.

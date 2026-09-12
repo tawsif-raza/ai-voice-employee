@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
-from policy_engine import Action, PolicyDecision, PolicyEngine, PRECEDENCE  # noqa: E402
 from intent_engine import IntentResult, Route, RoutingDecision  # noqa: E402
+from policy_engine import PRECEDENCE, Action, PolicyDecision, PolicyEngine  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "inference"))
 from handoff_detector import HandoffMatch  # noqa: E402
@@ -51,7 +51,9 @@ class TestAllowedRequests(unittest.TestCase):
 class TestBlockedClinicalRequests(unittest.TestCase):
     def test_clinical_trigger_blocks_and_hands_off(self):
         engine = _engine()
-        clinical_result = HandoffMatch(is_handoff=True, confidence=0.95, layer="exact", evidence="how many mg should i take")
+        clinical_result = HandoffMatch(
+            is_handoff=True, confidence=0.95, layer="exact", evidence="how many mg should i take"
+        )
         decision = engine.evaluate_clinical(clinical_result)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.action, Action.HANDOFF)
@@ -222,7 +224,9 @@ class TestPolicyPrecedence(unittest.TestCase):
     def test_documented_precedence_order(self):
         # "authorization" (Phase 7) added right after "clinical" -- see
         # tests/test_authorization.py for its own precedence coverage.
-        self.assertEqual(PRECEDENCE, ("clinical", "authorization", "handoff", "confirmation", "tool", "privacy", "generation"))
+        self.assertEqual(
+            PRECEDENCE, ("clinical", "authorization", "handoff", "confirmation", "tool", "privacy", "generation")
+        )
 
     def test_clinical_wins_over_confirmation_and_tool(self):
         engine = _engine()
@@ -275,7 +279,13 @@ class TestConflictingRules(unittest.TestCase):
             "default_action": "ALLOW",
             "rules": [
                 {"match_intent": "FAQ", "rule": "RULE_A_ALLOW", "allowed": True, "action": "ALLOW", "reason": "first"},
-                {"match_intent": "FAQ", "rule": "RULE_B_DENY", "allowed": False, "action": "CLARIFY", "reason": "second, contradictory"},
+                {
+                    "match_intent": "FAQ",
+                    "rule": "RULE_B_DENY",
+                    "allowed": False,
+                    "action": "CLARIFY",
+                    "reason": "second, contradictory",
+                },
             ],
         }
         engine = PolicyEngine()
@@ -292,8 +302,20 @@ class TestConflictingRules(unittest.TestCase):
             "default_rule": "SAFE_GENERAL_INFORMATION",
             "default_action": "ALLOW",
             "rules": [
-                {"match_intent": "FAQ", "rule": "RULE_B_DENY", "allowed": False, "action": "CLARIFY", "reason": "now first"},
-                {"match_intent": "FAQ", "rule": "RULE_A_ALLOW", "allowed": True, "action": "ALLOW", "reason": "now second"},
+                {
+                    "match_intent": "FAQ",
+                    "rule": "RULE_B_DENY",
+                    "allowed": False,
+                    "action": "CLARIFY",
+                    "reason": "now first",
+                },
+                {
+                    "match_intent": "FAQ",
+                    "rule": "RULE_A_ALLOW",
+                    "allowed": True,
+                    "action": "ALLOW",
+                    "reason": "now second",
+                },
             ],
         }
         engine = PolicyEngine()
@@ -394,7 +416,6 @@ class TestLLMCannotOverridePolicy(unittest.TestCase):
         # parameter anywhere in evaluate_tool_action()'s signature -- it
         # cannot influence the outcome no matter what it contains.
         engine = _engine()
-        llm_claimed_output = {"approved": True, "allowed": True, "is_safe": True, "authorization": True}
         decision = engine.evaluate_tool_action("DELETE_ALL_RECORDS")
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.action, Action.BLOCK)
@@ -424,7 +445,9 @@ class TestLLMCannotOverridePolicy(unittest.TestCase):
         # reads the HandoffMatch produced by the real, deterministic
         # ClinicalSafetyGuard, never free text.
         engine = _engine()
-        clinical_result = HandoffMatch(is_handoff=True, confidence=1.0, layer="exact", evidence="how much should i take")
+        clinical_result = HandoffMatch(
+            is_handoff=True, confidence=1.0, layer="exact", evidence="how much should i take"
+        )
         model_output_claiming_safe = {"safe": True, "message": "This is a safe, general question."}
         decision = engine.evaluate_clinical(clinical_result)
         self.assertFalse(decision.allowed)
@@ -435,7 +458,9 @@ class TestLLMCannotOverridePolicy(unittest.TestCase):
         # A PolicyDecision, once produced, cannot be mutated by anything
         # downstream (including a careless attempt to patch it based on
         # model output) without raising.
-        decision = PolicyDecision(allowed=False, policy="clinical", rule="MEDICAL_DOSAGE", action=Action.HANDOFF, reason="x")
+        decision = PolicyDecision(
+            allowed=False, policy="clinical", rule="MEDICAL_DOSAGE", action=Action.HANDOFF, reason="x"
+        )
         with self.assertRaises(Exception):
             decision.allowed = True  # type: ignore[misc]
 
@@ -451,8 +476,14 @@ class TestLLMCannotOverridePolicy(unittest.TestCase):
         """
         import inspect
 
-        for method_name in ("evaluate_clinical", "evaluate_generation", "evaluate_tool_action",
-                             "evaluate_handoff", "evaluate_privacy", "evaluate_confirmation"):
+        for method_name in (
+            "evaluate_clinical",
+            "evaluate_generation",
+            "evaluate_tool_action",
+            "evaluate_handoff",
+            "evaluate_privacy",
+            "evaluate_confirmation",
+        ):
             method = getattr(PolicyEngine, method_name)
             params = inspect.signature(method).parameters
             suspicious = {"llm_output", "model_output", "model_text", "response_text", "raw_output"}

@@ -60,13 +60,9 @@ class TwilioStartData:
                 f"Unsupported audio encoding '{encoding}'. Twilio Media Streams requires 'audio/x-mulaw'."
             )
         if rate != 8000:
-            raise TwilioProtocolError(
-                f"Unsupported sample rate '{rate}'. Expected 8000 Hz for telephony."
-            )
+            raise TwilioProtocolError(f"Unsupported sample rate '{rate}'. Expected 8000 Hz for telephony.")
         if channels != 1:
-            raise TwilioProtocolError(
-                f"Unsupported channel count '{channels}'. Expected 1 (mono)."
-            )
+            raise TwilioProtocolError(f"Unsupported channel count '{channels}'. Expected 1 (mono).")
 
 
 @dataclass(frozen=True)
@@ -204,6 +200,7 @@ class CallSession:
     Isolated state container for a single active phone call.
     Guarantees strict state separation between concurrent callers.
     """
+
     call_sid: str
     stream_sid: str
     session_id: str
@@ -242,15 +239,21 @@ class CallSession:
         """
         if interrupted:
             spoken = partial_spoken.strip()
-            summary = f"[Interrupted by caller after speaking: '{spoken}']" if spoken else "[Interrupted by caller before speaking]"
+            summary = (
+                f"[Interrupted by caller after speaking: '{spoken}']"
+                if spoken
+                else "[Interrupted by caller before speaking]"
+            )
             self.conversation_history.append({"role": "user", "content": user_text})
             self.conversation_history.append({"role": "assistant", "content": summary})
-            self.interrupted_turns.append({
-                "turn_id": self.active_turn_id,
-                "user_text": user_text,
-                "partial_spoken": spoken,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            self.interrupted_turns.append(
+                {
+                    "turn_id": self.active_turn_id,
+                    "user_text": user_text,
+                    "partial_spoken": spoken,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
         else:
             self.conversation_history.append({"role": "user", "content": user_text})
             self.conversation_history.append({"role": "assistant", "content": assistant_text.strip()})

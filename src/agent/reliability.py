@@ -71,7 +71,13 @@ class RetryPolicy:
     sleep for long durations").
     """
 
-    def __init__(self, max_attempts: int = 2, base_delay_seconds: float = 0.1, max_delay_seconds: float = 2.0, jitter: bool = False):
+    def __init__(
+        self,
+        max_attempts: int = 2,
+        base_delay_seconds: float = 0.1,
+        max_delay_seconds: float = 2.0,
+        jitter: bool = False,
+    ):
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
         if base_delay_seconds < 0 or max_delay_seconds < 0:
@@ -92,7 +98,9 @@ class RetryPolicy:
         """`attempt` is the attempt number that just failed (1-indexed). Never retries past max_attempts, never retries a non-retryable failure."""
         can_retry = retryable and attempt < self.max_attempts
         return RetryDecision(
-            retryable=can_retry, attempt=attempt, max_attempts=self.max_attempts,
+            retryable=can_retry,
+            attempt=attempt,
+            max_attempts=self.max_attempts,
             delay_seconds=self.compute_delay(attempt) if can_retry else 0.0,
             reason=reason or ("transient, retrying" if can_retry else "not retryable or attempts exhausted"),
         )
@@ -118,7 +126,12 @@ class CircuitBreaker:
     HALF_OPEN -> success -> CLOSED ; failure -> OPEN
     """
 
-    def __init__(self, failure_threshold: int = 5, recovery_timeout_seconds: float = 30.0, clock: Callable[[], float] = time.monotonic):
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout_seconds: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         if failure_threshold < 1:
             raise ValueError("failure_threshold must be at least 1")
         self._failure_threshold = failure_threshold

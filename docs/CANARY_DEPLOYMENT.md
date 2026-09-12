@@ -1,4 +1,4 @@
-﻿# Canary Telephony Deployment Architecture & Operations Guide
+# Canary Telephony Deployment Architecture & Operations Guide
 
 ## 1. Architecture Overview
 

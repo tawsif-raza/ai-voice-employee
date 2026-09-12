@@ -22,7 +22,7 @@ from audit import AuditLogger, SecurityEventDetector  # noqa: E402
 from audit_repository_postgres import PostgresAuditRepository  # noqa: E402
 from db import Database, DatabaseUnavailableError, load_database_config  # noqa: E402
 from db_models import Base  # noqa: E402
-from observability_models import AuditEvent, EventType, Severity, SecurityEvent, new_event_id, now_utc  # noqa: E402
+from observability_models import AuditEvent, EventType, SecurityEvent, Severity, new_event_id, now_utc  # noqa: E402
 from policy_engine import PolicyEngine  # noqa: E402
 from privacy_service import PrivacyService  # noqa: E402
 
@@ -35,9 +35,19 @@ def _fresh_database() -> Database:
 
 def _event(**overrides) -> AuditEvent:
     defaults = dict(
-        event_id=new_event_id(), timestamp=now_utc(), event_type=EventType.AUTH_SUCCESS,
-        request_id="req-1", conversation_id=None, session_id="sess-1", actor="user-1",
-        action=None, resource="authentication", outcome="success", policy=None, reason=None, metadata={},
+        event_id=new_event_id(),
+        timestamp=now_utc(),
+        event_type=EventType.AUTH_SUCCESS,
+        request_id="req-1",
+        conversation_id=None,
+        session_id="sess-1",
+        actor="user-1",
+        action=None,
+        resource="authentication",
+        outcome="success",
+        policy=None,
+        reason=None,
+        metadata={},
     )
     defaults.update(overrides)
     return AuditEvent(**defaults)
@@ -62,11 +72,19 @@ class TestAuditPersistence(unittest.TestCase):
         self.assertFalse(hasattr(self.repo, "delete"))
 
     def test_security_event_persistence(self):
-        self.repo.append_security_event(SecurityEvent(
-            event_id=new_event_id(), timestamp=now_utc(), type="CROSS_USER_ACCESS_ATTEMPT",
-            severity=Severity.HIGH, request_id="req-1", actor="user-b", resource="memory",
-            outcome="denied", reason="test",
-        ))
+        self.repo.append_security_event(
+            SecurityEvent(
+                event_id=new_event_id(),
+                timestamp=now_utc(),
+                type="CROSS_USER_ACCESS_ATTEMPT",
+                severity=Severity.HIGH,
+                request_id="req-1",
+                actor="user-b",
+                resource="memory",
+                outcome="denied",
+                reason="test",
+            )
+        )
         events = self.repo.list_security_events()
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].type, "CROSS_USER_ACCESS_ATTEMPT")
@@ -79,9 +97,36 @@ class TestQueryFiltering(unittest.TestCase):
         self.database = _fresh_database()
         self.repo = PostgresAuditRepository(self.database)
         self.base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        self.repo.append(_event(event_id="e1", event_type=EventType.AUTH_SUCCESS, request_id="req-a", actor="user-a", session_id="sess-a", timestamp=self.base_time))
-        self.repo.append(_event(event_id="e2", event_type=EventType.AUTH_FAILURE, request_id="req-b", actor="user-b", session_id="sess-b", timestamp=self.base_time + timedelta(hours=1)))
-        self.repo.append(_event(event_id="e3", event_type=EventType.AUTH_SUCCESS, request_id="req-c", actor="user-a", session_id="sess-a", timestamp=self.base_time + timedelta(hours=2)))
+        self.repo.append(
+            _event(
+                event_id="e1",
+                event_type=EventType.AUTH_SUCCESS,
+                request_id="req-a",
+                actor="user-a",
+                session_id="sess-a",
+                timestamp=self.base_time,
+            )
+        )
+        self.repo.append(
+            _event(
+                event_id="e2",
+                event_type=EventType.AUTH_FAILURE,
+                request_id="req-b",
+                actor="user-b",
+                session_id="sess-b",
+                timestamp=self.base_time + timedelta(hours=1),
+            )
+        )
+        self.repo.append(
+            _event(
+                event_id="e3",
+                event_type=EventType.AUTH_SUCCESS,
+                request_id="req-c",
+                actor="user-a",
+                session_id="sess-a",
+                timestamp=self.base_time + timedelta(hours=2),
+            )
+        )
 
     def tearDown(self):
         self.database.dispose()
@@ -103,7 +148,9 @@ class TestQueryFiltering(unittest.TestCase):
         self.assertEqual([e.event_id for e in events], ["e2"])
 
     def test_filter_by_time_range(self):
-        events = self.repo.list_events(start_time=self.base_time + timedelta(minutes=30), end_time=self.base_time + timedelta(hours=1, minutes=30))
+        events = self.repo.list_events(
+            start_time=self.base_time + timedelta(minutes=30), end_time=self.base_time + timedelta(hours=1, minutes=30)
+        )
         self.assertEqual([e.event_id for e in events], ["e2"])
 
     def test_combined_filters(self):
@@ -150,14 +197,19 @@ class TestPrivacySanitizationPreserved(unittest.TestCase):
         self.database = _fresh_database()
         self.policy_engine = PolicyEngine()
         self.privacy_service = PrivacyService(self.policy_engine)
-        self.logger = AuditLogger(privacy_service=self.privacy_service, repository=PostgresAuditRepository(self.database))
+        self.logger = AuditLogger(
+            privacy_service=self.privacy_service, repository=PostgresAuditRepository(self.database)
+        )
 
     def tearDown(self):
         self.database.dispose()
 
     def test_pii_in_metadata_is_sanitized_before_reaching_the_database(self):
         self.logger.record(
-            EventType.TOOL_REQUESTED, outcome="requested", actor="user-1", action="BOOK_APPOINTMENT",
+            EventType.TOOL_REQUESTED,
+            outcome="requested",
+            actor="user-1",
+            action="BOOK_APPOINTMENT",
             metadata={"raw_input": "email me at attacker@example.com or call 555-987-6543"},
         )
         raw = PostgresAuditRepository(self.database).list_events()[0]
@@ -166,7 +218,9 @@ class TestPrivacySanitizationPreserved(unittest.TestCase):
 
     def test_no_tokens_or_credentials_in_persisted_metadata(self):
         self.logger.record(
-            EventType.AUTH_FAILURE, outcome="denied", actor="client-ip-127.0.0.1",
+            EventType.AUTH_FAILURE,
+            outcome="denied",
+            actor="client-ip-127.0.0.1",
             reason="Invalid or missing credentials.",  # matches identity.py's own never-echo-token discipline
             metadata={"attempted_token": "should never be logged raw"},
         )
@@ -185,7 +239,20 @@ class TestPrivacySanitizationPreserved(unittest.TestCase):
         # inspecting the actual persisted row's fields.
         self.logger.record(EventType.TOOL_SUCCEEDED, outcome="success", actor="user-1", action="ORDER_LOOKUP")
         raw = PostgresAuditRepository(self.database).list_events()[0]
-        for field_name in ("event_id", "event_type", "request_id", "conversation_id", "session_id", "actor", "action", "resource", "outcome", "policy", "reason", "metadata"):
+        for field_name in (
+            "event_id",
+            "event_type",
+            "request_id",
+            "conversation_id",
+            "session_id",
+            "actor",
+            "action",
+            "resource",
+            "outcome",
+            "policy",
+            "reason",
+            "metadata",
+        ):
             self.assertTrue(hasattr(raw, field_name))
         self.assertFalse(hasattr(raw, "prompt"))
         self.assertFalse(hasattr(raw, "completion"))
@@ -204,7 +271,14 @@ class TestAuditCannotAlterBusinessDecisions(unittest.TestCase):
     """
 
     def test_audit_logger_never_raises_even_when_database_is_unreachable(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         logger = AuditLogger(repository=PostgresAuditRepository(database))
         try:
             result = logger.record(EventType.TOOL_DENIED, outcome="denied", actor="user-1", action="CANCEL_APPOINTMENT")
@@ -213,7 +287,14 @@ class TestAuditCannotAlterBusinessDecisions(unittest.TestCase):
             database.dispose()
 
     def test_security_event_detector_never_raises_when_database_is_unreachable(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         logger = AuditLogger(repository=PostgresAuditRepository(database))
         detector = SecurityEventDetector(logger)
         try:
@@ -259,7 +340,14 @@ class TestRestartRecovery(unittest.TestCase):
 
 class TestDatabaseFailure(unittest.TestCase):
     def test_append_raises_database_unavailable(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         repo = PostgresAuditRepository(database)
         try:
             with self.assertRaises(DatabaseUnavailableError):
@@ -268,7 +356,14 @@ class TestDatabaseFailure(unittest.TestCase):
             database.dispose()
 
     def test_list_events_raises_database_unavailable(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         repo = PostgresAuditRepository(database)
         try:
             with self.assertRaises(DatabaseUnavailableError):

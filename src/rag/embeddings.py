@@ -6,8 +6,6 @@ process, and only when retrieval is actually used (not paid for by
 callers that construct VoiceAssistantInference with RAG disabled).
 """
 
-from typing import Optional
-
 import numpy as np
 
 DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"

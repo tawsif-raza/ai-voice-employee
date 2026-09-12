@@ -1,4 +1,4 @@
-﻿# Automated Canary & Regression Testing Guide
+# Automated Canary & Regression Testing Guide
 
 ## 1. Full Regression Baseline Test Suite
 

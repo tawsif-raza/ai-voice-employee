@@ -29,18 +29,16 @@ import logging
 import time
 from typing import Any, AsyncIterator, Callable, Optional
 
+from stt_service import BaseSTTService, STTEventType
 from telephony_models import (
     CallSession,
     CallStatus,
-    TwilioEventType,
     TwilioMediaData,
     TwilioStartData,
     build_clear_message,
     build_mark_message,
     build_media_message,
-    parse_twilio_frame,
 )
-from stt_service import BaseSTTService, STTEventType
 from tts_service import BaseTTSService
 from voice_logging import voice_logger
 
@@ -86,10 +84,7 @@ class VoiceCallHandler:
         t_start = time.perf_counter()
         self.session.status = CallStatus.STREAMING
         self.session.metadata.update(start_data.custom_parameters)
-        logger.info(
-            "Call %s (Stream %s) connected and streaming.",
-            self.session.call_sid, self.session.stream_sid
-        )
+        logger.info("Call %s (Stream %s) connected and streaming.", self.session.call_sid, self.session.stream_sid)
         await self.stt_service.connect()
         conn_lat_ms = (time.perf_counter() - t_start) * 1000
         if self.latency_tracker:
@@ -197,8 +192,9 @@ class VoiceCallHandler:
                     if self.latency_tracker:
                         self.latency_tracker.record("stt_partial_latency", 15.0)
                     # Log without PII for debugging
-                    logger.debug("Interim transcript for call %s: %s words",
-                                 self.session.call_sid, len(event.text.split()))
+                    logger.debug(
+                        "Interim transcript for call %s: %s words", self.session.call_sid, len(event.text.split())
+                    )
 
                 # 3. Finalized speech turn: Drives authoritative ConversationManager
                 elif event.event_type == STTEventType.FINAL_TRANSCRIPT:
@@ -225,9 +221,7 @@ class VoiceCallHandler:
                     )
 
                     # Launch turn execution
-                    self._active_turn_task = asyncio.create_task(
-                        self._execute_turn(transcript, turn_id)
-                    )
+                    self._active_turn_task = asyncio.create_task(self._execute_turn(transcript, turn_id))
 
         except asyncio.CancelledError:
             pass
@@ -247,6 +241,7 @@ class VoiceCallHandler:
             auth = None
             try:
                 from action_models import AuthContext
+
                 is_authenticated = self.session.metadata.get("authenticated_caller") is True
                 auth = AuthContext(
                     user_id=self.session.user_id or "telephony_caller",
@@ -354,8 +349,11 @@ class VoiceCallHandler:
             # Check if interrupted during generation or playback
             if self._turn_cancellation_event.is_set():
                 interrupted_text = "".join(spoken_tokens).strip()
-                logger.info("Outbound audio streaming halted for turn #%s due to barge-in (spoken: '%s')",
-                            turn_id, interrupted_text)
+                logger.info(
+                    "Outbound audio streaming halted for turn #%s due to barge-in (spoken: '%s')",
+                    turn_id,
+                    interrupted_text,
+                )
                 self.session.record_turn_completed(
                     user_text=transcript,
                     assistant_text=interrupted_text,
@@ -434,8 +432,10 @@ class VoiceCallHandler:
             if not self._turn_cancellation_event.is_set():
                 try:
                     err_text = "I apologize, I'm having a little trouble hearing you. Could you please repeat that?"
+
                     async def _err_stream():
                         yield err_text
+
                     async for audio_chunk in self.tts_service.synthesize_stream(_err_stream()):
                         await self._send_to_twilio(build_media_message(self.session.stream_sid, audio_chunk))
                 except Exception:

@@ -16,7 +16,7 @@ Run with:
 
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
@@ -50,8 +50,14 @@ class TestRepositoryRoundTrip(unittest.TestCase):
     def test_save_then_get_round_trips_fields(self):
         now = datetime.now(timezone.utc)
         record = MemoryRecord(
-            id="m1", user_id="u1", category=MemoryCategory.PREFERENCE, key="preferred_clinic",
-            value="Downtown Clinic", source="user_explicit", created_at=now, updated_at=now,
+            id="m1",
+            user_id="u1",
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_clinic",
+            value="Downtown Clinic",
+            source="user_explicit",
+            created_at=now,
+            updated_at=now,
             metadata={"channel": "voice"},
         )
         self.repo.save(record)
@@ -63,13 +69,46 @@ class TestRepositoryRoundTrip(unittest.TestCase):
 
     def test_save_is_upsert(self):
         now = datetime.now(timezone.utc)
-        self.repo.save(MemoryRecord(id="m2", user_id="u1", category=MemoryCategory.PREFERENCE, key="k", value="v1", source="s", created_at=now, updated_at=now))
-        self.repo.save(MemoryRecord(id="m2", user_id="u1", category=MemoryCategory.PREFERENCE, key="k", value="v2", source="s", created_at=now, updated_at=now))
+        self.repo.save(
+            MemoryRecord(
+                id="m2",
+                user_id="u1",
+                category=MemoryCategory.PREFERENCE,
+                key="k",
+                value="v1",
+                source="s",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        self.repo.save(
+            MemoryRecord(
+                id="m2",
+                user_id="u1",
+                category=MemoryCategory.PREFERENCE,
+                key="k",
+                value="v2",
+                source="s",
+                created_at=now,
+                updated_at=now,
+            )
+        )
         self.assertEqual(self.repo.get("m2").value, "v2")
 
     def test_delete_removes_record(self):
         now = datetime.now(timezone.utc)
-        self.repo.save(MemoryRecord(id="m3", user_id="u1", category=MemoryCategory.PREFERENCE, key="k", value="v", source="s", created_at=now, updated_at=now))
+        self.repo.save(
+            MemoryRecord(
+                id="m3",
+                user_id="u1",
+                category=MemoryCategory.PREFERENCE,
+                key="k",
+                value="v",
+                source="s",
+                created_at=now,
+                updated_at=now,
+            )
+        )
         self.repo.delete("m3")
         self.assertIsNone(self.repo.get("m3"))
 
@@ -78,9 +117,42 @@ class TestRepositoryRoundTrip(unittest.TestCase):
 
     def test_list_for_user_scoped_correctly(self):
         now = datetime.now(timezone.utc)
-        self.repo.save(MemoryRecord(id="a1", user_id="user-a", category=MemoryCategory.PREFERENCE, key="k1", value="v", source="s", created_at=now, updated_at=now))
-        self.repo.save(MemoryRecord(id="a2", user_id="user-a", category=MemoryCategory.PREFERENCE, key="k2", value="v", source="s", created_at=now, updated_at=now))
-        self.repo.save(MemoryRecord(id="b1", user_id="user-b", category=MemoryCategory.PREFERENCE, key="k1", value="v", source="s", created_at=now, updated_at=now))
+        self.repo.save(
+            MemoryRecord(
+                id="a1",
+                user_id="user-a",
+                category=MemoryCategory.PREFERENCE,
+                key="k1",
+                value="v",
+                source="s",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        self.repo.save(
+            MemoryRecord(
+                id="a2",
+                user_id="user-a",
+                category=MemoryCategory.PREFERENCE,
+                key="k2",
+                value="v",
+                source="s",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        self.repo.save(
+            MemoryRecord(
+                id="b1",
+                user_id="user-b",
+                category=MemoryCategory.PREFERENCE,
+                key="k1",
+                value="v",
+                source="s",
+                created_at=now,
+                updated_at=now,
+            )
+        )
         user_a_records = self.repo.list_for_user("user-a")
         self.assertEqual({r.id for r in user_a_records}, {"a1", "a2"})
 
@@ -101,17 +173,35 @@ class TestCrossUserSecurity(unittest.TestCase):
         self.database.dispose()
 
     def test_user_b_cannot_read_user_a_memory(self):
-        record = self.manager.propose_memory(user_id="user-a", category=MemoryCategory.PREFERENCE, key="preferred_clinic", value="Downtown Clinic", source="user_explicit")
+        record = self.manager.propose_memory(
+            user_id="user-a",
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_clinic",
+            value="Downtown Clinic",
+            source="user_explicit",
+        )
         self.manager.persist_memory(record)
         self.assertEqual(self.manager.list_allowed_memory("user-b"), [])
 
     def test_user_b_cannot_modify_user_a_memory(self):
-        record = self.manager.propose_memory(user_id="user-a", category=MemoryCategory.PREFERENCE, key="preferred_clinic", value="Downtown Clinic", source="user_explicit")
+        record = self.manager.propose_memory(
+            user_id="user-a",
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_clinic",
+            value="Downtown Clinic",
+            source="user_explicit",
+        )
         self.manager.persist_memory(record)
 
         forged = MemoryRecord(
-            id=record.id, user_id="user-b", category=MemoryCategory.PREFERENCE, key="preferred_clinic",
-            value="Attacker Clinic", source="user_explicit", created_at=record.created_at, updated_at=record.updated_at,
+            id=record.id,
+            user_id="user-b",
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_clinic",
+            value="Attacker Clinic",
+            source="user_explicit",
+            created_at=record.created_at,
+            updated_at=record.updated_at,
         )
         with self.assertRaises(MemoryOwnershipError):
             self.manager.persist_memory(forged)
@@ -119,7 +209,13 @@ class TestCrossUserSecurity(unittest.TestCase):
         self.assertEqual(self.manager.list_allowed_memory("user-a")[0].value, "Downtown Clinic")
 
     def test_user_b_cannot_delete_user_a_memory(self):
-        record = self.manager.propose_memory(user_id="user-a", category=MemoryCategory.PREFERENCE, key="preferred_clinic", value="Downtown Clinic", source="user_explicit")
+        record = self.manager.propose_memory(
+            user_id="user-a",
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_clinic",
+            value="Downtown Clinic",
+            source="user_explicit",
+        )
         self.manager.persist_memory(record)
         self.assertFalse(self.manager.remove_memory(record.id, user_id="user-b"))
         self.assertEqual(len(self.manager.list_allowed_memory("user-a")), 1)
@@ -134,9 +230,20 @@ class TestCrossUserSecurity(unittest.TestCase):
         # The ownership guard must not block legitimate same-user reuse
         # of an id (test_duplicate_memory_ids_do_not_raise's scenario,
         # re-verified here against the persisted repository).
-        record = self.manager.propose_memory(user_id="user-a", category=MemoryCategory.PREFERENCE, key="k", value="v1", source="s")
+        record = self.manager.propose_memory(
+            user_id="user-a", category=MemoryCategory.PREFERENCE, key="k", value="v1", source="s"
+        )
         self.manager.persist_memory(record)
-        updated = MemoryRecord(id=record.id, user_id="user-a", category=MemoryCategory.PREFERENCE, key="k", value="v2", source="s", created_at=record.created_at, updated_at=record.updated_at)
+        updated = MemoryRecord(
+            id=record.id,
+            user_id="user-a",
+            category=MemoryCategory.PREFERENCE,
+            key="k",
+            value="v2",
+            source="s",
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
         self.manager.persist_memory(updated)  # must not raise
         self.assertEqual(self.manager.list_allowed_memory("user-a")[0].value, "v2")
 
@@ -148,13 +255,21 @@ class TestPrivacyNotBypassed(unittest.TestCase):
         self.database = _fresh_database()
         policy_engine = PolicyEngine()
         privacy_service = PrivacyService(policy_engine)
-        self.manager = MemoryManager(policy_engine, repository=PostgresMemoryRepository(self.database), privacy_service=privacy_service)
+        self.manager = MemoryManager(
+            policy_engine, repository=PostgresMemoryRepository(self.database), privacy_service=privacy_service
+        )
 
     def tearDown(self):
         self.database.dispose()
 
     def test_restricted_field_denied_persistence_still_enforced(self):
-        record = self.manager.propose_memory(user_id="u1", category=MemoryCategory.PREFERENCE, key="medical_condition", value="diabetes", source="user_explicit")
+        record = self.manager.propose_memory(
+            user_id="u1",
+            category=MemoryCategory.PREFERENCE,
+            key="medical_condition",
+            value="diabetes",
+            source="user_explicit",
+        )
         with self.assertRaises(MemoryPolicyDeniedError):
             self.manager.persist_memory(record)
         self.assertEqual(self.manager.list_allowed_memory("u1"), [])
@@ -171,8 +286,11 @@ class TestPrivacyNotBypassed(unittest.TestCase):
         # behavior (Phase 6), not something Phase 12 changed; this test
         # exists to prove persistence doesn't weaken it.
         record = self.manager.propose_memory(
-            user_id="u1", category=MemoryCategory.PREFERENCE, key="notes",
-            value="call me at 555-123-4567 please", source="user_explicit",
+            user_id="u1",
+            category=MemoryCategory.PREFERENCE,
+            key="notes",
+            value="call me at 555-123-4567 please",
+            source="user_explicit",
         )
         with self.assertRaises(MemoryPolicyDeniedError):
             self.manager.persist_memory(record)
@@ -210,7 +328,13 @@ class TestRestartRecovery(unittest.TestCase):
     def test_memory_survives_simulated_restart(self):
         policy_engine = PolicyEngine()
         manager_before = MemoryManager(policy_engine, repository=PostgresMemoryRepository(self._new_database()))
-        record = manager_before.propose_memory(user_id="u1", category=MemoryCategory.PREFERENCE, key="preferred_language", value="English", source="user_explicit")
+        record = manager_before.propose_memory(
+            user_id="u1",
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_language",
+            value="English",
+            source="user_explicit",
+        )
         manager_before.persist_memory(record)
 
         # "Restart": brand-new Database/repository/manager against the
@@ -223,7 +347,14 @@ class TestRestartRecovery(unittest.TestCase):
 
 class TestDatabaseFailure(unittest.TestCase):
     def test_get_raises_database_unavailable(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         repo = PostgresMemoryRepository(database)
         try:
             with self.assertRaises(DatabaseUnavailableError):
@@ -232,17 +363,42 @@ class TestDatabaseFailure(unittest.TestCase):
             database.dispose()
 
     def test_save_raises_database_unavailable(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         repo = PostgresMemoryRepository(database)
         now = datetime.now(timezone.utc)
         try:
             with self.assertRaises(DatabaseUnavailableError):
-                repo.save(MemoryRecord(id="x", user_id="u1", category=MemoryCategory.PREFERENCE, key="k", value="v", source="s", created_at=now, updated_at=now))
+                repo.save(
+                    MemoryRecord(
+                        id="x",
+                        user_id="u1",
+                        category=MemoryCategory.PREFERENCE,
+                        key="k",
+                        value="v",
+                        source="s",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
         finally:
             database.dispose()
 
     def test_list_for_user_raises_database_unavailable(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         repo = PostgresMemoryRepository(database)
         try:
             with self.assertRaises(DatabaseUnavailableError):

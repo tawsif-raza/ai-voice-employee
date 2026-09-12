@@ -33,8 +33,8 @@ from audit import AuditLogger  # noqa: E402
 from audit_repository_postgres import PostgresAuditRepository  # noqa: E402
 from db import Database, load_database_config  # noqa: E402
 from db_models import Base  # noqa: E402
-from identity import Role, permissions_for_roles  # noqa: E402
 from idempotency_repository_postgres import PostgresIdempotencyRepository  # noqa: E402
+from identity import Role, permissions_for_roles  # noqa: E402
 from memory_manager import MemoryManager  # noqa: E402
 from memory_models import MemoryCategory  # noqa: E402
 from memory_repository_postgres import PostgresMemoryRepository  # noqa: E402
@@ -46,8 +46,11 @@ from session_repository_postgres import PostgresSessionRepository  # noqa: E402
 from tool_orchestrator import ToolOrchestrator  # noqa: E402
 
 AUTH = AuthContext(
-    user_id="user-1", authenticated=True, roles=(Role.USER.value,),
-    permissions=permissions_for_roles((Role.USER,)), authentication_method="test",
+    user_id="user-1",
+    authenticated=True,
+    roles=(Role.USER.value,),
+    permissions=permissions_for_roles((Role.USER,)),
+    authentication_method="test",
 )
 
 
@@ -102,21 +105,30 @@ class TestConfirmationRecovery(RecoveryTestCase):
         manager1 = SessionManager(repository=PostgresSessionRepository(self._new_database()))
         session = manager1.create_session(user_id="user-1")
         manager1.update_session(
-            session.session_id, user_id="user-1", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": booked["appointment_id"]},
+            session.session_id,
+            user_id="user-1",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": booked["appointment_id"]},
         )
         del manager1  # destroy application instance
 
         manager2 = SessionManager(repository=PostgresSessionRepository(self._new_database()))
-        orchestrator2 = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(self._new_database()))
+        orchestrator2 = ToolOrchestrator(
+            registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(self._new_database())
+        )
         consumed = manager2.try_consume_pending_confirmation(session.session_id, user_id="user-1")
         self.assertIsNotNone(consumed)
         action_name, params = consumed
-        result = orchestrator2.invoke(ToolRequest(action=action_name, params=params, confirmed=True, request_id="recovery-req-1"), auth=AUTH)
+        result = orchestrator2.invoke(
+            ToolRequest(action=action_name, params=params, confirmed=True, request_id="recovery-req-1"), auth=AUTH
+        )
         self.assertTrue(result.success)
 
         # exactly once: a repeat with the same request_id (post-restart) is denied
-        result_again = orchestrator2.invoke(ToolRequest(action=action_name, params=params, confirmed=True, request_id="recovery-req-1"), auth=AUTH)
+        result_again = orchestrator2.invoke(
+            ToolRequest(action=action_name, params=params, confirmed=True, request_id="recovery-req-1"), auth=AUTH
+        )
         self.assertFalse(result_again.success)
         self.assertEqual(result_again.status, "duplicate")
 
@@ -128,8 +140,11 @@ class TestReplayRecovery(RecoveryTestCase):
         manager1 = SessionManager(repository=PostgresSessionRepository(self._new_database()))
         session = manager1.create_session(user_id="user-1")
         manager1.update_session(
-            session.session_id, user_id="user-1", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "1"},
+            session.session_id,
+            user_id="user-1",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": "1"},
         )
         first = manager1.try_consume_pending_confirmation(session.session_id, user_id="user-1")
         self.assertIsNotNone(first)
@@ -146,7 +161,13 @@ class TestMemoryRecovery(RecoveryTestCase):
     def test_memory_survives_restart(self):
         policy_engine = PolicyEngine()
         manager1 = MemoryManager(policy_engine, repository=PostgresMemoryRepository(self._new_database()))
-        record = manager1.propose_memory(user_id="user-1", category=MemoryCategory.PREFERENCE, key="preferred_language", value="English", source="user_explicit")
+        record = manager1.propose_memory(
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_language",
+            value="English",
+            source="user_explicit",
+        )
         manager1.persist_memory(record)
         del manager1  # destroy application instance
 
@@ -178,13 +199,22 @@ class TestIdempotencyRecovery(RecoveryTestCase):
         booked = appointments.book({"doctor_id": "d1", "date": "2026-08-18", "time": "17:00"})
         registry = build_default_tool_registry(appointment_store=appointments)
 
-        orchestrator1 = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(self._new_database()))
-        request = ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]}, confirmed=True, request_id="recovery-idem-1")
+        orchestrator1 = ToolOrchestrator(
+            registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(self._new_database())
+        )
+        request = ToolRequest(
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            request_id="recovery-idem-1",
+        )
         first = orchestrator1.invoke(request, auth=AUTH)
         self.assertTrue(first.success)
         del orchestrator1  # destroy application instance
 
-        orchestrator2 = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(self._new_database()))
+        orchestrator2 = ToolOrchestrator(
+            registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(self._new_database())
+        )
         second = orchestrator2.invoke(request, auth=AUTH)
         self.assertFalse(second.success)
         self.assertEqual(second.status, "duplicate")
@@ -204,7 +234,13 @@ class TestCrossUserRecovery(RecoveryTestCase):
     def test_cross_user_memory_access_denied_after_restart(self):
         policy_engine = PolicyEngine()
         manager1 = MemoryManager(policy_engine, repository=PostgresMemoryRepository(self._new_database()))
-        record = manager1.propose_memory(user_id="user-a", category=MemoryCategory.PREFERENCE, key="preferred_clinic", value="Downtown Clinic", source="user_explicit")
+        record = manager1.propose_memory(
+            user_id="user-a",
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_clinic",
+            value="Downtown Clinic",
+            source="user_explicit",
+        )
         manager1.persist_memory(record)
         del manager1  # destroy application instance
 

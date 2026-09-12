@@ -13,11 +13,11 @@ Cleaning steps:
     6. Save in chat format
 """
 
-import re
 import json
-from datasets import load_dataset
+import re
 from pathlib import Path
 
+from datasets import load_dataset
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -195,7 +195,7 @@ def clean_ultrachat(dataset_name: str, output_path: Path) -> None:
         output_path:  Where to save the cleaned JSON file
     """
     print(f"\n{'='*60}")
-    print(f"CLEANING PIPELINE — UltraChat 200k (v2)")
+    print("CLEANING PIPELINE — UltraChat 200k (v2)")
     print(f"Output : {output_path}")
     print(f"{'='*60}\n")
 

@@ -18,39 +18,58 @@ label dict.
 import threading
 from dataclasses import dataclass, field
 
+_COUNTER_NAMES = frozenset(
+    {
+        "requests_total",
+        "requests_failed",
+        "policy_denials_total",
+        "handoffs_total",
+        "tool_requests_total",
+        "tool_success_total",
+        "tool_failures_total",
+        "tool_timeouts_total",
+        "auth_failures_total",
+        "authorization_denials_total",
+        "privacy_blocks_total",
+        "sessions_created_total",
+        "sessions_expired_total",
+        # Phase 10 — reliability.
+        "timeouts_total",
+        "retries_total",
+        "dependency_failures_total",
+        "circuit_breaker_open_total",
+        "idempotency_duplicates_total",
+        "request_rejections_total",
+        # Phase 13 — voice/telephony canary counters.
+        "voice_calls_total",
+        "voice_calls_completed",
+        "voice_calls_failed",
+        "voice_barge_in_events_total",
+        "voice_stt_interim_count",
+        "voice_stt_final_count",
+        "voice_tts_synthesis_errors_total",
+        # LLM provider routing / failover.
+        "llm_fallback_cooldown_triggered_total",
+        "llm_fallback_used_total",
+        "llm_failover_events_total",
+    }
+)
 
-_COUNTER_NAMES = frozenset({
-    "requests_total", "requests_failed",
-    "policy_denials_total", "handoffs_total",
-    "tool_requests_total", "tool_success_total", "tool_failures_total", "tool_timeouts_total",
-    "auth_failures_total", "authorization_denials_total",
-    "privacy_blocks_total",
-    "sessions_created_total", "sessions_expired_total",
-    # Phase 10 — reliability.
-    "timeouts_total", "retries_total", "dependency_failures_total",
-    "circuit_breaker_open_total", "idempotency_duplicates_total", "request_rejections_total",
-    # Phase 13 — voice/telephony canary counters.
-    "voice_calls_total", "voice_calls_completed", "voice_calls_failed",
-    "voice_barge_in_events_total",
-    "voice_stt_interim_count", "voice_stt_final_count",
-    "voice_tts_synthesis_errors_total",
-    # LLM provider routing / failover.
-    "llm_fallback_cooldown_triggered_total", "llm_fallback_used_total",
-    "llm_failover_events_total",
-})
-
-_HISTOGRAM_NAMES = frozenset({
-    "generation_latency_ms", "rag_latency_ms",
-    # Phase 13 — per-phase voice latency histograms.
-    "voice_barge_in_latency_ms",
-    "voice_ttfa_ms",
-    "voice_turn_latency_ms",
-    "voice_stt_final_latency_ms",
-    "voice_safety_latency_ms",
-    "voice_llm_ttft_ms",
-    "voice_tts_ttfa_ms",
-    "voice_interruption_latency_ms",
-})
+_HISTOGRAM_NAMES = frozenset(
+    {
+        "generation_latency_ms",
+        "rag_latency_ms",
+        # Phase 13 — per-phase voice latency histograms.
+        "voice_barge_in_latency_ms",
+        "voice_ttfa_ms",
+        "voice_turn_latency_ms",
+        "voice_stt_final_latency_ms",
+        "voice_safety_latency_ms",
+        "voice_llm_ttft_ms",
+        "voice_tts_ttfa_ms",
+        "voice_interruption_latency_ms",
+    }
+)
 
 
 @dataclass

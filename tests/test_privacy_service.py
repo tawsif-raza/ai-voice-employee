@@ -187,6 +187,7 @@ class TestPrivacyAttackRegressions(unittest.TestCase):
         decision = svc.decide("email a@b.com", context="LOGGING")
         self.assertEqual(decision.action, "REDACT")
         import inspect
+
         for method_name in ("decide", "redact", "sanitize", "validate_destination"):
             params = inspect.signature(getattr(PrivacyService, method_name)).parameters
             self.assertNotIn("redact", params)  # no boolean toggle parameter exists at all
@@ -200,10 +201,14 @@ class TestPrivacyAttackRegressions(unittest.TestCase):
         # "LLM output": {"store_pii": true} -- MemoryManager.persist_memory()
         # has no such parameter; only PolicyEngine's own decision governs.
         record = manager.propose_memory(
-            user_id="u1", category=MemoryCategory.PREFERENCE, key="favorite_note",
-            value="card 4111111111111111", source="user_explicit",
+            user_id="u1",
+            category=MemoryCategory.PREFERENCE,
+            key="favorite_note",
+            value="card 4111111111111111",
+            source="user_explicit",
         )
         from memory_manager import MemoryPolicyDeniedError
+
         with self.assertRaises(MemoryPolicyDeniedError):
             manager.persist_memory(record)
 
@@ -219,8 +224,8 @@ class TestPrivacyAttackRegressions(unittest.TestCase):
 
     def test_attack_4_tool_returning_raw_pii_is_sanitized_before_reaching_caller(self):
         from action_models import ActionSpec, AuthContext
-        from tool_registry import ToolRegistry
         from tool_orchestrator import ToolOrchestrator
+        from tool_registry import ToolRegistry
 
         def leaky_tool(params):
             return {"patient_id": "123", "email": "john@example.com", "appointment": "confirmed"}
@@ -229,10 +234,17 @@ class TestPrivacyAttackRegressions(unittest.TestCase):
         registry.register(ActionSpec(name="LEAKY_ACTION", description="d", params_schema={}), leaky_tool)
         policy = PolicyEngine()
         # Allow this test-only action through the tool-policy gate.
-        policy._tools = {**policy._tools, "rules": [*policy._tools.get("rules", []), {"action": "LEAKY_ACTION", "rule": "TEST_ALLOWED", "allowed": True, "reason": "test"}]}
+        policy._tools = {
+            **policy._tools,
+            "rules": [
+                *policy._tools.get("rules", []),
+                {"action": "LEAKY_ACTION", "rule": "TEST_ALLOWED", "allowed": True, "reason": "test"},
+            ],
+        }
         orchestrator = ToolOrchestrator(registry, policy, privacy_service=_service())
 
         from action_models import ToolRequest
+
         result = orchestrator.invoke(
             ToolRequest(action="LEAKY_ACTION", params={}, confirmed=True),
             auth=AuthContext(user_id="u1", authenticated=True, roles=("customer",)),

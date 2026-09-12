@@ -18,23 +18,25 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
-from action_models import ActionProposal, AuthContext, ToolRequest  # noqa: E402
+from action_models import AuthContext, ToolRequest  # noqa: E402
 from audit import AuditRepository  # noqa: E402
 from identity import Role, permissions_for_roles  # noqa: E402
 from memory_manager import MemoryManager  # noqa: E402
 from memory_models import MemoryCategory  # noqa: E402
 from metrics import MetricsRegistry  # noqa: E402
 from mock_tools import build_default_tool_registry  # noqa: E402
-from observability_models import AuditEvent, EventType, now_utc, new_event_id  # noqa: E402
+from observability_models import AuditEvent, EventType, new_event_id, now_utc  # noqa: E402
 from policy_engine import PolicyEngine  # noqa: E402
 from session_manager import SessionManager  # noqa: E402
 from session_models import SessionStatus  # noqa: E402
 from tool_orchestrator import ToolOrchestrator  # noqa: E402
 
-
 AUTHENTICATED_USER = AuthContext(
-    user_id="user-1", authenticated=True, roles=(Role.USER.value,),
-    permissions=permissions_for_roles((Role.USER,)), authentication_method="test",
+    user_id="user-1",
+    authenticated=True,
+    roles=(Role.USER.value,),
+    permissions=permissions_for_roles((Role.USER,)),
+    authentication_method="test",
 )
 
 
@@ -126,8 +128,11 @@ class TestMemoryManagerConcurrency(unittest.TestCase):
         def _persist(user_id):
             try:
                 record = manager.propose_memory(
-                    user_id=user_id, category=MemoryCategory.PREFERENCE, key="likes_texting",
-                    value="yes", source="user",
+                    user_id=user_id,
+                    category=MemoryCategory.PREFERENCE,
+                    key="likes_texting",
+                    value="yes",
+                    source="user",
                 )
                 manager.persist_memory(record)
             except Exception as exc:  # noqa: BLE001
@@ -152,8 +157,11 @@ class TestMemoryManagerConcurrency(unittest.TestCase):
         def _writer():
             for i in range(50):
                 record = manager.propose_memory(
-                    user_id="user-1", category=MemoryCategory.PREFERENCE, key=f"k{i}",
-                    value="v", source="user",
+                    user_id="user-1",
+                    category=MemoryCategory.PREFERENCE,
+                    key=f"k{i}",
+                    value="v",
+                    source="user",
                 )
                 try:
                     manager.persist_memory(record)
@@ -203,11 +211,20 @@ class TestAuditRepositoryConcurrency(unittest.TestCase):
 
         def _hammer():
             for _ in range(200):
-                repo.append(AuditEvent(
-                    event_id=new_event_id(), timestamp=now_utc(), event_type=EventType.AUTH_SUCCESS,
-                    request_id=None, conversation_id=None, session_id=None, actor="u", action=None,
-                    resource=None, outcome="success",
-                ))
+                repo.append(
+                    AuditEvent(
+                        event_id=new_event_id(),
+                        timestamp=now_utc(),
+                        event_type=EventType.AUTH_SUCCESS,
+                        request_id=None,
+                        conversation_id=None,
+                        session_id=None,
+                        actor="u",
+                        action=None,
+                        resource=None,
+                        outcome="success",
+                    )
+                )
 
         _run_concurrently(_hammer, count=10)
         self.assertEqual(len(repo.list_events()), 2000)

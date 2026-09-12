@@ -56,11 +56,18 @@ class TestRepositoryRoundTrip(unittest.TestCase):
     def test_save_then_get_round_trips_all_fields(self):
         now = datetime.now(timezone.utc)
         session = SessionState(
-            session_id="s1", user_id="user-1", status=SessionStatus.ACTIVE,
-            created_at=now, updated_at=now, expires_at=now + timedelta(minutes=30),
-            current_intent="BOOK_APPOINTMENT", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "123"},
-            confirmation_state={"required": True}, metadata={"channel": "voice"},
+            session_id="s1",
+            user_id="user-1",
+            status=SessionStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
+            expires_at=now + timedelta(minutes=30),
+            current_intent="BOOK_APPOINTMENT",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": "123"},
+            confirmation_state={"required": True},
+            metadata={"channel": "voice"},
         )
         self.repo.save(session)
         fetched = self.repo.get("s1")
@@ -86,7 +93,9 @@ class TestRepositoryRoundTrip(unittest.TestCase):
 
     def test_delete_removes_session(self):
         now = datetime.now(timezone.utc)
-        self.repo.save(SessionState(session_id="s3", created_at=now, updated_at=now, expires_at=now + timedelta(minutes=30)))
+        self.repo.save(
+            SessionState(session_id="s3", created_at=now, updated_at=now, expires_at=now + timedelta(minutes=30))
+        )
         self.repo.delete("s3")
         self.assertIsNone(self.repo.get("s3"))
 
@@ -135,16 +144,29 @@ class TestExpiration(unittest.TestCase):
         now = datetime.now(timezone.utc)
         # Directly persist an already-expired session -- simulates "no
         # cleanup job has run yet," exactly the scenario plan.md calls out.
-        self.repo.save(SessionState(session_id="expired-1", created_at=now - timedelta(hours=1), updated_at=now - timedelta(hours=1), expires_at=now - timedelta(minutes=1)))
+        self.repo.save(
+            SessionState(
+                session_id="expired-1",
+                created_at=now - timedelta(hours=1),
+                updated_at=now - timedelta(hours=1),
+                expires_at=now - timedelta(minutes=1),
+            )
+        )
         self.assertIsNone(self.manager.get_session("expired-1"))
 
     def test_expired_pending_confirmation_cannot_be_consumed(self):
         now = datetime.now(timezone.utc)
-        self.repo.save(SessionState(
-            session_id="expired-2", created_at=now - timedelta(hours=1), updated_at=now - timedelta(hours=1),
-            expires_at=now - timedelta(minutes=1), workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "1"},
-        ))
+        self.repo.save(
+            SessionState(
+                session_id="expired-2",
+                created_at=now - timedelta(hours=1),
+                updated_at=now - timedelta(hours=1),
+                expires_at=now - timedelta(minutes=1),
+                workflow_state="AWAITING_CONFIRMATION",
+                pending_action="CANCEL_APPOINTMENT",
+                pending_parameters={"appointment_id": "1"},
+            )
+        )
         self.assertIsNone(self.manager.try_consume_pending_confirmation("expired-2"))
 
 
@@ -187,8 +209,11 @@ class TestReplayProtectionAcrossPersistence(unittest.TestCase):
     def test_second_consumption_of_same_confirmation_is_denied(self):
         session = self.manager.create_session(user_id="u1")
         self.manager.update_session(
-            session.session_id, user_id="u1", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "1"},
+            session.session_id,
+            user_id="u1",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": "1"},
         )
         first = self.manager.try_consume_pending_confirmation(session.session_id, user_id="u1")
         self.assertIsNotNone(first)
@@ -243,8 +268,11 @@ class TestRestartRecovery(unittest.TestCase):
         manager_before_restart = self._new_manager()
         session = manager_before_restart.create_session(user_id="u1")
         manager_before_restart.update_session(
-            session.session_id, user_id="u1", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "42"},
+            session.session_id,
+            user_id="u1",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": "42"},
         )
 
         # "Restart": a completely fresh Database/repository/manager stack
@@ -273,10 +301,13 @@ class TestConcurrentConfirmationConsumption(unittest.TestCase):
     def setUp(self):
         fd, path = tempfile.mkstemp(suffix=".db", prefix="phase12_session_concurrency_")
         import os
+
         os.close(fd)
         os.remove(path)
         self.db_path = Path(path)
-        self.database = Database(load_database_config(env={"DATABASE_URL": f"sqlite:///{self.db_path.as_posix()}", "DB_POOL_SIZE": "10"}))
+        self.database = Database(
+            load_database_config(env={"DATABASE_URL": f"sqlite:///{self.db_path.as_posix()}", "DB_POOL_SIZE": "10"})
+        )
         Base.metadata.create_all(self.database.engine)
         self.manager = SessionManager(repository=PostgresSessionRepository(self.database))
 
@@ -288,8 +319,11 @@ class TestConcurrentConfirmationConsumption(unittest.TestCase):
     def test_concurrent_same_session_confirmation_executes_exactly_once(self):
         session = self.manager.create_session(user_id="u1")
         self.manager.update_session(
-            session.session_id, user_id="u1", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "1"},
+            session.session_id,
+            user_id="u1",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": "1"},
         )
 
         results = []
@@ -309,7 +343,9 @@ class TestConcurrentConfirmationConsumption(unittest.TestCase):
             t.join(timeout=10)
 
         successes = [r for r in results if r is not None]
-        self.assertEqual(len(successes), 1, f"expected exactly one successful consumption, got {len(successes)}: {results}")
+        self.assertEqual(
+            len(successes), 1, f"expected exactly one successful consumption, got {len(successes)}: {results}"
+        )
 
 
 class TestDuplicateConfirmationSubmission(unittest.TestCase):
@@ -325,19 +361,26 @@ class TestDuplicateConfirmationSubmission(unittest.TestCase):
     def test_duplicate_sequential_confirmation_only_consumes_once(self):
         session = self.manager.create_session(user_id="u1")
         self.manager.update_session(
-            session.session_id, user_id="u1", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "9"},
+            session.session_id,
+            user_id="u1",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": "9"},
         )
-        outcomes = [
-            self.manager.try_consume_pending_confirmation(session.session_id, user_id="u1")
-            for _ in range(3)
-        ]
+        outcomes = [self.manager.try_consume_pending_confirmation(session.session_id, user_id="u1") for _ in range(3)]
         self.assertEqual(sum(1 for o in outcomes if o is not None), 1)
 
 
 class TestDatabaseFailure(unittest.TestCase):
     def test_get_raises_database_unavailable_when_engine_is_disposed_and_unreachable(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         repo = PostgresSessionRepository(database)
         try:
             with self.assertRaises(DatabaseUnavailableError):
@@ -346,17 +389,33 @@ class TestDatabaseFailure(unittest.TestCase):
             database.dispose()
 
     def test_save_raises_database_unavailable_on_connection_failure(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         repo = PostgresSessionRepository(database)
         now = datetime.now(timezone.utc)
         try:
             with self.assertRaises(DatabaseUnavailableError):
-                repo.save(SessionState(session_id="x", created_at=now, updated_at=now, expires_at=now + timedelta(minutes=1)))
+                repo.save(
+                    SessionState(session_id="x", created_at=now, updated_at=now, expires_at=now + timedelta(minutes=1))
+                )
         finally:
             database.dispose()
 
     def test_try_consume_pending_confirmation_raises_database_unavailable_on_connection_failure(self):
-        database = Database(load_database_config(env={"PERSISTENCE_MODE": "production", "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"}))
+        database = Database(
+            load_database_config(
+                env={
+                    "PERSISTENCE_MODE": "production",
+                    "DATABASE_URL": "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1",
+                }
+            )
+        )
         repo = PostgresSessionRepository(database)
         try:
             with self.assertRaises(DatabaseUnavailableError):

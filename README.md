@@ -103,7 +103,7 @@ source .venv/bin/activate  # Linux/Mac
 # 2. Install dependencies
 pip install torch  # Install PyTorch matching your platform first
 pip install -r requirements.txt
-pip install -r requirements-dev.txt  # test tooling (pytest, pytest-asyncio)
+pip install -r requirements-dev.txt  # test + quality tooling (pytest, ruff, mypy)
 
 # 3. Configure environment
 cp .env.example .env
@@ -129,6 +129,51 @@ python src/voice/client_tts.py --message "Hello"       # Single message
 ```bash
 python -m pytest tests/ -v
 ```
+
+### Code Quality (lint, format, type-check)
+
+Every push/PR to `main` runs these same four checks in CI
+(`.github/workflows/ci.yml`) — formatting first, then lint, then type
+checking, then the test suite, so a mechanical failure surfaces before the
+slower test run. Reproduce any of them locally with the exact commands CI
+uses:
+
+```bash
+# Formatting -- check only (CI fails if this would change anything)
+python -m ruff format --check src/ tests/ scripts/ notebooks/
+# ...or actually apply formatting locally before committing:
+python -m ruff format src/ tests/ scripts/ notebooks/
+
+# Linting
+python -m ruff check src/ tests/ scripts/ notebooks/
+# Auto-fix what's safely fixable:
+python -m ruff check src/ tests/ scripts/ notebooks/ --fix
+
+# Type checking (src/ only -- see PHASE_14_1_WORKFLOW_HARDENING_REPORT.md
+# §3 for why tests/ isn't type-checked)
+python -m mypy src/
+```
+
+Windows note: if `ruff`/`mypy` aren't on `PATH` after installing
+`requirements-dev.txt` (pip may install their scripts to a directory
+outside `PATH` by default — pip's own install output will warn about
+this), invoke them as `python -m ruff ...` / `python -m mypy ...` instead,
+exactly as shown above.
+
+Configuration lives in `pyproject.toml` (`[tool.ruff]`, `[tool.mypy]`).
+Both tools are configured with a **baseline**, not the strictest possible
+settings: a curated rule/error-code set is enforced everywhere, and a
+documented, non-growing list of pre-existing legacy findings (mostly in
+the ML training/export pipeline and SQLAlchemy-typing-adjacent code) is
+explicitly grandfathered per file — see the pyproject.toml comments and
+`PHASE_14_1_WORKFLOW_HARDENING_REPORT.md` for the full rationale and list.
+**New code must pass cleanly; do not add new entries to the grandfathered
+lists** (`[tool.ruff.lint.per-file-ignores]`, `[[tool.mypy.overrides]]`) —
+if a change needs one, that's a sign to fix the underlying issue instead.
+
+There is no pre-commit hook configured — CI is the enforcement point.
+Run the four commands above locally before pushing to catch failures
+early.
 
 ### Docker
 

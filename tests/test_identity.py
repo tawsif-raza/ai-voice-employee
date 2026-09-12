@@ -16,8 +16,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from action_models import ANONYMOUS_CONTEXT, AuthContext  # noqa: E402
 from identity import (  # noqa: E402
-    AuthenticationError, AuthenticationProvider, DevelopmentAuthenticationProvider,
-    Permission, ROLE_PERMISSIONS, Role, permissions_for_roles,
+    ROLE_PERMISSIONS,
+    AuthenticationError,
+    AuthenticationProvider,
+    DevelopmentAuthenticationProvider,
+    Permission,
+    Role,
+    permissions_for_roles,
 )
 
 

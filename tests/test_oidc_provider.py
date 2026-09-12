@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from audit import AuditLogger, AuditRepository, SecurityEventDetector  # noqa: E402
 from identity import AuthenticationError, Role  # noqa: E402
 from observability_models import EventType  # noqa: E402
-from oidc_provider import AuthConfigurationError, OIDCConfig, load_oidc_config, OIDCAuthenticationProvider  # noqa: E402
+from oidc_provider import AuthConfigurationError, OIDCAuthenticationProvider, OIDCConfig, load_oidc_config  # noqa: E402
 
 ISSUER = "https://issuer.example.test/"
 AUDIENCE = "test-api"
@@ -70,8 +70,18 @@ def _resolver(keys_by_kid=None):
 
 
 def _make_token(
-    *, private_key=_PRIVATE_KEY, kid=_KID, sub="user-123", iss=ISSUER, aud=AUDIENCE,
-    exp_delta=3600, iat_delta=0, nbf_delta=None, roles=None, algorithm="RS256", extra_claims=None,
+    *,
+    private_key=_PRIVATE_KEY,
+    kid=_KID,
+    sub="user-123",
+    iss=ISSUER,
+    aud=AUDIENCE,
+    exp_delta=3600,
+    iat_delta=0,
+    nbf_delta=None,
+    roles=None,
+    algorithm="RS256",
+    extra_claims=None,
 ):
     now = int(time.time())
     claims = {"sub": sub, "iss": iss, "aud": aud, "exp": now + exp_delta, "iat": now + iat_delta}
@@ -92,7 +102,13 @@ def _make_token(
 
 
 def _config(**overrides) -> OIDCConfig:
-    defaults = dict(issuer=ISSUER, audience=AUDIENCE, algorithms=("RS256",), clock_skew_seconds=60, jwks_url="https://issuer.example.test/jwks.json")
+    defaults = dict(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        algorithms=("RS256",),
+        clock_skew_seconds=60,
+        jwks_url="https://issuer.example.test/jwks.json",
+    )
     defaults.update(overrides)
     return OIDCConfig(**defaults)
 
@@ -219,7 +235,8 @@ class TestAlgorithmAttacks(unittest.TestCase):
 
         provider = _provider()
         public_pem = _PUBLIC_KEY.public_bytes(
-            encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
         now = int(time.time())
         header = {"alg": "HS256", "typ": "JWT", "kid": _KID}
@@ -271,7 +288,9 @@ class TestLLMTrustBoundaryTokenTampering(unittest.TestCase):
     def test_claim_shaped_text_in_credentials_dict_has_no_effect(self):
         """Extra, unrecognized keys in the credentials dict (e.g. a forged {"role": "admin"}) are simply ignored -- only `token` is ever read."""
         provider = _provider()
-        ctx = provider.authenticate({"token": _make_token(), "role": "admin", "authenticated": True, "user_id": "admin-1"})
+        ctx = provider.authenticate(
+            {"token": _make_token(), "role": "admin", "authenticated": True, "user_id": "admin-1"}
+        )
         self.assertEqual(ctx.user_id, "user-123")
         self.assertNotIn(Role.ADMIN.value, ctx.roles)
 
@@ -333,11 +352,13 @@ class TestLoadOidcConfig(unittest.TestCase):
 
     def test_missing_config_file_and_no_env_raises(self):
         import tempfile
+
         with self.assertRaises(AuthConfigurationError):
             load_oidc_config(config_path=str(Path(tempfile.gettempdir()) / "nonexistent_auth_config_xyz.yaml"))
 
     def test_valid_config_loads(self):
         import tempfile
+
         path = Path(tempfile.gettempdir()) / "test_auth_config_valid.yaml"
         path.write_text(
             "authentication:\n"
@@ -354,6 +375,7 @@ class TestLoadOidcConfig(unittest.TestCase):
 
     def test_alg_none_in_config_rejected(self):
         import tempfile
+
         path = Path(tempfile.gettempdir()) / "test_auth_config_alg_none.yaml"
         path.write_text(
             "authentication:\n"
@@ -370,6 +392,7 @@ class TestLoadOidcConfig(unittest.TestCase):
     def test_env_var_overrides_yaml(self):
         import os
         import tempfile
+
         path = Path(tempfile.gettempdir()) / "test_auth_config_env_override.yaml"
         path.write_text(
             "authentication:\n"
@@ -388,6 +411,7 @@ class TestLoadOidcConfig(unittest.TestCase):
 
     def test_unknown_role_in_mapping_rejected(self):
         import tempfile
+
         path = Path(tempfile.gettempdir()) / "test_auth_config_bad_role.yaml"
         path.write_text(
             "authentication:\n"
@@ -420,7 +444,7 @@ class TestSessionAndMemoryBindingWithOidcIdentity(unittest.TestCase):
         user_b = provider.authenticate({"token": _make_token(sub="oidc-user-b")})
 
         manager = SessionManager()
-        session = manager.create_session(session_id="s1", user_id=user_a.user_id)
+        manager.create_session(session_id="s1", user_id=user_a.user_id)
         self.assertIsNotNone(manager.get_session("s1", user_id=user_a.user_id))
         self.assertIsNone(manager.get_session("s1", user_id=user_b.user_id))
 
@@ -436,8 +460,11 @@ class TestSessionAndMemoryBindingWithOidcIdentity(unittest.TestCase):
 
         manager = MemoryManager(PolicyEngine())
         record = manager.propose_memory(
-            user_id=user_a.user_id, category=MemoryCategory.PREFERENCE, key="likes_texting",
-            value="yes", source="user",
+            user_id=user_a.user_id,
+            category=MemoryCategory.PREFERENCE,
+            key="likes_texting",
+            value="yes",
+            source="user",
         )
         saved = manager.persist_memory(record)
         self.assertEqual(manager.remove_memory(saved.id, user_id=user_b.user_id), False)

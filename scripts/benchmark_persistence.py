@@ -31,12 +31,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 
+from audit_repository_postgres import PostgresAuditRepository  # noqa: E402
 from db import Database, load_database_config  # noqa: E402
 from db_models import Base  # noqa: E402
+from idempotency_repository_postgres import PostgresIdempotencyRepository  # noqa: E402
 from memory_models import MemoryCategory, MemoryRecord  # noqa: E402
 from memory_repository_postgres import PostgresMemoryRepository  # noqa: E402
-from audit_repository_postgres import PostgresAuditRepository  # noqa: E402
-from idempotency_repository_postgres import PostgresIdempotencyRepository  # noqa: E402
 from observability_models import AuditEvent, EventType, new_event_id, now_utc  # noqa: E402
 from session_models import SessionState  # noqa: E402
 from session_repository_postgres import PostgresSessionRepository  # noqa: E402
@@ -74,7 +74,9 @@ def main():
     os.remove(path)
     db_path = Path(path)
     try:
-        database = Database(load_database_config(env={"DATABASE_URL": f"sqlite:///{db_path.as_posix()}", "DB_POOL_SIZE": "10"}))
+        database = Database(
+            load_database_config(env={"DATABASE_URL": f"sqlite:///{db_path.as_posix()}", "DB_POOL_SIZE": "10"})
+        )
         Base.metadata.create_all(database.engine)
 
         session_repo = PostgresSessionRepository(database)
@@ -86,7 +88,13 @@ def main():
 
         # ── Session ──────────────────────────────────────────────────
         now = datetime.now(timezone.utc)
-        seed_session = SessionState(session_id="bench-session", user_id="bench-user", created_at=now, updated_at=now, expires_at=now + timedelta(hours=1))
+        seed_session = SessionState(
+            session_id="bench-session",
+            user_id="bench-user",
+            created_at=now,
+            updated_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
         session_repo.save(seed_session)
         _summarize("session read", _timed(lambda: session_repo.get("bench-session")))
 
@@ -94,13 +102,28 @@ def main():
 
         def _session_write():
             counter["n"] += 1
-            s = SessionState(session_id=f"bench-session-write-{counter['n']}", user_id="bench-user", created_at=now, updated_at=now, expires_at=now + timedelta(hours=1))
+            s = SessionState(
+                session_id=f"bench-session-write-{counter['n']}",
+                user_id="bench-user",
+                created_at=now,
+                updated_at=now,
+                expires_at=now + timedelta(hours=1),
+            )
             session_repo.save(s)
 
         _summarize("session write", _timed(_session_write))
 
         # ── Memory ───────────────────────────────────────────────────
-        seed_memory = MemoryRecord(id="bench-memory", user_id="bench-user", category=MemoryCategory.PREFERENCE, key="k", value="v", source="s", created_at=now, updated_at=now)
+        seed_memory = MemoryRecord(
+            id="bench-memory",
+            user_id="bench-user",
+            category=MemoryCategory.PREFERENCE,
+            key="k",
+            value="v",
+            source="s",
+            created_at=now,
+            updated_at=now,
+        )
         memory_repo.save(seed_memory)
         _summarize("memory read", _timed(lambda: memory_repo.get("bench-memory")))
 
@@ -108,24 +131,45 @@ def main():
 
         def _memory_write():
             mem_counter["n"] += 1
-            r = MemoryRecord(id=f"bench-memory-write-{mem_counter['n']}", user_id="bench-user", category=MemoryCategory.PREFERENCE, key="k", value="v", source="s", created_at=now, updated_at=now)
+            r = MemoryRecord(
+                id=f"bench-memory-write-{mem_counter['n']}",
+                user_id="bench-user",
+                category=MemoryCategory.PREFERENCE,
+                key="k",
+                value="v",
+                source="s",
+                created_at=now,
+                updated_at=now,
+            )
             memory_repo.save(r)
 
         _summarize("memory write", _timed(_memory_write))
 
         # ── Audit ────────────────────────────────────────────────────
         def _audit_write():
-            audit_repo.append(AuditEvent(
-                event_id=new_event_id(), timestamp=now_utc(), event_type=EventType.TOOL_REQUESTED,
-                request_id=None, conversation_id=None, session_id=None, actor="bench-user",
-                action="BENCH", resource=None, outcome="requested",
-            ))
+            audit_repo.append(
+                AuditEvent(
+                    event_id=new_event_id(),
+                    timestamp=now_utc(),
+                    event_type=EventType.TOOL_REQUESTED,
+                    request_id=None,
+                    conversation_id=None,
+                    session_id=None,
+                    actor="bench-user",
+                    action="BENCH",
+                    resource=None,
+                    outcome="requested",
+                )
+            )
 
         _summarize("audit write", _timed(_audit_write))
 
         # ── Idempotency ──────────────────────────────────────────────
         idempotency_repo.try_reserve("bench-idem-seed", user_id="bench-user", action="BENCH")
-        _summarize("idempotency lookup (has_executed)", _timed(lambda: idempotency_repo.has_executed("bench-idem-seed", user_id="bench-user", action="BENCH")))
+        _summarize(
+            "idempotency lookup (has_executed)",
+            _timed(lambda: idempotency_repo.has_executed("bench-idem-seed", user_id="bench-user", action="BENCH")),
+        )
 
         idem_counter = {"n": 0}
 
@@ -141,10 +185,18 @@ def main():
         def _confirmation_consumption():
             confirm_counter["n"] += 1
             sid = f"bench-confirm-{confirm_counter['n']}"
-            session_repo.save(SessionState(
-                session_id=sid, user_id="bench-user", created_at=now, updated_at=now, expires_at=now + timedelta(hours=1),
-                workflow_state="AWAITING_CONFIRMATION", pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "1"},
-            ))
+            session_repo.save(
+                SessionState(
+                    session_id=sid,
+                    user_id="bench-user",
+                    created_at=now,
+                    updated_at=now,
+                    expires_at=now + timedelta(hours=1),
+                    workflow_state="AWAITING_CONFIRMATION",
+                    pending_action="CANCEL_APPOINTMENT",
+                    pending_parameters={"appointment_id": "1"},
+                )
+            )
             session_repo.try_consume_pending_confirmation(sid, user_id="bench-user")
 
         _summarize("confirmation consumption", _timed(_confirmation_consumption, n=200))
@@ -162,7 +214,15 @@ def main():
                     conc_counter["n"] += 1
                     i = conc_counter["n"]
                 start = time.perf_counter()
-                session_repo.save(SessionState(session_id=f"bench-conc-{i}", user_id="bench-user", created_at=now, updated_at=now, expires_at=now + timedelta(hours=1)))
+                session_repo.save(
+                    SessionState(
+                        session_id=f"bench-conc-{i}",
+                        user_id="bench-user",
+                        created_at=now,
+                        updated_at=now,
+                        expires_at=now + timedelta(hours=1),
+                    )
+                )
                 session_repo.get(f"bench-conc-{i}")
                 elapsed = time.perf_counter() - start
                 with latencies_lock:
@@ -177,14 +237,18 @@ def main():
         overall_elapsed = time.perf_counter() - overall_start
 
         _summarize("concurrent save+get (per op)", latencies)
-        print(f"{'total wall time':32s} {overall_elapsed * 1000:7.3f}ms for {len(latencies)} operations across 20 threads")
+        print(
+            f"{'total wall time':32s} {overall_elapsed * 1000:7.3f}ms for {len(latencies)} operations across 20 threads"
+        )
 
         # ── Pool health verification ─────────────────────────────────
         print("\n=== Connection pool health ===\n")
         pool = database.engine.pool
         print(f"pool checked-out connections after load: {pool.checkedout()}")
         print(f"pool size: {getattr(pool, 'size', lambda: 'n/a')()}")
-        assert pool.checkedout() == 0, "connection leak detected: connections still checked out after all operations completed"
+        assert pool.checkedout() == 0, (
+            "connection leak detected: connections still checked out after all operations completed"
+        )
         print("OK: no connection leak (checkedout() == 0 after all operations)")
 
         database.dispose()

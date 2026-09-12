@@ -54,7 +54,9 @@ class ActionSpec:
     destructive: bool = False
     timeout_seconds: float = 5.0
     required_role: Optional[str] = None  # None = any authenticated caller may invoke
-    required_permission: Optional[str] = None  # Phase 7 — see identity.py's Permission enum. None = no permission check beyond authentication.
+    required_permission: Optional[str] = (
+        None  # Phase 7 — see identity.py's Permission enum. None = no permission check beyond authentication.
+    )
     # Phase 10 (plan.md Step 10.6) — one of reliability.IdempotencyClass's
     # values ("READ_ONLY" | "IDEMPOTENT_WRITE" | "NON_IDEMPOTENT_WRITE"),
     # kept as a plain str here (not importing reliability.py's enum) so
@@ -184,4 +186,6 @@ class AuthContext:
 # is *not* elevated — ANONYMOUS_CONTEXT.authenticated is False and it has
 # no roles/permissions, so any ActionSpec that requires a role or
 # permission still denies it.
-ANONYMOUS_CONTEXT = AuthContext(user_id="anonymous", authenticated=False, roles=(), permissions=(), authentication_method="none")
+ANONYMOUS_CONTEXT = AuthContext(
+    user_id="anonymous", authenticated=False, roles=(), permissions=(), authentication_method="none"
+)

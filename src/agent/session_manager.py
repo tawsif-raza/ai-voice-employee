@@ -84,15 +84,22 @@ class SessionRepository:
 
 
 _UPDATABLE_FIELDS = {
-    "current_intent", "workflow_state", "pending_action",
-    "pending_parameters", "confirmation_state", "metadata",
+    "current_intent",
+    "workflow_state",
+    "pending_action",
+    "pending_parameters",
+    "confirmation_state",
+    "metadata",
 }
 
 
 class SessionManager:
     def __init__(
-        self, repository: Optional[SessionRepository] = None, ttl: timedelta = DEFAULT_SESSION_TTL,
-        audit_logger=None, security_detector=None,
+        self,
+        repository: Optional[SessionRepository] = None,
+        ttl: timedelta = DEFAULT_SESSION_TTL,
+        audit_logger=None,
+        security_detector=None,
     ):
         self._repository = repository or SessionRepository()
         self._ttl = ttl
@@ -120,13 +127,19 @@ class SessionManager:
                 raise ValueError("session_id must be a non-empty string")
             self._repository.delete(sid)
             now = datetime.now(timezone.utc)
-            session = SessionState(session_id=sid, user_id=user_id, created_at=now, updated_at=now, expires_at=now + self._ttl)
+            session = SessionState(
+                session_id=sid, user_id=user_id, created_at=now, updated_at=now, expires_at=now + self._ttl
+            )
             self._repository.save(session)
             if self._audit_logger is not None:
                 from observability_models import EventType
+
                 self._audit_logger.record(
-                    EventType.SESSION_CREATED, outcome="success", actor=user_id,
-                    session_id=sid, resource="session",
+                    EventType.SESSION_CREATED,
+                    outcome="success",
+                    actor=user_id,
+                    session_id=sid,
+                    resource="session",
                 )
             return session
 
@@ -166,9 +179,13 @@ class SessionManager:
         self._repository.save(session)
         if self._audit_logger is not None:
             from observability_models import EventType
+
             self._audit_logger.record(
-                EventType.SESSION_EXPIRED, outcome="success", actor=session.user_id,
-                session_id=session.session_id, resource="session",
+                EventType.SESSION_EXPIRED,
+                outcome="success",
+                actor=session.user_id,
+                session_id=session.session_id,
+                resource="session",
             )
 
     def _get_for_transition(self, session_id, user_id: Optional[str] = None) -> Optional[SessionState]:
@@ -187,7 +204,10 @@ class SessionManager:
         session = self._repository.get(session_id)
         if session is None:
             return None
-        if session.status not in (SessionStatus.EXPIRED, SessionStatus.FAILED, SessionStatus.COMPLETED) and session.is_expired():
+        if (
+            session.status not in (SessionStatus.EXPIRED, SessionStatus.FAILED, SessionStatus.COMPLETED)
+            and session.is_expired()
+        ):
             self._expire(session)
         if user_id is not None and session.user_id is not None and session.user_id != user_id:
             return None
@@ -204,9 +224,13 @@ class SessionManager:
             if new_status not in allowed:
                 if self._audit_logger is not None:
                     from observability_models import EventType
+
                     self._audit_logger.record(
-                        EventType.SESSION_INVALID_TRANSITION, outcome="denied", actor=session.user_id,
-                        session_id=session_id, resource="session",
+                        EventType.SESSION_INVALID_TRANSITION,
+                        outcome="denied",
+                        actor=session.user_id,
+                        session_id=session_id,
+                        resource="session",
                         reason=f"{session.status.value} -> {new_status.value} is not an allowed transition.",
                     )
                 raise InvalidTransitionError(
@@ -281,7 +305,9 @@ class SessionManager:
             self._repository.save(session)
             return action_name, params
 
-    def try_consume_pending_authentication(self, session_id, user_id: Optional[str] = None) -> Optional[tuple[str, dict]]:
+    def try_consume_pending_authentication(
+        self, session_id, user_id: Optional[str] = None
+    ) -> Optional[tuple[str, dict]]:
         """
         Atomically checks whether `session_id` has a pending
         AWAITING_AUTHENTICATION action and, if so, clears it and returns
@@ -308,7 +334,11 @@ class SessionManager:
     def expire_session(self, session_id) -> None:
         with self._lock:
             session = self._repository.get(session_id)
-            if session is not None and session.status not in (SessionStatus.EXPIRED, SessionStatus.FAILED, SessionStatus.COMPLETED):
+            if session is not None and session.status not in (
+                SessionStatus.EXPIRED,
+                SessionStatus.FAILED,
+                SessionStatus.COMPLETED,
+            ):
                 self._expire(session)
 
     def delete_session(self, session_id) -> None:

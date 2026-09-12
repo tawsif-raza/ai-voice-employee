@@ -76,7 +76,10 @@ class InMemoryIdempotencyRepository:
             if existing is not None and existing["expires_at"] > now:
                 return False
             self._records[key] = {
-                "action": action, "result_status": "in_progress", "reserved_at": now, "expires_at": now + ttl,
+                "action": action,
+                "result_status": "in_progress",
+                "reserved_at": now,
+                "expires_at": now + ttl,
             }
             return True
 

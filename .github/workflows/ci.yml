@@ -25,6 +25,20 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
+      # Quality gates run fastest-and-most-mechanical first, so a
+      # formatting slip fails in seconds rather than after the full
+      # (slower) test suite has already run. See
+      # PHASE_14_1_WORKFLOW_HARDENING_REPORT.md for what each gate
+      # enforces vs. treats as pre-existing, documented technical debt.
+      - name: Check formatting (ruff format)
+        run: python -m ruff format --check src/ tests/ scripts/ notebooks/
+
+      - name: Lint (ruff check)
+        run: python -m ruff check src/ tests/ scripts/ notebooks/
+
+      - name: Type-check (mypy)
+        run: python -m mypy src/
+
       - name: Run test suite
         env:
           PERSISTENCE_MODE: dev

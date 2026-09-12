@@ -1,4 +1,4 @@
-﻿# Known Architectural Limitations & Technical Debt
+# Known Architectural Limitations & Technical Debt
 
 This document provides an honest, transparent catalog of known limitations in the current telephony and voice architecture. These items must be understood prior to declaring full production readiness.
 

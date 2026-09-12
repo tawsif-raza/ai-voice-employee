@@ -26,7 +26,6 @@ from conversation_manager import ConversationManager
 from handoff_detector import HandoffDetector
 from metrics import MetricsRegistry
 from session_manager import SessionManager
-from session_models import SessionStatus
 from stt_service import MockSTTService, STTEvent, STTEventType
 from telephony_models import CallSession, CallStatus, TwilioStartData
 from tts_service import MockTTSService
@@ -51,14 +50,15 @@ class LongSpeechLLMService:
 
 
 class TestVoiceCanaryBargeIn(unittest.IsolatedAsyncioTestCase):
-
     async def test_mid_sentence_barge_in_and_recovery(self):
         """
         Caller interrupts long utterance -> audio stops -> caller speaks new turn ->
         turn #2 completes cleanly without repeating stale content.
         """
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         metrics = MetricsRegistry()
         cm = ConversationManager(
@@ -83,8 +83,11 @@ class TestVoiceCanaryBargeIn(unittest.IsolatedAsyncioTestCase):
         )
 
         start_data = TwilioStartData(
-            account_sid="AC_TEST", stream_sid="MZ_BARGE_1", call_sid="CA_BARGE_1",
-            tracks=["inbound"], media_format={"encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1}
+            account_sid="AC_TEST",
+            stream_sid="MZ_BARGE_1",
+            call_sid="CA_BARGE_1",
+            tracks=["inbound"],
+            media_format={"encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1},
         )
         await handler.handle_start(start_data)
         stt_task = asyncio.create_task(handler.process_stt_events())
@@ -147,7 +150,9 @@ class TestVoiceCanaryBargeIn(unittest.IsolatedAsyncioTestCase):
         the pending confirmation workflow state must be safely cleared.
         """
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         sm = SessionManager()
         sess_state = sm.create_session(session_id="caller_barge_conf", user_id="telephony_caller")

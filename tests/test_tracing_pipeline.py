@@ -18,12 +18,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from conversation_manager import ConversationManager  # noqa: E402
-from tracing import TracingConfig, init_tracing, get_memory_exporter  # noqa: E402
+from tracing import TracingConfig, get_memory_exporter, init_tracing  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "inference"))
 from handoff_detector import HandoffDetector  # noqa: E402
 from intent_engine import IntentEngine  # noqa: E402
-
 from opentelemetry import trace as _otel_trace  # noqa: E402
 
 CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "clinical_triggers.yaml"
@@ -48,16 +47,24 @@ def _authenticated_user(user_id: str = "u1"):
     from identity import Role, permissions_for_roles
 
     return AuthContext(
-        user_id=user_id, authenticated=True, roles=(Role.USER.value,),
-        permissions=permissions_for_roles((Role.USER,)), authentication_method="test",
+        user_id=user_id,
+        authenticated=True,
+        roles=(Role.USER.value,),
+        permissions=permissions_for_roles((Role.USER,)),
+        authentication_method="test",
     )
 
 
 class FakeLLMService:
     """Same generate_stream(messages) contract as test_conversation_manager.py's fake."""
 
-    def __init__(self, response_text: str = "Sure, here is the answer.", fail: bool = False,
-                 latency_ms: float = 42.0, extra_final_fields: dict = None):
+    def __init__(
+        self,
+        response_text: str = "Sure, here is the answer.",
+        fail: bool = False,
+        latency_ms: float = 42.0,
+        extra_final_fields: dict = None,
+    ):
         self.response_text = response_text
         self.fail = fail
         self.latency_ms = latency_ms
@@ -158,6 +165,7 @@ class TracingPipelineTestCase(unittest.TestCase):
         # so each test's memory exporter actually captures their spans.
         import conversation_manager as _cm_module
         import tool_orchestrator as _to_module
+
         for _mod in (_cm_module, _to_module):
             proxy = getattr(_mod._tracer, "_tracer", None)
             if proxy is not None and hasattr(proxy, "_real_tracer"):
@@ -185,17 +193,23 @@ class TestFullTurnSpanTree(TracingPipelineTestCase):
         llm = FakeLLMService(response_text="Our business hours are nine to five.")
         retriever = FakeRetriever([FakeChunk("faq_hours", "faqs", "Hours", "9-5", 0.9)])
         cm = ConversationManager(
-            llm_service=llm, retriever=retriever,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=retriever,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             intent_engine=_real_intent_engine(),
         )
         _run_turn(cm, "What are your business hours?")
 
         names = self._span_names()
         expected = {
-            "conversation.handle_turn", "conversation.clinical_safety_check",
-            "conversation.intent_classify", "conversation.policy_evaluate",
-            "conversation.rag_retrieve", "conversation.llm_generate", "conversation.handoff_detect",
+            "conversation.handle_turn",
+            "conversation.clinical_safety_check",
+            "conversation.intent_classify",
+            "conversation.policy_evaluate",
+            "conversation.rag_retrieve",
+            "conversation.llm_generate",
+            "conversation.handoff_detect",
         }
         self.assertTrue(expected.issubset(set(names)), f"missing spans: {expected - set(names)}")
 
@@ -207,7 +221,8 @@ class TestFullTurnSpanTree(TracingPipelineTestCase):
             if span is root:
                 continue
             self.assertEqual(
-                span.parent.span_id if span.parent else None, root.context.span_id,
+                span.parent.span_id if span.parent else None,
+                root.context.span_id,
                 f"{span.name} is not a direct child of the root turn span",
             )
 
@@ -216,8 +231,10 @@ class TestClinicalShortCircuit(TracingPipelineTestCase):
     def test_clinical_short_circuit_minimal_spans(self):
         llm = FakeLLMService()
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
         )
         _run_turn(cm, "How many mg of ibuprofen should I take?")
 
@@ -238,9 +255,13 @@ class TestToolActionSpan(TracingPipelineTestCase):
         orchestrator = ToolOrchestrator(build_default_tool_registry(), policy)
         llm = FakeLLMService(response_text="irrelevant")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
-            intent_engine=_real_intent_engine(), policy_engine=policy, tool_orchestrator=orchestrator,
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            intent_engine=_real_intent_engine(),
+            policy_engine=policy,
+            tool_orchestrator=orchestrator,
         )
         auth = _authenticated_user("u1")
         _run_turn(cm, "Can you check my order status for order_1001?", auth=auth)
@@ -261,9 +282,12 @@ class TestRagRetrySpan(TracingPipelineTestCase):
         llm = FakeLLMService(response_text="Here you go.")
         retriever = FailNTimesThenSucceedRetriever(fail_times=1, chunks=[FakeChunk("c1", "faqs", "T", "C", 0.9)])
         cm = ConversationManager(
-            llm_service=llm, retriever=retriever,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
-            intent_engine=_real_intent_engine(), sleep_fn=lambda _seconds: None,
+            llm_service=llm,
+            retriever=retriever,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            intent_engine=_real_intent_engine(),
+            sleep_fn=lambda _seconds: None,
             rag_retry_policy=RetryPolicy(max_attempts=2),
         )
         _run_turn(cm, "What is your return policy?")
@@ -280,8 +304,10 @@ class TestLLMFailoverSpan(TracingPipelineTestCase):
             extra_final_fields={"provider": "gemini", "model": "gemini-2.5-flash", "fallback_used": True},
         )
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             intent_engine=_real_intent_engine(),
         )
         _run_turn(cm, "What is your return policy?")
@@ -298,15 +324,19 @@ class TestSpanAttributesNeverContainUserMessage(TracingPipelineTestCase):
         llm = FakeLLMService(response_text="A response mentioning " + secret_message + " would be a bug.")
         retriever = FakeRetriever([FakeChunk("c1", "faqs", secret_message, secret_message, 0.9)])
         cm = ConversationManager(
-            llm_service=llm, retriever=retriever,
-            clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+            llm_service=llm,
+            retriever=retriever,
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
             intent_engine=_real_intent_engine(),
         )
         _run_turn(cm, f"Tell me about {secret_message}")
 
         for span in self._spans():
             for key, value in span.attributes.items():
-                self.assertNotIn(secret_message, str(value), f"span {span.name} attribute {key} leaked the user message")
+                self.assertNotIn(
+                    secret_message, str(value), f"span {span.name} attribute {key} leaked the user message"
+                )
 
 
 class TestTracingErrorDoesNotBreakTurn(TracingPipelineTestCase):
@@ -322,8 +352,10 @@ class TestTracingErrorDoesNotBreakTurn(TracingPipelineTestCase):
         try:
             llm = FakeLLMService(response_text="Still works.")
             cm = ConversationManager(
-                llm_service=llm, retriever=FakeRetriever(),
-                clinical_guard=_real_clinical_guard(), handoff_detector=_real_handoff_detector(),
+                llm_service=llm,
+                retriever=FakeRetriever(),
+                clinical_guard=_real_clinical_guard(),
+                handoff_detector=_real_handoff_detector(),
                 intent_engine=_real_intent_engine(),
             )
             chunks, final = _run_turn(cm, "What are your business hours?")
@@ -336,15 +368,19 @@ class TestTracingErrorDoesNotBreakTurn(TracingPipelineTestCase):
 
 class TestToolDeniedShortCircuit(TracingPipelineTestCase):
     def test_tool_denied_short_circuit(self):
-        from action_models import ActionSpec, ActionProposal, ToolRequest
+        from action_models import ActionSpec, ToolRequest
         from policy_engine import PolicyEngine
         from tool_orchestrator import ToolOrchestrator
         from tool_registry import ToolRegistry
 
         registry = ToolRegistry()
-        registry.register(ActionSpec(name="UNLISTED_ACTION", description="d", params_schema={}), lambda params: {"ok": True})
+        registry.register(
+            ActionSpec(name="UNLISTED_ACTION", description="d", params_schema={}), lambda params: {"ok": True}
+        )
         orchestrator = ToolOrchestrator(registry, PolicyEngine())
-        result = orchestrator.invoke(ToolRequest(action="UNLISTED_ACTION", params={}, confirmed=True), auth=_authenticated_user())
+        result = orchestrator.invoke(
+            ToolRequest(action="UNLISTED_ACTION", params={}, confirmed=True), auth=_authenticated_user()
+        )
 
         self.assertFalse(result.success)
         self.assertEqual(result.status, "policy_denied")
@@ -369,10 +405,17 @@ class TestToolSpanRecordsTimeout(TracingPipelineTestCase):
             lambda params: __import__("time").sleep(0.5) or {"ok": True},
         )
         policy = PolicyEngine()
-        policy._tools = {**policy._tools, "rules": [*policy._tools.get("rules", []),
-                                                     {"action": "SLOW_ACTION", "rule": "TEST_ALLOWED", "allowed": True, "reason": "test"}]}
+        policy._tools = {
+            **policy._tools,
+            "rules": [
+                *policy._tools.get("rules", []),
+                {"action": "SLOW_ACTION", "rule": "TEST_ALLOWED", "allowed": True, "reason": "test"},
+            ],
+        }
         orchestrator = ToolOrchestrator(registry, policy)
-        result = orchestrator.invoke(ToolRequest(action="SLOW_ACTION", params={}, confirmed=True), auth=_authenticated_user())
+        result = orchestrator.invoke(
+            ToolRequest(action="SLOW_ACTION", params={}, confirmed=True), auth=_authenticated_user()
+        )
 
         self.assertEqual(result.status, "timeout")
         exec_span = self._span_by_name("tool_orchestrator.execute")

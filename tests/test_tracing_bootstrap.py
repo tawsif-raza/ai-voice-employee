@@ -1,4 +1,3 @@
-import os
 import sys
 from pathlib import Path
 
@@ -6,19 +5,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 
+from observability_models import CorrelationContext
 from tracing import (
-    TracingConfig,
     SpanAttributes,
+    TracingConfig,
+    get_tracer,
     init_tracing,
     shutdown_tracing,
-    get_tracer,
     with_trace_context,
 )
-from observability_models import CorrelationContext
 
 # Assume PIIDetector is available
 try:
     from pii_detector import PIIDetector
+
     HAS_PII = True
 except ImportError:
     HAS_PII = False
@@ -27,8 +27,11 @@ except ImportError:
 try:
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: F401 -- availability check only
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,  # noqa: F401 -- availability check only
+    )
+
     HAS_OTEL = True
 except ImportError:
     HAS_OTEL = False
@@ -37,6 +40,7 @@ except ImportError:
 @pytest.fixture(autouse=True)
 def reset_global_tracer_provider():
     """Reset the tracer provider before and after each test."""
+
     def _reset():
         if HAS_OTEL:
             trace._TRACER_PROVIDER = None
@@ -51,9 +55,10 @@ def reset_global_tracer_provider():
 def test_tracing_disabled_returns_noop():
     config = TracingConfig(enabled=False)
     provider = init_tracing(config)
-    
+
     if HAS_OTEL:
         from opentelemetry.trace import NoOpTracerProvider
+
         assert isinstance(provider, NoOpTracerProvider)
 
 
@@ -61,9 +66,9 @@ def test_tracing_disabled_returns_noop():
 def test_tracing_enabled_memory_exporter():
     config = TracingConfig(enabled=True, exporter_type="memory")
     provider = init_tracing(config)
-    
+
     assert isinstance(provider, TracerProvider)
-    
+
     # Check that a tracer can be obtained
     tracer = get_tracer("test.tracer")
     assert tracer is not None
@@ -72,10 +77,10 @@ def test_tracing_enabled_memory_exporter():
 @pytest.mark.skipif(not HAS_PII, reason="PIIDetector not available")
 def test_span_attributes_no_pii():
     detector = PIIDetector()
-    
+
     # Extract all values from SpanAttributes
     attrs = [v for k, v in vars(SpanAttributes).items() if not k.startswith("_")]
-    
+
     for attr in attrs:
         # Span attribute keys should not be flagged as containing PII
         # Though the keys themselves aren't PII, we test that our expected span
@@ -88,21 +93,21 @@ def test_span_attributes_no_pii():
 def test_shutdown_flushes_spans():
     config = TracingConfig(enabled=True, exporter_type="memory")
     provider = init_tracing(config)
-    
+
     tracer = get_tracer("test.tracer")
     with tracer.start_as_current_span("test_span"):
         pass
-        
+
     # Calling shutdown should complete without errors
     shutdown_tracing(provider)
-    
+
 
 def test_config_from_env_defaults(monkeypatch):
     monkeypatch.delenv("TRACING_ENABLED", raising=False)
     monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
-    
+
     config = TracingConfig.from_env()
-    assert config.enabled == False
+    assert not config.enabled
     assert config.service_name == "ai-voice-agent"
     assert config.exporter_type == "console"
     assert config.otlp_endpoint == "http://localhost:4317"
@@ -117,9 +122,9 @@ def test_config_env_overrides(monkeypatch):
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://custom:4317")
     monkeypatch.setenv("OTEL_TRACES_SAMPLER", "traceidratio")
     monkeypatch.setenv("OTEL_TRACES_SAMPLER_ARG", "0.5")
-    
+
     config = TracingConfig.from_env()
-    assert config.enabled == True
+    assert config.enabled
     assert config.service_name == "my-test-service"
     assert config.exporter_type == "otlp"
     assert config.otlp_endpoint == "http://custom:4317"
@@ -130,27 +135,27 @@ def test_config_env_overrides(monkeypatch):
 @pytest.mark.skipif(not HAS_OTEL, reason="OpenTelemetry not installed")
 def test_with_trace_context_populates_ids():
     config = TracingConfig(enabled=True, exporter_type="memory")
-    provider = init_tracing(config)
+    init_tracing(config)
     tracer = get_tracer("test.tracer")
-    
+
     ctx = CorrelationContext(request_id="req-123")
-    
+
     with tracer.start_as_current_span("test_span") as span:
         ctx_enriched = with_trace_context(ctx)
-        
+
         assert hasattr(ctx_enriched, "trace_id")
         assert hasattr(ctx_enriched, "span_id")
-        
+
         span_ctx = span.get_span_context()
-        assert getattr(ctx_enriched, "trace_id") == format(span_ctx.trace_id, "032x")
-        assert getattr(ctx_enriched, "span_id") == format(span_ctx.span_id, "016x")
+        assert ctx_enriched.trace_id == format(span_ctx.trace_id, "032x")
+        assert ctx_enriched.span_id == format(span_ctx.span_id, "016x")
 
 
 @pytest.mark.skipif(not HAS_OTEL, reason="OpenTelemetry not installed")
 def test_with_trace_context_without_span():
     ctx = CorrelationContext(request_id="req-123")
     ctx_enriched = with_trace_context(ctx)
-    
+
     assert ctx_enriched.trace_id is None
     assert ctx_enriched.span_id is None
 
@@ -158,7 +163,7 @@ def test_with_trace_context_without_span():
 def test_get_tracer_returns_tracer():
     config = TracingConfig(enabled=False)
     init_tracing(config)
-    
+
     tracer = get_tracer("test_tracer")
     assert tracer is not None
     # Can start a span without crashing

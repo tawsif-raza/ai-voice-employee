@@ -19,16 +19,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from audit import AuditLogger, AuditRepository  # noqa: E402
 from conversation_manager import ConversationManager  # noqa: E402
 from observability_models import CorrelationContext, EventType  # noqa: E402
-from tracing import TracingConfig, init_tracing, get_memory_exporter, get_tracer, with_trace_context  # noqa: E402
+from tracing import TracingConfig, get_memory_exporter, get_tracer, init_tracing, with_trace_context  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "inference"))
 from handoff_detector import HandoffDetector  # noqa: E402
 from intent_engine import IntentEngine  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "voice"))
-from production_logging import StructuredJSONFormatter  # noqa: E402
-
 from opentelemetry import trace as _otel_trace  # noqa: E402
+from production_logging import StructuredJSONFormatter  # noqa: E402
 
 CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "clinical_triggers.yaml"
 HANDOFF_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "handoff_phrases.yaml"
@@ -77,6 +76,7 @@ class TracingCorrelationTestCase(unittest.TestCase):
         # re-resolve against the fresh provider (ProxyTracer caches its
         # first resolution forever).
         import conversation_manager as _cm_module
+
         proxy = getattr(_cm_module._tracer, "_tracer", None)
         if proxy is not None and hasattr(proxy, "_real_tracer"):
             proxy._real_tracer = None
@@ -149,7 +149,8 @@ class TestTraceIdConsistentAcrossTurn(TracingCorrelationTestCase):
         audit_logger = AuditLogger(repository=repo)
         llm = FakeLLMService(response_text="We're open nine to five.")
         cm = ConversationManager(
-            llm_service=llm, retriever=FakeRetriever(),
+            llm_service=llm,
+            retriever=FakeRetriever(),
             clinical_guard=HandoffDetector(config_path=CLINICAL_CONFIG_PATH),
             handoff_detector=HandoffDetector(config_path=HANDOFF_CONFIG_PATH),
             intent_engine=IntentEngine(config_path=INTENT_TAXONOMY_PATH),

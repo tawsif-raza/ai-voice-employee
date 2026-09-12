@@ -35,8 +35,15 @@ class TestConfigLoading(unittest.TestCase):
     def test_real_taxonomy_loads_expected_intents(self):
         engine = _real_engine()
         for name in (
-            "FAQ", "APPOINTMENT_BOOKING", "APPOINTMENT_CANCEL", "APPOINTMENT_RESCHEDULE",
-            "ORDER_STATUS", "BILLING", "MEDICATION_QUESTION", "COMPLAINT", "HUMAN_HANDOFF",
+            "FAQ",
+            "APPOINTMENT_BOOKING",
+            "APPOINTMENT_CANCEL",
+            "APPOINTMENT_RESCHEDULE",
+            "ORDER_STATUS",
+            "BILLING",
+            "MEDICATION_QUESTION",
+            "COMPLAINT",
+            "HUMAN_HANDOFF",
         ):
             self.assertIn(name, engine._intents, f"expected '{name}' in the configured taxonomy")
 
@@ -58,13 +65,17 @@ class TestEachSupportedIntent(unittest.TestCase):
         self._assert_classified("What are your business hours?", "FAQ", Route.RAG_LLM)
 
     def test_appointment_booking(self):
-        self._assert_classified("I'd like to book an appointment for a vaccination.", "APPOINTMENT_BOOKING", Route.TOOL_ORCHESTRATOR)
+        self._assert_classified(
+            "I'd like to book an appointment for a vaccination.", "APPOINTMENT_BOOKING", Route.TOOL_ORCHESTRATOR
+        )
 
     def test_appointment_cancel(self):
         self._assert_classified("I need to cancel my appointment.", "APPOINTMENT_CANCEL", Route.TOOL_ORCHESTRATOR)
 
     def test_appointment_reschedule(self):
-        self._assert_classified("Can I reschedule my appointment to next week?", "APPOINTMENT_RESCHEDULE", Route.TOOL_ORCHESTRATOR)
+        self._assert_classified(
+            "Can I reschedule my appointment to next week?", "APPOINTMENT_RESCHEDULE", Route.TOOL_ORCHESTRATOR
+        )
 
     def test_order_status(self):
         self._assert_classified("Where is my order?", "ORDER_STATUS", Route.TOOL_ORCHESTRATOR)

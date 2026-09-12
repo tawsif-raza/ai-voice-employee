@@ -45,31 +45,25 @@ class ModelConfig:
     # The model we are fine-tuning
     # We start with 0.5B for fast iteration and testing
     # Switch to 7B when you have access to a GPU with 16GB+ VRAM
-    model_name: str = field(default_factory=lambda: _get(
-        "model", "model_name", "Qwen/Qwen2.5-0.5B-Instruct"))
+    model_name: str = field(default_factory=lambda: _get("model", "model_name", "Qwen/Qwen2.5-0.5B-Instruct"))
 
     # Load in 4-bit quantization to reduce memory footprint
     # This makes fine-tuning possible on consumer hardware
-    load_in_4bit: bool = field(default_factory=lambda: _get(
-        "model", "load_in_4bit", True))
+    load_in_4bit: bool = field(default_factory=lambda: _get("model", "load_in_4bit", True))
 
     # 4-bit quantization data type
     # bfloat16 is more numerically stable than float16 for training
-    bnb_4bit_compute_dtype: str = field(default_factory=lambda: _get(
-        "model", "bnb_4bit_compute_dtype", "bfloat16"))
+    bnb_4bit_compute_dtype: str = field(default_factory=lambda: _get("model", "bnb_4bit_compute_dtype", "bfloat16"))
 
     # Quantization type — nf4 is the standard for QLoRA
-    bnb_4bit_quant_type: str = field(default_factory=lambda: _get(
-        "model", "bnb_4bit_quant_type", "nf4"))
+    bnb_4bit_quant_type: str = field(default_factory=lambda: _get("model", "bnb_4bit_quant_type", "nf4"))
 
     # Double quantization — quantizes the quantization constants
     # Saves an extra ~0.4 bits per parameter with negligible quality loss
-    bnb_4bit_use_double_quant: bool = field(default_factory=lambda: _get(
-        "model", "bnb_4bit_use_double_quant", True))
+    bnb_4bit_use_double_quant: bool = field(default_factory=lambda: _get("model", "bnb_4bit_use_double_quant", True))
 
     # Maximum sequence length — must match what we used in dataset.py
-    max_seq_length: int = field(default_factory=lambda: _get(
-        "model", "max_seq_length", 512))
+    max_seq_length: int = field(default_factory=lambda: _get("model", "max_seq_length", 512))
 
 
 @dataclass
@@ -99,15 +93,21 @@ class LoRAConfig:
     #   v_proj = value projection
     #   o_proj = output projection
     # We also include gate/up/down proj from feed-forward for better coverage
-    target_modules: list[str] = field(default_factory=lambda: _get("lora", "target_modules", [
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
-    ]))
+    target_modules: list[str] = field(
+        default_factory=lambda: _get(
+            "lora",
+            "target_modules",
+            [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ],
+        )
+    )
 
     # Whether to train bias parameters
     # "none" is standard — biases add little value at extra memory cost
@@ -125,8 +125,7 @@ class TrainingConfig:
     """
 
     # Output directory for checkpoints and final model
-    output_dir: str = field(default_factory=lambda: _get(
-        "training", "output_dir", "models/qwen-voice-assistant"))
+    output_dir: str = field(default_factory=lambda: _get("training", "output_dir", "models/qwen-voice-assistant"))
 
     # Number of times to iterate over the full dataset
     # 3 epochs is a safe starting point for our dataset size
@@ -134,14 +133,12 @@ class TrainingConfig:
 
     # Examples processed per GPU per step
     # Keep small (2-4) when fine-tuning on CPU or low VRAM GPU
-    per_device_train_batch_size: int = field(default_factory=lambda: _get(
-        "training", "per_device_train_batch_size", 2))
+    per_device_train_batch_size: int = field(default_factory=lambda: _get("training", "per_device_train_batch_size", 2))
 
     # Accumulate gradients over N steps before updating weights
     # Effective batch size = per_device_train_batch_size × gradient_accumulation_steps
     # Here: 2 × 4 = 8 effective batch size
-    gradient_accumulation_steps: int = field(default_factory=lambda: _get(
-        "training", "gradient_accumulation_steps", 4))
+    gradient_accumulation_steps: int = field(default_factory=lambda: _get("training", "gradient_accumulation_steps", 4))
 
     # Learning rate — how fast the model updates its weights
     # 2e-4 is the standard starting point for LoRA fine-tuning
@@ -149,8 +146,7 @@ class TrainingConfig:
 
     # Learning rate scheduler — how the learning rate changes over training
     # cosine = starts at learning_rate, smoothly decays to near zero
-    lr_scheduler_type: str = field(default_factory=lambda: _get(
-        "training", "lr_scheduler_type", "cosine"))
+    lr_scheduler_type: str = field(default_factory=lambda: _get("training", "lr_scheduler_type", "cosine"))
 
     # Warmup steps — learning rate ramps up gradually at the start
     # Prevents large unstable updates in the first few batches
@@ -186,8 +182,7 @@ class TrainingConfig:
     # Compute loss only on assistant-turn tokens (system/user tokens masked
     # with -100), matching the loss-masking behavior in dataset.py.
     # Without this, TRL's SFTTrainer computes loss over the full sequence.
-    assistant_only_loss: bool = field(default_factory=lambda: _get(
-        "training", "assistant_only_loss", True))
+    assistant_only_loss: bool = field(default_factory=lambda: _get("training", "assistant_only_loss", True))
 
 
 @dataclass
@@ -195,14 +190,16 @@ class DataConfig:
     """
     Configuration for data loading during training.
     """
-    train_data_path: str = field(default_factory=lambda: _get(
-        "data", "train_data_path", "data/processed/train_final.json"))
-    model_name:      str = field(default_factory=lambda: _get(
-        "data", "model_name", "Qwen/Qwen2.5-0.5B-Instruct"))
-    max_length:      int = field(default_factory=lambda: _get("data", "max_length", 512))
+
+    train_data_path: str = field(
+        default_factory=lambda: _get("data", "train_data_path", "data/processed/train_final.json")
+    )
+    model_name: str = field(default_factory=lambda: _get("data", "model_name", "Qwen/Qwen2.5-0.5B-Instruct"))
+    max_length: int = field(default_factory=lambda: _get("data", "max_length", 512))
 
 
 # ── Convenience function ───────────────────────────────────────────────────────
+
 
 def get_all_configs() -> tuple[ModelConfig, LoRAConfig, TrainingConfig, DataConfig]:
     """
@@ -220,20 +217,20 @@ def get_all_configs() -> tuple[ModelConfig, LoRAConfig, TrainingConfig, DataConf
 if __name__ == "__main__":
     model_cfg, lora_cfg, train_cfg, data_cfg = get_all_configs()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("MODEL CONFIG")
-    print("="*60)
+    print("=" * 60)
     for k, v in model_cfg.__dict__.items():
         print(f"  {k:<35} {v}")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("LORA CONFIG")
-    print("="*60)
+    print("=" * 60)
     for k, v in lora_cfg.__dict__.items():
         print(f"  {k:<35} {v}")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TRAINING CONFIG")
-    print("="*60)
+    print("=" * 60)
     for k, v in train_cfg.__dict__.items():
         print(f"  {k:<35} {v}")

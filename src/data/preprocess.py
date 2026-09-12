@@ -18,7 +18,6 @@ This format maps directly to Qwen 2.5's ChatML template.
 import json
 from pathlib import Path
 
-
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 BITEXT_INPUT_PATH     = Path("data/cleaned/bitext_cleaned.json")
@@ -50,7 +49,7 @@ def preprocess_bitext(input_path: Path, output_path: Path) -> None:
         output_path: Path to save bitext_processed.json
     """
     print(f"\n{'='*60}")
-    print(f"PREPROCESSING — Bitext")
+    print("PREPROCESSING — Bitext")
     print(f"{'='*60}")
 
     # Load cleaned data
@@ -101,7 +100,7 @@ def preprocess_ultrachat(input_path: Path, output_path: Path) -> None:
         output_path: Path to save ultrachat_processed.json
     """
     print(f"\n{'='*60}")
-    print(f"PREPROCESSING — UltraChat")
+    print("PREPROCESSING — UltraChat")
     print(f"{'='*60}")
 
     with open(input_path, "r", encoding="utf-8") as f:

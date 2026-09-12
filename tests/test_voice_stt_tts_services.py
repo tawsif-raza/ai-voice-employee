@@ -16,7 +16,6 @@ from tts_service import MockTTSService, strip_wav_header
 
 
 class TestSTTTTSServices(unittest.IsolatedAsyncioTestCase):
-
     def test_strip_wav_header_removes_riff_header(self):
         # 44-byte standard RIFF header + dummy audio
         riff_header = b"RIFF" + b"\x00\x00\x00\x00" + b"WAVEfmt " + b"\x00" * 28

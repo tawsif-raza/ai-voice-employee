@@ -158,8 +158,10 @@ class TestLLMRetry(unittest.TestCase):
         metrics = MetricsRegistry()
         llm = FlakyLLMService(fail_times=1)
         manager = _manager(
-            llm, llm_retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01),
-            audit_logger=AuditLogger(repository=repo), metrics=metrics,
+            llm,
+            llm_retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01),
+            audit_logger=AuditLogger(repository=repo),
+            metrics=metrics,
         )
         _run_turn(manager)
         self.assertEqual(len(repo.list_events(event_type=EventType.RETRY_ATTEMPT)), 1)
@@ -201,6 +203,7 @@ class TestGenerationConcurrencySemaphore(unittest.TestCase):
                     if currently_inside[0] > 1:
                         overlap_detected[0] = True
                 import time as _time
+
                 _time.sleep(0.05)
                 with lock:
                     currently_inside[0] -= 1
@@ -220,7 +223,9 @@ class TestRAGRetry(unittest.TestCase):
     def test_transient_retrieval_failure_is_retried_and_succeeds(self):
         retriever = FlakyRetriever(fail_times=1)
         llm = FlakyLLMService(fail_times=0)
-        manager = _manager(llm, retriever=retriever, rag_retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01))
+        manager = _manager(
+            llm, retriever=retriever, rag_retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01)
+        )
         result = _run_turn(manager)
         self.assertEqual(retriever.calls, 2)
         self.assertFalse(result["degraded"])
@@ -229,7 +234,9 @@ class TestRAGRetry(unittest.TestCase):
         """No grounding available must remain a degraded-but-valid state -- never invented context."""
         retriever = AlwaysFailRetriever()
         llm = FlakyLLMService(fail_times=0)
-        manager = _manager(llm, retriever=retriever, rag_retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01))
+        manager = _manager(
+            llm, retriever=retriever, rag_retry_policy=RetryPolicy(max_attempts=2, base_delay_seconds=0.01)
+        )
         result = _run_turn(manager)
         self.assertEqual(result["retrieved_chunks"], [])
         self.assertTrue(result["degraded"])

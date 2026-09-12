@@ -21,30 +21,45 @@ future caller bypass MemoryManager's ownership checks by reaching for
 
 from typing import Optional
 
+from db import ConcurrentModificationError, Database
+from db_models import MemoryRecordRow
+from memory_models import MemoryCategory, MemoryRecord
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from db import ConcurrentModificationError, Database, upsert_row
-from db_models import MemoryRecordRow
-from memory_models import MemoryCategory, MemoryRecord
-
 
 def _row_to_record(row: MemoryRecordRow) -> MemoryRecord:
-    from session_repository_postgres import _aware  # reuse the same SQLite-naive-datetime fix; see that module's docstring
+    from session_repository_postgres import (
+        _aware,  # reuse the same SQLite-naive-datetime fix; see that module's docstring
+    )
 
     return MemoryRecord(
-        id=row.id, user_id=row.user_id, category=MemoryCategory(row.category), key=row.key, value=row.value,
-        source=row.source, created_at=_aware(row.created_at), updated_at=_aware(row.updated_at),
-        expires_at=_aware(row.expires_at), metadata=dict(row.metadata_ or {}),
+        id=row.id,
+        user_id=row.user_id,
+        category=MemoryCategory(row.category),
+        key=row.key,
+        value=row.value,
+        source=row.source,
+        created_at=_aware(row.created_at),
+        updated_at=_aware(row.updated_at),
+        expires_at=_aware(row.expires_at),
+        metadata=dict(row.metadata_ or {}),
         version=getattr(row, "version", 1) or 1,
     )
 
 
 def _record_to_values(record: MemoryRecord) -> dict:
     return {
-        "id": record.id, "user_id": record.user_id, "category": record.category.value, "key": record.key,
-        "value": record.value, "source": record.source, "created_at": record.created_at,
-        "updated_at": record.updated_at, "expires_at": record.expires_at, "metadata": dict(record.metadata),
+        "id": record.id,
+        "user_id": record.user_id,
+        "category": record.category.value,
+        "key": record.key,
+        "value": record.value,
+        "source": record.source,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+        "expires_at": record.expires_at,
+        "metadata": dict(record.metadata),
         "version": getattr(record, "version", 1) or 1,
     }
 
@@ -90,9 +105,7 @@ class PostgresMemoryRepository:
                 try:
                     db_session.execute(insert(table).values(**insert_values))
                 except IntegrityError:
-                    raise ConcurrentModificationError(
-                        f"Concurrent insert detected for memory '{record.id}'"
-                    )
+                    raise ConcurrentModificationError(f"Concurrent insert detected for memory '{record.id}'")
 
     def delete(self, memory_id: str) -> None:
         with self._database.session_scope() as db_session:

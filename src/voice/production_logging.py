@@ -15,10 +15,9 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-SENSITIVE_KEYS = frozenset({
-    "api_key", "token", "password", "secret", "authorization",
-    "raw_audio", "mulaw", "cookie", "xi-api-key"
-})
+SENSITIVE_KEYS = frozenset(
+    {"api_key", "token", "password", "secret", "authorization", "raw_audio", "mulaw", "cookie", "xi-api-key"}
+)
 
 
 class StructuredJSONFormatter(logging.Formatter):
@@ -48,6 +47,7 @@ class StructuredJSONFormatter(logging.Formatter):
         # Phase 14: inject OpenTelemetry trace context for log-trace correlation.
         try:
             from opentelemetry import trace
+
             span = trace.get_current_span()
             span_ctx = span.get_span_context()
             if span_ctx and span_ctx.is_valid:

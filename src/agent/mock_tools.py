@@ -121,10 +121,14 @@ class MockOrderStore:
     """In-memory, pre-seeded order records — read-only lookups."""
 
     def __init__(self, seed: Optional[dict] = None):
-        self._orders = seed if seed is not None else {
-            "order_1001": {"order_id": "order_1001", "status": "shipped", "eta": "2026-08-20"},
-            "order_1002": {"order_id": "order_1002", "status": "processing", "eta": None},
-        }
+        self._orders = (
+            seed
+            if seed is not None
+            else {
+                "order_1001": {"order_id": "order_1001", "status": "shipped", "eta": "2026-08-20"},
+                "order_1002": {"order_id": "order_1002", "status": "processing", "eta": None},
+            }
+        )
 
     def lookup(self, params: dict) -> dict:
         _maybe_simulate(params)
@@ -143,6 +147,7 @@ class MockOrderStore:
 # confirmation.yaml exactly (BOOK_APPOINTMENT, CANCEL_APPOINTMENT,
 # RESCHEDULE_APPOINTMENT, ORDER_LOOKUP) so PolicyEngine's existing Phase 3
 # configuration governs these tools with no changes needed on either side.
+
 
 def build_default_tool_registry(
     appointment_store: Optional[MockAppointmentStore] = None,

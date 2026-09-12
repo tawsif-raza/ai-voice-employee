@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -49,6 +48,7 @@ _memory_exporter: Optional[object] = None
 # Deliberately excludes user_id, user_message, llm_response, auth_token,
 # database_url, and all PII-bearing fields.
 # ---------------------------------------------------------------------------
+
 
 class SpanAttributes:
     """Named constants for span attribute keys (Phase 14 allow-list)."""
@@ -82,6 +82,7 @@ class SpanAttributes:
 # Configuration
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class TracingConfig:
     """
@@ -91,7 +92,7 @@ class TracingConfig:
 
     enabled: bool = False
     service_name: str = "ai-voice-agent"
-    exporter_type: str = "console"       # "console" | "otlp" | "memory"
+    exporter_type: str = "console"  # "console" | "otlp" | "memory"
     otlp_endpoint: str = "http://localhost:4317"
     sampler: str = "parentbased_always_on"
     sampler_arg: Optional[float] = None
@@ -138,14 +139,16 @@ class TracingConfig:
 # Lifecycle
 # ---------------------------------------------------------------------------
 
+
 def _build_sampler(config: TracingConfig):
     """Return an SDK sampler matching the config string."""
     from opentelemetry.sdk.trace.sampling import (
-        ALWAYS_ON,
         ALWAYS_OFF,
+        ALWAYS_ON,
         ParentBasedTraceIdRatio,
         TraceIdRatioBased,
     )
+
     name = config.sampler
     if name == "always_on":
         return ALWAYS_ON
@@ -165,9 +168,11 @@ def _build_exporter(config: TracingConfig):
     etype = config.exporter_type
     if etype == "otlp":
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
         return OTLPSpanExporter(endpoint=config.otlp_endpoint, insecure=True)
     if etype == "memory":
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
         exporter = InMemorySpanExporter()
         _memory_exporter = exporter
         return exporter
@@ -193,11 +198,13 @@ def init_tracing(config: Optional[TracingConfig] = None) -> trace.TracerProvider
         return provider
 
     try:
-        resource = Resource.create({
-            "service.name": config.service_name,
-            "service.version": "14.0.0",
-            "deployment.environment": os.environ.get("DEPLOYMENT_ENVIRONMENT", "development"),
-        })
+        resource = Resource.create(
+            {
+                "service.name": config.service_name,
+                "service.version": "14.0.0",
+                "deployment.environment": os.environ.get("DEPLOYMENT_ENVIRONMENT", "development"),
+            }
+        )
 
         sampler = _build_sampler(config)
         exporter = _build_exporter(config)
@@ -214,7 +221,9 @@ def init_tracing(config: Optional[TracingConfig] = None) -> trace.TracerProvider
         trace.set_tracer_provider(provider)
         logger.info(
             "Tracing enabled: service=%s exporter=%s sampler=%s",
-            config.service_name, config.exporter_type, config.sampler,
+            config.service_name,
+            config.exporter_type,
+            config.sampler,
         )
         return provider
     except Exception:
@@ -304,6 +313,7 @@ def get_memory_exporter():
 # Correlation bridge: traces <-> CorrelationContext / AuditEvent / logs
 # ---------------------------------------------------------------------------
 
+
 def get_current_trace_context() -> tuple[Optional[str], Optional[str]]:
     """
     Extract ``(trace_id, span_id)`` from the current OpenTelemetry span
@@ -339,6 +349,7 @@ def with_trace_context(correlation_ctx):
     # CorrelationContext is frozen, so we construct a new instance.
     try:
         from observability_models import CorrelationContext
+
         return CorrelationContext(
             request_id=correlation_ctx.request_id,
             conversation_id=getattr(correlation_ctx, "conversation_id", None),

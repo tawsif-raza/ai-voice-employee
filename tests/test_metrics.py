@@ -43,6 +43,7 @@ class TestCounters(unittest.TestCase):
     def test_no_arbitrary_label_parameter_exists(self):
         """plan.md: no high-cardinality label (user_id/request_id/etc.) is ever accepted anywhere in this API."""
         import inspect
+
         sig = inspect.signature(MetricsRegistry.increment)
         self.assertNotIn("label", sig.parameters)
         self.assertNotIn("labels", sig.parameters)

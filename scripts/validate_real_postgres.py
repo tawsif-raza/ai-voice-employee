@@ -1,4 +1,4 @@
-﻿"""
+"""
 Validation script for real PostgreSQL (Phase 13; plan.md Step 13.3).
 
 This script provides automated validation against a live PostgreSQL instance:
@@ -25,10 +25,7 @@ DEFAULT_DB_URL = "postgresql://voice_app:voice_secret@localhost:5432/ai_voice_ag
 
 def run_cmd(cmd, check=True, capture=False):
     print(f"--> Running: {' '.join(cmd)}")
-    return subprocess.run(
-        cmd, cwd=_REPO_ROOT, check=check, text=True,
-        capture_output=capture
-    )
+    return subprocess.run(cmd, cwd=_REPO_ROOT, check=check, text=True, capture_output=capture)
 
 
 def check_docker_daemon():
@@ -52,10 +49,12 @@ def main():
         print("  2. Start the database container:")
         print("     docker compose -f docker/docker-compose.yml --profile test up -d postgres")
         print("  3. Run Alembic migrations against PostgreSQL:")
-        print(f"     $env:DATABASE_URL=\"{DEFAULT_DB_URL}\"")
+        print(f'     $env:DATABASE_URL="{DEFAULT_DB_URL}"')
         print("     alembic upgrade head")
         print("  4. Run persistence unit tests:")
-        print("     python -m unittest tests.test_db_migrations tests.test_session_repository_postgres tests.test_memory_repository_postgres tests.test_audit_repository_postgres tests.test_idempotency_repository_postgres tests.test_optimistic_concurrency -v")
+        print(
+            "     python -m unittest tests.test_db_migrations tests.test_session_repository_postgres tests.test_memory_repository_postgres tests.test_audit_repository_postgres tests.test_idempotency_repository_postgres tests.test_optimistic_concurrency -v"
+        )
         print("  5. Run persistence performance benchmark:")
         print("     python scripts/benchmark_persistence.py")
         print("\nOutcome: compose service definition verified; live daemon run deferred.")
@@ -72,8 +71,23 @@ def main():
     ready = False
     for attempt in range(15):
         res = subprocess.run(
-            ["docker", "compose", "-f", "docker/docker-compose.yml", "--profile", "test", "exec", "postgres", "pg_isready", "-U", "voice_app", "-d", "ai_voice_agent"],
-            capture_output=True, text=True
+            [
+                "docker",
+                "compose",
+                "-f",
+                "docker/docker-compose.yml",
+                "--profile",
+                "test",
+                "exec",
+                "postgres",
+                "pg_isready",
+                "-U",
+                "voice_app",
+                "-d",
+                "ai_voice_agent",
+            ],
+            capture_output=True,
+            text=True,
         )
         if res.returncode == 0:
             ready = True

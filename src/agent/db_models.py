@@ -131,7 +131,9 @@ class SecurityEventRow(Base):
     reason = Column(Text, nullable=False)
 
     __table_args__ = (
-        CheckConstraint("severity IN ('INFO','LOW','MEDIUM','HIGH','CRITICAL')", name="ck_security_events_severity_valid"),
+        CheckConstraint(
+            "severity IN ('INFO','LOW','MEDIUM','HIGH','CRITICAL')", name="ck_security_events_severity_valid"
+        ),
         Index("ix_security_events_type", "type"),
     )
 

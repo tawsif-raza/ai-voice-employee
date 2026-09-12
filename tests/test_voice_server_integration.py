@@ -23,10 +23,9 @@ for p in (_SRC_API, _SRC_AGENT, _SRC_INFERENCE, _SRC_VOICE):
 
 import server
 from conversation_manager import ConversationManager
+from fastapi.testclient import TestClient
 from handoff_detector import HandoffDetector
 from voice_pipeline import VoiceCallManager
-
-from fastapi.testclient import TestClient
 
 CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "clinical_triggers.yaml"
 HANDOFF_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "handoff_phrases.yaml"
@@ -52,7 +51,6 @@ def _build_test_cm() -> ConversationManager:
 
 
 class TestVoiceServerIntegration(unittest.TestCase):
-
     def setUp(self):
         self.cm = _build_test_cm()
         server._conversation_manager = self.cm
@@ -69,7 +67,9 @@ class TestVoiceServerIntegration(unittest.TestCase):
         self.assertIn('<Stream url="ws://api.testvoice.com/ws/call">', body)
 
     def test_twiml_inbound_call_get(self):
-        resp = self.client.get("/twiml/inbound-call", headers={"Host": "api.testvoice.com", "X-Forwarded-Proto": "https"})
+        resp = self.client.get(
+            "/twiml/inbound-call", headers={"Host": "api.testvoice.com", "X-Forwarded-Proto": "https"}
+        )
         self.assertEqual(resp.status_code, 200)
         self.assertIn('<Stream url="wss://api.testvoice.com/ws/call">', resp.text)
 
@@ -77,6 +77,7 @@ class TestVoiceServerIntegration(unittest.TestCase):
         # Enable mock services so external network is not touched
         import os
         from unittest.mock import patch
+
         with patch.dict(os.environ, {"VOICE_MOCK_SERVICES": "true"}):
             with self.client.websocket_connect("/ws/call") as ws:
                 # 1. Twilio sends 'connected'
@@ -99,6 +100,7 @@ class TestVoiceServerIntegration(unittest.TestCase):
 
                 # Allow async server loop to process the start frame
                 import time
+
                 handler = None
                 for _ in range(50):
                     handler = server._voice_call_manager.get_handler("MZ_TEST_1")

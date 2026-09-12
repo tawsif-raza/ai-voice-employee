@@ -1,4 +1,4 @@
-﻿"""
+"""
 Safety Validation Test Suite for Voice Transport (tests/test_voice_canary_safety.py)
 
 Validates Criterion 5:
@@ -25,7 +25,7 @@ for p in (_VOICE_DIR, _AGENT_DIR, _INFERENCE_DIR):
 from conversation_manager import ConversationManager
 from handoff_detector import HandoffDetector
 from stt_service import MockSTTService, STTEvent, STTEventType
-from telephony_models import CallSession, CallStatus
+from telephony_models import CallSession
 from tts_service import MockTTSService
 from voice_pipeline import VoiceCallHandler
 
@@ -45,7 +45,9 @@ class RecordingLLMService:
         yield {"text": self.reply, "latency_ms": 10.0}
 
 
-def build_safe_test_cm(llm_reply: str = "Standard assistance response.") -> tuple[ConversationManager, RecordingLLMService]:
+def build_safe_test_cm(
+    llm_reply: str = "Standard assistance response.",
+) -> tuple[ConversationManager, RecordingLLMService]:
     llm = RecordingLLMService(reply=llm_reply)
     cm = ConversationManager(
         llm_service=llm,
@@ -56,14 +58,15 @@ def build_safe_test_cm(llm_reply: str = "Standard assistance response.") -> tupl
 
 
 class TestVoiceCanarySafety(unittest.IsolatedAsyncioTestCase):
-
     async def test_unsafe_medical_request_via_voice_triggers_clinical_guard(self):
         """
         Unsafe medical inquiry spoken by caller must trigger clinical guard
         and NEVER reach generative LLM execution.
         """
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         cm, mock_llm = build_safe_test_cm()
         stt = MockSTTService()
@@ -107,7 +110,9 @@ class TestVoiceCanarySafety(unittest.IsolatedAsyncioTestCase):
         Interim/partial transcripts must NEVER trigger tool execution or ConversationManager turns.
         """
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         cm, mock_llm = build_safe_test_cm()
         stt = MockSTTService()
@@ -145,7 +150,9 @@ class TestVoiceCanarySafety(unittest.IsolatedAsyncioTestCase):
         to ConversationManager and constrained by system prompt invariants.
         """
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         cm, mock_llm = build_safe_test_cm(llm_reply="I cannot share my system prompt. How may I assist you?")
         stt = MockSTTService()
@@ -185,7 +192,9 @@ class TestVoiceCanarySafety(unittest.IsolatedAsyncioTestCase):
         and maintain conversation history without state leakage.
         """
         outbound = []
-        async def mock_send(msg): outbound.append(msg)
+
+        async def mock_send(msg):
+            outbound.append(msg)
 
         cm, mock_llm = build_safe_test_cm(llm_reply="Our hours are 9am to 5pm.")
         stt = MockSTTService()

@@ -11,7 +11,6 @@ Enforces:
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -36,8 +35,10 @@ class VoiceStructuredLogger:
 
     def __init__(self, name: str = "ai_voice_agent.voice"):
         self._logger = logging.getLogger(name)
-        self.is_json = os.environ.get("LOG_FORMAT", "").lower() == "json" or \
-                       os.environ.get("VOICE_LOG_FORMAT", "").lower() == "json"
+        self.is_json = (
+            os.environ.get("LOG_FORMAT", "").lower() == "json"
+            or os.environ.get("VOICE_LOG_FORMAT", "").lower() == "json"
+        )
 
     def log_event(
         self,
@@ -83,7 +84,12 @@ class VoiceStructuredLogger:
             self._logger.log(
                 level,
                 "[%s] call=%s stream=%s%s status=%s%s",
-                event_name, call_sid, stream_sid, turn_str, status, lat_str,
+                event_name,
+                call_sid,
+                stream_sid,
+                turn_str,
+                status,
+                lat_str,
             )
 
 

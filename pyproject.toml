@@ -1,0 +1,192 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["outputs", "data", "models", ".venv"]
+
+[tool.ruff.lint]
+# Curated, moderate rule set for a workflow-hardening pass -- not the
+# strictest possible configuration. See PHASE_14_1_WORKFLOW_HARDENING_REPORT.md
+# for the full rationale.
+#
+# F   (Pyflakes)      -- real bugs: unused imports/variables, undefined names.
+# W   (pycodestyle)   -- whitespace hygiene, all mechanically auto-fixable.
+# I   (isort)         -- import ordering, mechanically auto-fixable.
+# B   (flake8-bugbear) -- real correctness/quality findings (bare excepts,
+#                         mutable default args, loop-variable capture, ...).
+# E4/E7/E9 (pycodestyle errors, excluding E402/E501 below).
+select = ["F", "W", "I", "B", "E4", "E7", "E9"]
+ignore = [
+    # E501 (line-too-long): this codebase's dense inline documentation
+    # style (see any module docstring in src/agent/) intentionally produces
+    # long comment/docstring lines. Enforcing a hard wrap here is pure
+    # reformatting churn with no functional value -- code line length is
+    # already governed by `ruff format`'s own line-length below.
+    "E501",
+    # E402 (module-import-not-at-top-of-file): this codebase's own,
+    # explicitly documented import convention (see src/api/server.py's
+    # module docstring: "This codebase avoids package-relative imports...
+    # so the sibling directory is added to sys.path explicitly") requires
+    # `sys.path.insert(...)` immediately before an import, in nearly every
+    # src/ and tests/ file. This is a deliberate architectural pattern, not
+    # a defect -- disabling the rule outright is more honest than sprinkling
+    # `# noqa: E402` on every one of its many, expected occurrences.
+    "E402",
+]
+
+# Pyupgrade (UP) and flake8-simplify/comprehensions (SIM/C4) were
+# deliberately NOT enabled this phase -- see the report's "Tools selected"
+# section. Adopting them would touch ~280 lines of type-annotation/refactor
+# style across the codebase, which is out of scope for a workflow-hardening
+# pass that must not perform a stylistic rewrite of business logic.
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy bugbear findings, grandfathered at adoption time (2026-09-12) --
+# genuine code-quality items, not tooling artifacts, but fixing them means
+# touching business logic (exception chaining, loop variables, zip()
+# strictness) in files this hardening phase does not otherwise change.
+# Tracked as technical debt in PHASE_14_1_WORKFLOW_HARDENING_REPORT.md.
+# Do NOT add new files to this list -- new code must pass B cleanly.
+"notebooks/01_dataset_exploration.py" = ["B905"]
+"scripts/verify_voice_flow.py" = ["B007"]
+"src/agent/memory_repository_postgres.py" = ["B904"]
+"src/agent/oidc_provider.py" = ["B904"]
+"src/agent/session_repository_postgres.py" = ["B904"]
+"src/api/server.py" = ["B904", "B008"]
+"src/rag/retriever.py" = ["B905"]
+"src/voice/benchmark.py" = ["B023"]
+"src/voice/telephony_models.py" = ["B904"]
+"tests/test_authorization.py" = ["B017"]
+"tests/test_db.py" = ["B017"]
+"tests/test_identity.py" = ["B017"]
+"tests/test_intent_engine.py" = ["B017"]
+"tests/test_observability.py" = ["B017"]
+"tests/test_pii_detector.py" = ["B007", "B905"]
+"tests/test_policy_engine.py" = ["B017"]
+"tests/test_security_red_team.py" = ["B017"]
+"tests/test_voice_canary_auth.py" = ["B007"]
+
+[tool.ruff.format]
+# Matches [tool.ruff.lint]'s line-length; ruff format wraps actual code,
+# it does not rewrap comments/docstrings/strings, so this does not fight
+# the E501 rationale above.
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+plugins = ["sqlalchemy.ext.mypy.plugin"]
+# Modules live flat (no __init__.py anywhere in src/ -- see
+# src/api/server.py's module docstring), so overrides below use bare
+# module names, not dotted package paths.
+exclude = ["^outputs/", "^data/", "^models/"]
+
+# ---------------------------------------------------------------------------
+# Baseline overrides (2026-09-12): each disables exactly the error code(s)
+# already present in that module today, generated from a real mypy run --
+# not a blanket per-module suppression. A NEW error code in an already-
+# listed module, or ANY error in a module not listed here, still fails CI.
+# See PHASE_14_1_WORKFLOW_HARDENING_REPORT.md for the full baseline count
+# and rationale (heavy interaction with loosely-typed third-party ML
+# libraries -- transformers/trl/peft -- and SQLAlchemy's Column-vs-instance
+# attribute typing, neither of which this phase's scope covers fixing).
+# ---------------------------------------------------------------------------
+
+[[tool.mypy.overrides]]
+module = "audit_repository_postgres"
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "benchmark"
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "conversation_manager"
+disable_error_code = ["arg-type", "union-attr"]
+
+[[tool.mypy.overrides]]
+module = "dataset"
+disable_error_code = ["attr-defined", "return-value"]
+
+[[tool.mypy.overrides]]
+module = "db"
+disable_error_code = ["assignment"]
+
+[[tool.mypy.overrides]]
+module = "evaluate"
+disable_error_code = ["index", "union-attr"]
+
+[[tool.mypy.overrides]]
+module = "idempotency_repository_postgres"
+disable_error_code = ["assignment"]
+
+[[tool.mypy.overrides]]
+module = "llm_provider"
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "llm_service"
+disable_error_code = ["assignment", "misc", "operator", "union-attr"]
+
+[[tool.mypy.overrides]]
+module = "memory_repository_postgres"
+disable_error_code = ["arg-type", "attr-defined"]
+
+[[tool.mypy.overrides]]
+module = "merge_and_convert"
+disable_error_code = ["arg-type", "assignment", "misc", "operator", "union-attr"]
+
+[[tool.mypy.overrides]]
+module = "mock_tools"
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "oidc_provider"
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "pii_detector"
+disable_error_code = ["assignment"]
+
+[[tool.mypy.overrides]]
+module = "predict"
+disable_error_code = ["return-value"]
+
+[[tool.mypy.overrides]]
+module = "reliability_config"
+disable_error_code = ["call-overload", "index", "var-annotated"]
+
+[[tool.mypy.overrides]]
+module = "retriever"
+disable_error_code = ["assignment"]
+
+[[tool.mypy.overrides]]
+module = "server"
+disable_error_code = ["assignment", "index"]
+
+[[tool.mypy.overrides]]
+module = "session_repository_postgres"
+disable_error_code = ["arg-type", "attr-defined"]
+
+[[tool.mypy.overrides]]
+module = "stt_service"
+disable_error_code = ["assignment", "override"]
+
+[[tool.mypy.overrides]]
+module = "tool_orchestrator"
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "tracing"
+disable_error_code = ["assignment", "attr-defined", "return-value"]
+
+[[tool.mypy.overrides]]
+module = "train"
+disable_error_code = ["arg-type"]
+
+[[tool.mypy.overrides]]
+module = "tts_service"
+disable_error_code = ["arg-type", "override"]
+
+[[tool.mypy.overrides]]
+module = "voice_pipeline"
+disable_error_code = ["arg-type", "attr-defined"]

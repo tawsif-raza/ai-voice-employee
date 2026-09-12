@@ -1,21 +1,20 @@
-﻿"""
+"""
 Unit tests for LatencyTracker (src/voice/latency_tracker.py).
 """
 
+import sys
 import time
 import unittest
 from pathlib import Path
-import sys
 
 _SRC_VOICE = str(Path(__file__).resolve().parents[1] / "src" / "voice")
 if _SRC_VOICE not in sys.path:
     sys.path.insert(0, _SRC_VOICE)
 
-from latency_tracker import LatencyTracker, CANARY_LATENCY_METRICS
+from latency_tracker import LatencyTracker
 
 
 class TestLatencyTracker(unittest.TestCase):
-
     def setUp(self):
         self.tracker = LatencyTracker(session_id="test_session_1")
 

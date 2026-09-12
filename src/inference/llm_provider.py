@@ -24,7 +24,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional, Union
+from typing import Any, Iterator, Optional, Union
 
 import yaml
 
@@ -38,8 +38,10 @@ logger = logging.getLogger("ai_voice_agent.llm_provider")
 
 # ── Exceptions ───────────────────────────────────────────────────────────────
 
+
 class LLMProviderError(RuntimeError):
     """Base exception for LLM provider errors."""
+
     def __init__(self, message: str, provider: str, status_code: Optional[int] = None, retryable: bool = False):
         super().__init__(f"[{provider}] {message}")
         self.provider = provider
@@ -49,17 +51,20 @@ class LLMProviderError(RuntimeError):
 
 class LLMQuotaExceededError(LLMProviderError):
     """Raised when an LLM provider returns 429 (rate limit) or quota/credit exhaustion."""
+
     def __init__(self, message: str, provider: str, status_code: int = 429):
         super().__init__(message, provider=provider, status_code=status_code, retryable=True)
 
 
 class LLMOverloadedError(LLMProviderError):
     """Raised when an LLM provider returns 529 or 503 (server overloaded)."""
+
     def __init__(self, message: str, provider: str, status_code: int = 529):
         super().__init__(message, provider=provider, status_code=status_code, retryable=True)
 
 
 # ── Abstract Base Provider ──────────────────────────────────────────────────
+
 
 class BaseLLMProvider(ABC):
     """
@@ -89,6 +94,7 @@ class BaseLLMProvider(ABC):
 
 
 # ── Claude (Anthropic) Provider ─────────────────────────────────────────────
+
 
 class ClaudeLLMProvider(BaseLLMProvider):
     """
@@ -183,10 +189,14 @@ class ClaudeLLMProvider(BaseLLMProvider):
                         error_msg = resp.json().get("error", {}).get("message", error_msg)
                     except Exception:
                         pass
-                    raise LLMQuotaExceededError(f"Claude rate limit/quota exhausted: {error_msg}", provider=self.provider_name)
+                    raise LLMQuotaExceededError(
+                        f"Claude rate limit/quota exhausted: {error_msg}", provider=self.provider_name
+                    )
 
                 if resp.status_code in (529, 503):
-                    raise LLMOverloadedError(f"Claude server overloaded (status {resp.status_code})", provider=self.provider_name)
+                    raise LLMOverloadedError(
+                        f"Claude server overloaded (status {resp.status_code})", provider=self.provider_name
+                    )
 
                 if resp.status_code != 200:
                     raise LLMProviderError(
@@ -218,11 +228,15 @@ class ClaudeLLMProvider(BaseLLMProvider):
                         err_obj = event.get("error", {})
                         err_type = err_obj.get("type")
                         if err_type in ("rate_limit_error", "quota_exceeded"):
-                            raise LLMQuotaExceededError(err_obj.get("message", "Quota exceeded"), provider=self.provider_name)
+                            raise LLMQuotaExceededError(
+                                err_obj.get("message", "Quota exceeded"), provider=self.provider_name
+                            )
                         raise LLMProviderError(err_obj.get("message", "Streaming error"), provider=self.provider_name)
 
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
-            raise LLMProviderError(f"Claude network connection error: {exc}", provider=self.provider_name, retryable=True) from exc
+            raise LLMProviderError(
+                f"Claude network connection error: {exc}", provider=self.provider_name, retryable=True
+            ) from exc
 
         latency_ms = (time.perf_counter() - start_time) * 1000
         full_text = "".join(accumulated_text).strip()
@@ -235,6 +249,7 @@ class ClaudeLLMProvider(BaseLLMProvider):
 
 
 # ── Gemini (Google) Provider ────────────────────────────────────────────────
+
 
 class GeminiLLMProvider(BaseLLMProvider):
     """
@@ -275,10 +290,12 @@ class GeminiLLMProvider(BaseLLMProvider):
                     system_instruction = content
             else:
                 gemini_role = "model" if role == "assistant" else "user"
-                gemini_contents.append({
-                    "role": gemini_role,
-                    "parts": [{"text": content}],
-                })
+                gemini_contents.append(
+                    {
+                        "role": gemini_role,
+                        "parts": [{"text": content}],
+                    }
+                )
         return system_instruction, gemini_contents
 
     def generate_stream(
@@ -309,9 +326,7 @@ class GeminiLLMProvider(BaseLLMProvider):
             "generationConfig": gen_config,
         }
         if system_instruction:
-            payload["systemInstruction"] = {
-                "parts": [{"text": system_instruction}]
-            }
+            payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
 
         start_time = time.perf_counter()
         accumulated_text = []
@@ -330,10 +345,14 @@ class GeminiLLMProvider(BaseLLMProvider):
                         error_msg = resp.json().get("error", {}).get("message", error_msg)
                     except Exception:
                         pass
-                    raise LLMQuotaExceededError(f"Gemini rate limit/quota exhausted: {error_msg}", provider=self.provider_name)
+                    raise LLMQuotaExceededError(
+                        f"Gemini rate limit/quota exhausted: {error_msg}", provider=self.provider_name
+                    )
 
                 if resp.status_code in (503, 500):
-                    raise LLMOverloadedError(f"Gemini server error (status {resp.status_code})", provider=self.provider_name)
+                    raise LLMOverloadedError(
+                        f"Gemini server error (status {resp.status_code})", provider=self.provider_name
+                    )
 
                 if resp.status_code != 200:
                     raise LLMProviderError(
@@ -361,7 +380,9 @@ class GeminiLLMProvider(BaseLLMProvider):
                                 yield text_chunk
 
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
-            raise LLMProviderError(f"Gemini network connection error: {exc}", provider=self.provider_name, retryable=True) from exc
+            raise LLMProviderError(
+                f"Gemini network connection error: {exc}", provider=self.provider_name, retryable=True
+            ) from exc
 
         latency_ms = (time.perf_counter() - start_time) * 1000
         full_text = "".join(accumulated_text).strip()
@@ -374,6 +395,7 @@ class GeminiLLMProvider(BaseLLMProvider):
 
 
 # ── Local Model (Qwen) Provider ─────────────────────────────────────────────
+
 
 class LocalLLMProvider(BaseLLMProvider):
     """
@@ -388,6 +410,7 @@ class LocalLLMProvider(BaseLLMProvider):
             self._service = llm_service
         else:
             from llm_service import LLMService
+
             self._service = LLMService(**llm_kwargs)
 
     def generate_stream(
@@ -416,6 +439,7 @@ class LocalLLMProvider(BaseLLMProvider):
 
 
 # ── Automatic Fallback Provider (Claude Primary ➔ Gemini Fallback) ──────────
+
 
 class FallbackLLMProvider(BaseLLMProvider):
     """
@@ -454,7 +478,9 @@ class FallbackLLMProvider(BaseLLMProvider):
         self._primary_cooldown_until = time.time() + self.cooldown_seconds
         logger.warning(
             "Primary LLM (%s) placed in cooldown for %ss. Reason: %s",
-            self.primary.provider_name, self.cooldown_seconds, reason,
+            self.primary.provider_name,
+            self.cooldown_seconds,
+            reason,
         )
         if self.metrics:
             self.metrics.increment("llm_fallback_cooldown_triggered_total")
@@ -469,12 +495,16 @@ class FallbackLLMProvider(BaseLLMProvider):
     ) -> Iterator[Union[str, dict]]:
         # If primary is currently in quota cooldown, route directly to fallback
         if self.is_primary_in_cooldown:
-            logger.info("Primary (%s) in cooldown; routing turn directly to fallback (%s)",
-                        self.primary.provider_name, self.fallback.provider_name)
+            logger.info(
+                "Primary (%s) in cooldown; routing turn directly to fallback (%s)",
+                self.primary.provider_name,
+                self.fallback.provider_name,
+            )
             if self.metrics:
                 self.metrics.increment("llm_fallback_used_total")
-            yield from self._run_fallback(messages, max_new_tokens, temperature, top_p,
-                                          reason="primary_in_cooldown", **kwargs)
+            yield from self._run_fallback(
+                messages, max_new_tokens, temperature, top_p, reason="primary_in_cooldown", **kwargs
+            )
             return
 
         # Attempt primary provider
@@ -502,7 +532,9 @@ class FallbackLLMProvider(BaseLLMProvider):
             # Automatic Failover triggered!
             logger.warning(
                 "Primary (%s) failed before output: %s. Initiating automatic failover to %s.",
-                self.primary.provider_name, exc, self.fallback.provider_name
+                self.primary.provider_name,
+                exc,
+                self.fallback.provider_name,
             )
             if isinstance(exc, LLMQuotaExceededError):
                 self.trigger_cooldown(str(exc))
@@ -510,6 +542,7 @@ class FallbackLLMProvider(BaseLLMProvider):
             if self.audit_logger:
                 try:
                     from observability_models import EventType
+
                     self.audit_logger.record(
                         EventType.RETRY_ATTEMPT,
                         outcome="failover",
@@ -525,8 +558,7 @@ class FallbackLLMProvider(BaseLLMProvider):
 
             # Stream from fallback
             yield from self._run_fallback(
-                messages, max_new_tokens, temperature, top_p,
-                reason=f"primary_failed_{type(exc).__name__}", **kwargs
+                messages, max_new_tokens, temperature, top_p, reason=f"primary_failed_{type(exc).__name__}", **kwargs
             )
 
     def _run_fallback(
@@ -590,10 +622,14 @@ def load_llm_config(config_path: Optional[Path] = None) -> LLMRuntimeConfig:
     fallback_cfg = yaml_cfg.get("fallback", {})
 
     provider = (
-        os.environ.get("LLM_PROVIDER")
-        or yaml_cfg.get("provider")
-        or ("fallback" if (os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("GEMINI_API_KEY")) else "local")
-    ).strip().lower()
+        (
+            os.environ.get("LLM_PROVIDER")
+            or yaml_cfg.get("provider")
+            or ("fallback" if (os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("GEMINI_API_KEY")) else "local")
+        )
+        .strip()
+        .lower()
+    )
 
     claude_model = os.environ.get("ANTHROPIC_MODEL") or claude_cfg.get("model") or "claude-3-5-haiku-latest"
     claude_timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS") or claude_cfg.get("timeout_seconds") or 30.0)
@@ -609,8 +645,12 @@ def load_llm_config(config_path: Optional[Path] = None) -> LLMRuntimeConfig:
 
     return LLMRuntimeConfig(
         provider=provider,
-        claude=ProviderRuntimeConfig(model=claude_model, timeout_seconds=claude_timeout, max_tokens=claude_max_tokens, temperature=claude_temp),
-        gemini=ProviderRuntimeConfig(model=gemini_model, timeout_seconds=gemini_timeout, max_tokens=gemini_max_tokens, temperature=gemini_temp),
+        claude=ProviderRuntimeConfig(
+            model=claude_model, timeout_seconds=claude_timeout, max_tokens=claude_max_tokens, temperature=claude_temp
+        ),
+        gemini=ProviderRuntimeConfig(
+            model=gemini_model, timeout_seconds=gemini_timeout, max_tokens=gemini_max_tokens, temperature=gemini_temp
+        ),
         fallback_cooldown_seconds=cooldown,
     )
 

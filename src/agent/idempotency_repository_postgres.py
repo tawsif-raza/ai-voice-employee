@@ -30,12 +30,10 @@ sees "did not win," identical to the DO-NOTHING-on-a-fresh-conflict case.
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from idempotency_repository import DEFAULT_TTL
-
-from sqlalchemy import delete, select, update
-
 from db import Database, DatabaseUnavailableError
 from db_models import IdempotencyRecordRow
+from idempotency_repository import DEFAULT_TTL
+from sqlalchemy import delete, select, update
 
 
 class PostgresIdempotencyRepository:
@@ -58,12 +56,21 @@ class PostgresIdempotencyRepository:
             stmt = (
                 _insert(table)
                 .values(
-                    user_id=user_id, request_id=request_id, action=action,
-                    result_status="in_progress", executed_at=now, expires_at=expires_at,
+                    user_id=user_id,
+                    request_id=request_id,
+                    action=action,
+                    result_status="in_progress",
+                    executed_at=now,
+                    expires_at=expires_at,
                 )
                 .on_conflict_do_update(
                     index_elements=["user_id", "request_id"],
-                    set_={"action": action, "result_status": "in_progress", "executed_at": now, "expires_at": expires_at},
+                    set_={
+                        "action": action,
+                        "result_status": "in_progress",
+                        "executed_at": now,
+                        "expires_at": expires_at,
+                    },
                     where=(table.c.expires_at < now),
                 )
                 .returning(table.c.user_id)
@@ -85,9 +92,7 @@ class PostgresIdempotencyRepository:
         """Removes the reservation on failure so a legitimate later retry with the same (user_id, request_id) can proceed — see idempotency_repository.py's release() docstring."""
         table = IdempotencyRecordRow.__table__
         with self._database.session_scope() as db_session:
-            db_session.execute(
-                delete(table).where(table.c.user_id == user_id).where(table.c.request_id == request_id)
-            )
+            db_session.execute(delete(table).where(table.c.user_id == user_id).where(table.c.request_id == request_id))
 
     def has_executed(self, request_id: str, *, user_id: str, action: str) -> bool:
         """An expired row reports False, matching try_reserve()'s own expiration handling."""

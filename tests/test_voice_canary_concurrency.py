@@ -1,4 +1,4 @@
-﻿"""
+"""
 Concurrent Call Isolation Test Suite (tests/test_voice_canary_concurrency.py)
 
 Validates Criterion 6:
@@ -35,6 +35,7 @@ HANDOFF_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "handoff_phra
 
 class EchoLLMService:
     """Echoes back caller ID to verify strict prompt and response isolation."""
+
     def generate_stream(self, messages: list[dict], **kwargs):
         user_msg = messages[-1]["content"] if messages else ""
         resp = f"Processed for {user_msg}"
@@ -44,7 +45,6 @@ class EchoLLMService:
 
 
 class TestVoiceCanaryConcurrency(unittest.IsolatedAsyncioTestCase):
-
     async def test_concurrent_call_isolation(self):
         """
         Spin up 5 concurrent telephone calls, stream unique queries simultaneously,
@@ -72,6 +72,7 @@ class TestVoiceCanaryConcurrency(unittest.IsolatedAsyncioTestCase):
             def make_sender(idx):
                 async def _send(msg):
                     outbound_queues[idx].append(msg)
+
                 return _send
 
             stt = MockSTTService()
@@ -103,10 +104,7 @@ class TestVoiceCanaryConcurrency(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics.get_counter("voice_calls_total"), num_calls)
 
         # 2. Launch STT processing loops for all calls
-        stt_tasks = [
-            asyncio.create_task(handlers[i].process_stt_events())
-            for i in range(num_calls)
-        ]
+        stt_tasks = [asyncio.create_task(handlers[i].process_stt_events()) for i in range(num_calls)]
 
         # 3. Simultaneously push distinct speech turns to each caller
         for i in range(num_calls):

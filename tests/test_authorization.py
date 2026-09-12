@@ -24,8 +24,11 @@ from tool_orchestrator import ToolOrchestrator  # noqa: E402
 
 def _user(user_id: str, roles=(Role.USER,)) -> AuthContext:
     return AuthContext(
-        user_id=user_id, authenticated=True, roles=tuple(r.value for r in roles),
-        permissions=permissions_for_roles(roles), authentication_method="test",
+        user_id=user_id,
+        authenticated=True,
+        roles=tuple(r.value for r in roles),
+        permissions=permissions_for_roles(roles),
+        authentication_method="test",
     )
 
 
@@ -95,6 +98,7 @@ class TestEvaluateAuthorization(unittest.TestCase):
 class TestAuthorizationPrecedence(unittest.TestCase):
     def test_authorization_denial_wins_over_tool_and_confirmation_allow(self):
         from policy_engine import PRECEDENCE
+
         self.assertIn("authorization", PRECEDENCE)
         self.assertLess(PRECEDENCE.index("authorization"), PRECEDENCE.index("tool"))
         self.assertLess(PRECEDENCE.index("authorization"), PRECEDENCE.index("confirmation"))
@@ -114,8 +118,10 @@ class TestToolOrchestratorResourceOwnership(unittest.TestCase):
         orchestrator = ToolOrchestrator(build_default_tool_registry(appointment_store=store), PolicyEngine())
 
         request = ToolRequest(
-            action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]},
-            confirmed=True, resource_owner_user_id=store.get_owner(booked["appointment_id"]),
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            resource_owner_user_id=store.get_owner(booked["appointment_id"]),
         )
         result = orchestrator.invoke(request, auth=USER_A)
         self.assertTrue(result.success)
@@ -126,8 +132,10 @@ class TestToolOrchestratorResourceOwnership(unittest.TestCase):
         orchestrator = ToolOrchestrator(build_default_tool_registry(appointment_store=store), PolicyEngine())
 
         request = ToolRequest(
-            action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]},
-            confirmed=True, resource_owner_user_id=store.get_owner(booked["appointment_id"]),
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            resource_owner_user_id=store.get_owner(booked["appointment_id"]),
         )
         result = orchestrator.invoke(request, auth=USER_B)  # different user
         self.assertFalse(result.success)
@@ -139,8 +147,10 @@ class TestToolOrchestratorResourceOwnership(unittest.TestCase):
         orchestrator = ToolOrchestrator(build_default_tool_registry(appointment_store=store), PolicyEngine())
 
         request = ToolRequest(
-            action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]},
-            confirmed=True, resource_owner_user_id=store.get_owner(booked["appointment_id"]),
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            resource_owner_user_id=store.get_owner(booked["appointment_id"]),
         )
         result = orchestrator.invoke(request, auth=ADMIN)
         self.assertTrue(result.success)
@@ -204,8 +214,11 @@ class TestLLMTrustBoundaryIdentitySpoofing(unittest.TestCase):
 
         manager = MemoryManager(PolicyEngine())
         record = manager.propose_memory(
-            user_id="user-a", category=MemoryCategory.PREFERENCE, key="preferred_clinic",
-            value="Downtown", source="user_explicit",
+            user_id="user-a",
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_clinic",
+            value="Downtown",
+            source="user_explicit",
         )
         manager.persist_memory(record)
         # "LLM requests another user's memory" -- MemoryManager's own

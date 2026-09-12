@@ -21,10 +21,10 @@ import asyncio
 import statistics
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
-from telephony_models import CallSession, CallStatus
 from stt_service import MockSTTService, STTEvent, STTEventType
+from telephony_models import CallSession
 from tts_service import MockTTSService
 from voice_pipeline import VoiceCallHandler
 

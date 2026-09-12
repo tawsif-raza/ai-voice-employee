@@ -26,17 +26,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from action_models import AuthContext, ToolRequest  # noqa: E402
 from db import Database, DatabaseUnavailableError, load_database_config  # noqa: E402
 from db_models import Base, SessionRow  # noqa: E402
-from identity import Role, permissions_for_roles  # noqa: E402
 from idempotency_repository_postgres import PostgresIdempotencyRepository  # noqa: E402
+from identity import Role, permissions_for_roles  # noqa: E402
 from mock_tools import MockAppointmentStore, build_default_tool_registry  # noqa: E402
 from policy_engine import PolicyEngine  # noqa: E402
 from session_manager import SessionManager  # noqa: E402
-from session_models import SessionState, SessionStatus  # noqa: E402
+from session_models import SessionState  # noqa: E402
 from session_repository_postgres import PostgresSessionRepository  # noqa: E402
 from tool_orchestrator import ToolOrchestrator  # noqa: E402
 
-USER_A = AuthContext(user_id="user-a", authenticated=True, roles=(Role.USER.value,), permissions=permissions_for_roles((Role.USER,)), authentication_method="test")
-USER_B = AuthContext(user_id="user-b", authenticated=True, roles=(Role.USER.value,), permissions=permissions_for_roles((Role.USER,)), authentication_method="test")
+USER_A = AuthContext(
+    user_id="user-a",
+    authenticated=True,
+    roles=(Role.USER.value,),
+    permissions=permissions_for_roles((Role.USER,)),
+    authentication_method="test",
+)
+USER_B = AuthContext(
+    user_id="user-b",
+    authenticated=True,
+    roles=(Role.USER.value,),
+    permissions=permissions_for_roles((Role.USER,)),
+    authentication_method="test",
+)
 UNREACHABLE_URL = "postgresql+psycopg2://u:p@127.0.0.1:1/nope?connect_timeout=1"
 
 
@@ -104,8 +116,11 @@ class Test2TamperedPendingAction(unittest.TestCase):
         manager = SessionManager(repository=PostgresSessionRepository(database))
         session = manager.create_session(user_id="user-a")
         manager.update_session(
-            session.session_id, user_id="user-a", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "1"},
+            session.session_id,
+            user_id="user-a",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": "1"},
         )
 
         # Attacker tampers with the pending action directly in the database.
@@ -121,7 +136,9 @@ class Test2TamperedPendingAction(unittest.TestCase):
 
         registry = build_default_tool_registry(appointment_store=MockAppointmentStore())
         orchestrator = ToolOrchestrator(registry, PolicyEngine())
-        result = orchestrator.invoke(ToolRequest(action=action_name, params=params, confirmed=True, request_id="tampered-1"), auth=USER_A)
+        result = orchestrator.invoke(
+            ToolRequest(action=action_name, params=params, confirmed=True, request_id="tampered-1"), auth=USER_A
+        )
         # The tampered action name was never a registered tool -- ToolOrchestrator's
         # own validation (never SessionManager's) is what catches this.
         self.assertFalse(result.success)
@@ -135,8 +152,11 @@ class Test3ReusedConfirmation(unittest.TestCase):
         manager = SessionManager(repository=PostgresSessionRepository(database))
         session = manager.create_session(user_id="user-a")
         manager.update_session(
-            session.session_id, user_id="user-a", workflow_state="AWAITING_CONFIRMATION",
-            pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "1"},
+            session.session_id,
+            user_id="user-a",
+            workflow_state="AWAITING_CONFIRMATION",
+            pending_action="CANCEL_APPOINTMENT",
+            pending_parameters={"appointment_id": "1"},
         )
         first = manager.try_consume_pending_confirmation(session.session_id, user_id="user-a")
         self.assertIsNotNone(first)
@@ -178,12 +198,18 @@ class Test6StaleConfirmation(unittest.TestCase):
         repo = PostgresSessionRepository(database)
         manager = SessionManager(repository=repo)
         now = datetime.now(timezone.utc)
-        repo.save(SessionState(
-            session_id="stale-confirm", user_id="user-a", created_at=now - timedelta(hours=1),
-            updated_at=now - timedelta(hours=1), expires_at=now - timedelta(minutes=1),
-            workflow_state="AWAITING_CONFIRMATION", pending_action="CANCEL_APPOINTMENT",
-            pending_parameters={"appointment_id": "1"},
-        ))
+        repo.save(
+            SessionState(
+                session_id="stale-confirm",
+                user_id="user-a",
+                created_at=now - timedelta(hours=1),
+                updated_at=now - timedelta(hours=1),
+                expires_at=now - timedelta(minutes=1),
+                workflow_state="AWAITING_CONFIRMATION",
+                pending_action="CANCEL_APPOINTMENT",
+                pending_parameters={"appointment_id": "1"},
+            )
+        )
         self.assertIsNone(manager.try_consume_pending_confirmation("stale-confirm", user_id="user-a"))
         database.dispose()
 
@@ -194,7 +220,15 @@ class Test7StaleSession(unittest.TestCase):
         repo = PostgresSessionRepository(database)
         manager = SessionManager(repository=repo)
         now = datetime.now(timezone.utc)
-        repo.save(SessionState(session_id="stale-session", user_id="user-a", created_at=now - timedelta(hours=1), updated_at=now - timedelta(hours=1), expires_at=now - timedelta(minutes=1)))
+        repo.save(
+            SessionState(
+                session_id="stale-session",
+                user_id="user-a",
+                created_at=now - timedelta(hours=1),
+                updated_at=now - timedelta(hours=1),
+                expires_at=now - timedelta(minutes=1),
+            )
+        )
         self.assertIsNone(manager.get_session("stale-session", user_id="user-a"))
         database.dispose()
 
@@ -216,11 +250,15 @@ class Test8DatabaseFailureDuringAuthorization(unittest.TestCase):
         # authorization into execution.
         database = _unreachable_database()
         registry = build_default_tool_registry(appointment_store=MockAppointmentStore())
-        orchestrator = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(database))
+        orchestrator = ToolOrchestrator(
+            registry, PolicyEngine(), idempotency_repository=PostgresIdempotencyRepository(database)
+        )
         result_or_exc = None
         try:
             result_or_exc = orchestrator.invoke(
-                ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": "1"}, confirmed=True, request_id="req-1"),
+                ToolRequest(
+                    action="CANCEL_APPOINTMENT", params={"appointment_id": "1"}, confirmed=True, request_id="req-1"
+                ),
                 auth=USER_B,  # not the resource owner
             )
         except DatabaseUnavailableError:
@@ -270,8 +308,15 @@ class Test10DatabaseFailureDuringBookkeeping(unittest.TestCase):
                 raise DatabaseUnavailableError("simulated: database dropped immediately after successful execution")
 
         database = _fresh_database()
-        orchestrator = ToolOrchestrator(registry, PolicyEngine(), idempotency_repository=_FailOnUpdateResultRepository(database))
-        request = ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]}, confirmed=True, request_id="bookkeeping-req-1")
+        orchestrator = ToolOrchestrator(
+            registry, PolicyEngine(), idempotency_repository=_FailOnUpdateResultRepository(database)
+        )
+        request = ToolRequest(
+            action="CANCEL_APPOINTMENT",
+            params={"appointment_id": booked["appointment_id"]},
+            confirmed=True,
+            request_id="bookkeeping-req-1",
+        )
 
         with self.assertRaises(DatabaseUnavailableError):
             orchestrator.invoke(request, auth=USER_A)
@@ -286,7 +331,12 @@ class Test10DatabaseFailureDuringBookkeeping(unittest.TestCase):
         # harm here, not the (failed) idempotency bookkeeping.
         retry = ToolOrchestrator(registry, PolicyEngine())  # a fresh orchestrator, e.g. after an app restart
         retry_result = retry.invoke(
-            ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": booked["appointment_id"]}, confirmed=True, request_id="bookkeeping-req-2"),
+            ToolRequest(
+                action="CANCEL_APPOINTMENT",
+                params={"appointment_id": booked["appointment_id"]},
+                confirmed=True,
+                request_id="bookkeeping-req-2",
+            ),
             auth=USER_A,
         )
         self.assertFalse(retry_result.success)

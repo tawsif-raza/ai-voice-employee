@@ -15,12 +15,11 @@ Key features:
 """
 
 import asyncio
-import base64
 import logging
 import os
 import re
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, Iterator, Optional
+from typing import AsyncIterator, Optional
 
 logger = logging.getLogger("ai_voice_agent.voice.tts")
 

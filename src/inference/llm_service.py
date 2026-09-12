@@ -21,13 +21,13 @@ from pathlib import Path
 from typing import Optional
 
 import torch
+from peft import PeftModel
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
     TextIteratorStreamer,
 )
-from peft import PeftModel
 
 
 class LLMGenerationError(RuntimeError):
@@ -105,9 +105,7 @@ class LLMService:
         tokenizer_source = str(resolved_adapter) if resolved_adapter else base_model_name
 
         print(f"Loading tokenizer : {tokenizer_source}")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_source, trust_remote_code=True
-        )
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -140,9 +138,11 @@ class LLMService:
                 print("Merging LoRA weights into base model...")
                 model = model.merge_and_unload()
         else:
-            print("WARNING: no LoRA checkpoint found in "
-                  f"{[str(r) for r in self.DEFAULT_SEARCH_ROOTS]} — "
-                  "running the base model with no fine-tuning.")
+            print(
+                "WARNING: no LoRA checkpoint found in "
+                f"{[str(r) for r in self.DEFAULT_SEARCH_ROOTS]} — "
+                "running the base model with no fine-tuning."
+            )
 
         model.eval()
         self.model = model
@@ -161,9 +161,7 @@ class LLMService:
         if explicit_path:
             path = Path(explicit_path)
             if not (path / "adapter_config.json").exists():
-                raise FileNotFoundError(
-                    f"No adapter_config.json found in {path} — not a LoRA checkpoint dir."
-                )
+                raise FileNotFoundError(f"No adapter_config.json found in {path} — not a LoRA checkpoint dir.")
             return path
 
         for root in self.DEFAULT_SEARCH_ROOTS:
@@ -256,9 +254,7 @@ class LLMService:
             do_sample=(temperature if temperature is not None else self.temperature) > 0,
             temperature=max(temperature if temperature is not None else self.temperature, 1e-5),
             top_p=top_p if top_p is not None else self.top_p,
-            repetition_penalty=(
-                repetition_penalty if repetition_penalty is not None else self.repetition_penalty
-            ),
+            repetition_penalty=(repetition_penalty if repetition_penalty is not None else self.repetition_penalty),
             pad_token_id=self.tokenizer.pad_token_id,
         )
 
@@ -287,9 +283,7 @@ class LLMService:
                 yield chunk
         except queue.Empty as exc:
             worker.join(timeout=1.0)
-            raise LLMGenerationError(
-                f"Generation stalled and timed out after {self.GENERATION_TIMEOUT_S}s."
-            ) from exc
+            raise LLMGenerationError(f"Generation stalled and timed out after {self.GENERATION_TIMEOUT_S}s.") from exc
         finally:
             worker.join(timeout=1.0)
 

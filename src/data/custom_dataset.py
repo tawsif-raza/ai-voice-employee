@@ -13,7 +13,6 @@ Every example here is deliberately designed to:
 import json
 from pathlib import Path
 
-
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 OUTPUT_PATH = Path("data/custom/custom_examples.json")
@@ -251,7 +250,7 @@ def save_custom_dataset(examples: list[dict], output_path: Path) -> None:
         output_path: Where to save the JSON file
     """
     print(f"\n{'='*60}")
-    print(f"CUSTOM DATASET — Validation and Save")
+    print("CUSTOM DATASET — Validation and Save")
     print(f"{'='*60}\n")
 
     valid   = []
@@ -287,7 +286,7 @@ def save_custom_dataset(examples: list[dict], output_path: Path) -> None:
 
     print(f"  Saved to: {output_path}")
     print(f"\n{'='*60}")
-    print(f"PREVIEW — First 2 examples")
+    print("PREVIEW — First 2 examples")
     print(f"{'='*60}")
 
     for i, example in enumerate(valid[:2]):

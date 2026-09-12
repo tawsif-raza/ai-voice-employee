@@ -12,22 +12,20 @@ This script uses:
 
 import argparse
 import json
-import torch
-from pathlib import Path
 
+import torch
+from config import get_all_configs
+from datasets import Dataset
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer, SFTConfig
-from datasets import Dataset
-
-from config import get_all_configs
-
+from trl import SFTConfig, SFTTrainer
 
 # ── Device check ───────────────────────────────────────────────────────────────
+
 
 def check_device() -> str:
     """
@@ -38,22 +36,23 @@ def check_device() -> str:
     """
     if torch.cuda.is_available():
         device = "cuda"
-        gpu_name   = torch.cuda.get_device_name(0)
+        gpu_name = torch.cuda.get_device_name(0)
         vram_total = torch.cuda.get_device_properties(0).total_memory / 1e9
-        vram_free  = torch.cuda.memory_reserved(0) / 1e9
+        vram_free = torch.cuda.memory_reserved(0) / 1e9
         print(f"Device     : {device} — {gpu_name}")
         print(f"VRAM total : {vram_total:.1f} GB")
         print(f"VRAM free  : {vram_total - vram_free:.1f} GB")
     else:
         device = "cpu"
-        print(f"Device     : cpu")
-        print(f"Note       : Training on CPU will be very slow.")
-        print(f"             Even 0.5B model may take hours per epoch.")
-        print(f"             Consider Google Colab (free T4 GPU) for training.")
+        print("Device     : cpu")
+        print("Note       : Training on CPU will be very slow.")
+        print("             Even 0.5B model may take hours per epoch.")
+        print("             Consider Google Colab (free T4 GPU) for training.")
     return device
 
 
 # ── Model loading ──────────────────────────────────────────────────────────────
+
 
 def load_model_and_tokenizer(model_cfg, device: str):
     """
@@ -67,7 +66,7 @@ def load_model_and_tokenizer(model_cfg, device: str):
     Returns:
         Tuple of (model, tokenizer)
     """
-    print(f"\nLoading tokenizer...")
+    print("\nLoading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(
         model_cfg.model_name,
         trust_remote_code=True,
@@ -76,7 +75,7 @@ def load_model_and_tokenizer(model_cfg, device: str):
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    print(f"Loading model in 4-bit quantization...")
+    print("Loading model in 4-bit quantization...")
 
     if device == "cuda":
         # 4-bit quantization config — only works on GPU
@@ -108,11 +107,12 @@ def load_model_and_tokenizer(model_cfg, device: str):
     if device == "cuda":
         model = prepare_model_for_kbit_training(model)
 
-    print(f"Model loaded successfully")
+    print("Model loaded successfully")
     return model, tokenizer
 
 
 # ── LoRA setup ─────────────────────────────────────────────────────────────────
+
 
 def apply_lora(model, lora_cfg):
     """
@@ -126,7 +126,7 @@ def apply_lora(model, lora_cfg):
     Returns:
         PEFT model with LoRA adapters attached
     """
-    print(f"\nApplying LoRA adapters...")
+    print("\nApplying LoRA adapters...")
 
     peft_config = LoraConfig(
         r=lora_cfg.r,
@@ -140,8 +140,8 @@ def apply_lora(model, lora_cfg):
     model = get_peft_model(model, peft_config)
 
     # Print trainable parameter count
-    trainable     = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total         = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
     trainable_pct = trainable / total * 100
 
     print(f"Total parameters     : {total:,}")
@@ -152,6 +152,7 @@ def apply_lora(model, lora_cfg):
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
+
 
 def load_training_data(data_path: str) -> Dataset:
     """
@@ -176,6 +177,7 @@ def load_training_data(data_path: str) -> Dataset:
 
 
 # ── Training ───────────────────────────────────────────────────────────────────
+
 
 def run_training(model, tokenizer, dataset, train_cfg, model_cfg, device: str, resume: bool = False) -> None:
     """
@@ -202,7 +204,7 @@ def run_training(model, tokenizer, dataset, train_cfg, model_cfg, device: str, r
                    resume_from_checkpoint=True lookup) instead of
                    training from scratch.
     """
-    print(f"\nInitializing SFTTrainer...")
+    print("\nInitializing SFTTrainer...")
 
     use_cpu = device == "cpu"
     bf16 = train_cfg.bf16 and not use_cpu
@@ -237,7 +239,7 @@ def run_training(model, tokenizer, dataset, train_cfg, model_cfg, device: str, r
         args=sft_config,
     )
 
-    print(f"Starting training...")
+    print("Starting training...")
     print(f"Epochs             : {train_cfg.num_train_epochs}")
     print(f"Examples           : {len(dataset)}")
     print(f"Effective batch    : {train_cfg.per_device_train_batch_size * train_cfg.gradient_accumulation_steps}")
@@ -246,14 +248,15 @@ def run_training(model, tokenizer, dataset, train_cfg, model_cfg, device: str, r
 
     trainer.train(resume_from_checkpoint=True if resume else None)
 
-    print(f"\nTraining complete.")
+    print("\nTraining complete.")
     print(f"Saving final model to: {train_cfg.output_dir}")
     trainer.save_model(train_cfg.output_dir)
     tokenizer.save_pretrained(train_cfg.output_dir)
-    print(f"Model saved.")
+    print("Model saved.")
 
 
 # ── CLI arguments ──────────────────────────────────────────────────────────────
+
 
 def parse_args() -> argparse.Namespace:
     """
@@ -266,7 +269,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Cap training to N optimizer steps (overrides num_train_epochs). "
-             "Useful for smoke-testing the pipeline, e.g. --max_steps 10.",
+        "Useful for smoke-testing the pipeline, e.g. --max_steps 10.",
     )
     parser.add_argument(
         "--output_dir",
@@ -278,8 +281,8 @@ def parse_args() -> argparse.Namespace:
         "--resume",
         action="store_true",
         help="Resume from the latest checkpoint found under --output_dir "
-             "(or the configured TrainingConfig.output_dir) instead of "
-             "starting training from scratch.",
+        "(or the configured TrainingConfig.output_dir) instead of "
+        "starting training from scratch.",
     )
     return parser.parse_args()
 
@@ -287,9 +290,9 @@ def parse_args() -> argparse.Namespace:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("="*60)
+    print("=" * 60)
     print("QWEN 2.5 VOICE ASSISTANT — FINE-TUNING")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
     args = parse_args()
 

@@ -52,7 +52,11 @@ class PIIDetector:
         for m in _non_overlapping_matches(_PAYMENT_PATTERN, text, claimed):
             digits = re.sub(r"[ -]", "", m.group(0))
             if len(digits) in (13, 14, 15, 16):
-                findings.append(PIIFinding(type=PIIType.PAYMENT_INFORMATION, start=m.start(), end=m.end(), confidence=0.7, value=m.group(0)))
+                findings.append(
+                    PIIFinding(
+                        type=PIIType.PAYMENT_INFORMATION, start=m.start(), end=m.end(), confidence=0.7, value=m.group(0)
+                    )
+                )
         return findings
 
     def detect_phone(self, text: str, claimed: list[tuple[int, int]] = None) -> list[PIIFinding]:

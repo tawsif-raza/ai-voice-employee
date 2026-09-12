@@ -121,7 +121,9 @@ class TestExpiration(unittest.TestCase):
         """
         manager = SessionManager(ttl=timedelta(milliseconds=50))
         manager.create_session(session_id="s1")
-        manager.update_session("s1", pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "appt_1"})
+        manager.update_session(
+            "s1", pending_action="CANCEL_APPOINTMENT", pending_parameters={"appointment_id": "appt_1"}
+        )
         manager.transition_state("s1", SessionStatus.WAITING_FOR_CONFIRMATION)
         time.sleep(0.1)
 

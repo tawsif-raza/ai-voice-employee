@@ -16,10 +16,10 @@ def preview_dataset(name: str, config: str = None, split: str = "train", n: int 
         split: Which split to load
         n: Number of examples to print
     """
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Dataset : {name}")
     print(f"Config  : {config}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     ds = load_dataset(name, config, split=split)
 
@@ -28,12 +28,13 @@ def preview_dataset(name: str, config: str = None, split: str = "train", n: int 
     print(f"\n--- First {n} examples ---\n")
 
     for i in range(min(n, len(ds))):
-        print(f"[Example {i+1}]")
+        print(f"[Example {i + 1}]")
         for col in ds.column_names:
             value = ds[i][col]
             # Pretty print lists and dicts so we can see the structure
             if isinstance(value, (list, dict)):
                 import json
+
                 value = json.dumps(value, indent=4)
                 # Truncate if massive
                 if len(value) > 800:
@@ -46,9 +47,4 @@ def preview_dataset(name: str, config: str = None, split: str = "train", n: int 
 
 
 if __name__ == "__main__":
-    preview_dataset(
-        name="HuggingFaceH4/ultrachat_200k",
-        config=None,
-        split="train_sft",
-        n=2
-    )
+    preview_dataset(name="HuggingFaceH4/ultrachat_200k", config=None, split="train_sft", n=2)

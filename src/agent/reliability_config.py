@@ -8,7 +8,7 @@ reliability.yaml falls back to conservative built-in values, mirroring
 PolicyEngine's own `_load_yaml` resilience pattern (policy_engine.py).
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -102,7 +102,9 @@ def load_reliability_config(config_path: Optional[str] = None) -> ReliabilityCon
 
     limits = data["request_limits"]
     return ReliabilityConfig(
-        llm=_dep("llm"), rag=_dep("rag"), tools=_dep("tools"),
+        llm=_dep("llm"),
+        rag=_dep("rag"),
+        tools=_dep("tools"),
         request_limits=RequestLimits(
             max_message_length=int(limits.get("max_message_length", 4000)),
             max_history_turns=int(limits.get("max_history_turns", 50)),

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Optimistic Concurrency Tests (Phase 13; plan.md Step 13.2).
 
 Verifies optimistic concurrency control (CAS) for session and memory writes:
@@ -9,7 +9,6 @@ Verifies optimistic concurrency control (CAS) for session and memory writes:
 """
 
 import os
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -20,7 +19,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 sys.path.insert(0, str(_REPO_ROOT / "src" / "agent"))
 
-from alembic import command
 from alembic.config import Config
 from db import ConcurrentModificationError, Database, DatabaseConfig
 from memory_manager import MemoryManager, MemoryRepository
@@ -29,6 +27,8 @@ from memory_repository_postgres import PostgresMemoryRepository
 from session_manager import SessionManager, SessionRepository
 from session_models import SessionState, SessionStatus
 from session_repository_postgres import PostgresSessionRepository
+
+from alembic import command
 
 
 class TestInMemorySessionOptimisticConcurrency(unittest.TestCase):
@@ -78,14 +78,18 @@ class TestInMemorySessionOptimisticConcurrency(unittest.TestCase):
 class TestInMemoryMemoryOptimisticConcurrency(unittest.TestCase):
     def setUp(self):
         self.repo = MemoryRepository()
+
         class DummyPolicy:
             def evaluate_privacy(self, key, operation="persist"):
                 from dataclasses import dataclass
+
                 @dataclass
                 class D:
                     allowed: bool = True
                     reason: str = "ok"
+
                 return D()
+
         self.manager = MemoryManager(policy_engine=DummyPolicy(), repository=self.repo)
 
     def test_sequential_writes_succeed_and_increment_version(self):
@@ -98,8 +102,14 @@ class TestInMemoryMemoryOptimisticConcurrency(unittest.TestCase):
 
         # Update record: save with expected version 1 -> increments to 2
         updated_rec = MemoryRecord(
-            id=record.id, user_id="user-1", category=MemoryCategory.PREFERENCE, key="lang", value="es",
-            source="user_explicit", created_at=record.created_at, updated_at=datetime.now(timezone.utc),
+            id=record.id,
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="lang",
+            value="es",
+            source="user_explicit",
+            created_at=record.created_at,
+            updated_at=datetime.now(timezone.utc),
             version=1,
         )
         self.repo.save(updated_rec)
@@ -115,16 +125,28 @@ class TestInMemoryMemoryOptimisticConcurrency(unittest.TestCase):
 
         # Valid update bumps version to 2
         updated_rec = MemoryRecord(
-            id=record.id, user_id="user-1", category=MemoryCategory.PREFERENCE, key="lang", value="es",
-            source="user_explicit", created_at=record.created_at, updated_at=datetime.now(timezone.utc),
+            id=record.id,
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="lang",
+            value="es",
+            source="user_explicit",
+            created_at=record.created_at,
+            updated_at=datetime.now(timezone.utc),
             version=1,
         )
         self.repo.save(updated_rec)
 
         # Stale writer with version 1 tries to overwrite
         stale_rec = MemoryRecord(
-            id=record.id, user_id="user-1", category=MemoryCategory.PREFERENCE, key="lang", value="fr",
-            source="user_explicit", created_at=record.created_at, updated_at=datetime.now(timezone.utc),
+            id=record.id,
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="lang",
+            value="fr",
+            source="user_explicit",
+            created_at=record.created_at,
+            updated_at=datetime.now(timezone.utc),
             version=1,
         )
         with self.assertRaises(ConcurrentModificationError):
@@ -223,9 +245,10 @@ class TestPostgresSessionOptimisticConcurrency(_PostgresBase):
         self.assertEqual(current.current_intent, "FIRST_UPDATE")
 
     def test_postgres_confirmation_consumption_bumps_version(self):
-        session = self.manager.create_session("sess-conf-1", user_id="user-1")
+        self.manager.create_session("sess-conf-1", user_id="user-1")
         self.manager.update_session(
-            "sess-conf-1", user_id="user-1",
+            "sess-conf-1",
+            user_id="user-1",
             workflow_state="AWAITING_CONFIRMATION",
             pending_action="BOOK_APPOINTMENT",
             pending_parameters={"slot": "10:00"},
@@ -252,8 +275,14 @@ class TestPostgresMemoryOptimisticConcurrency(_PostgresBase):
 
     def test_postgres_sequential_writes_succeed_and_increment_version(self):
         record = MemoryRecord(
-            id="mem-pg-1", user_id="user-1", category=MemoryCategory.PREFERENCE, key="theme", value="dark",
-            source="user_explicit", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
+            id="mem-pg-1",
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="theme",
+            value="dark",
+            source="user_explicit",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             version=1,
         )
         self.repo.save(record)
@@ -262,8 +291,14 @@ class TestPostgresMemoryOptimisticConcurrency(_PostgresBase):
 
         # Sequential update with expected version 1
         updated = MemoryRecord(
-            id="mem-pg-1", user_id="user-1", category=MemoryCategory.PREFERENCE, key="theme", value="light",
-            source="user_explicit", created_at=record.created_at, updated_at=datetime.now(timezone.utc),
+            id="mem-pg-1",
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="theme",
+            value="light",
+            source="user_explicit",
+            created_at=record.created_at,
+            updated_at=datetime.now(timezone.utc),
             version=1,
         )
         self.repo.save(updated)
@@ -273,24 +308,42 @@ class TestPostgresMemoryOptimisticConcurrency(_PostgresBase):
 
     def test_postgres_stale_write_rejected_with_concurrent_modification_error(self):
         record = MemoryRecord(
-            id="mem-pg-stale", user_id="user-1", category=MemoryCategory.PREFERENCE, key="theme", value="dark",
-            source="user_explicit", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
+            id="mem-pg-stale",
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="theme",
+            value="dark",
+            source="user_explicit",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             version=1,
         )
         self.repo.save(record)
 
         # Update row to version 2
         updated = MemoryRecord(
-            id="mem-pg-stale", user_id="user-1", category=MemoryCategory.PREFERENCE, key="theme", value="light",
-            source="user_explicit", created_at=record.created_at, updated_at=datetime.now(timezone.utc),
+            id="mem-pg-stale",
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="theme",
+            value="light",
+            source="user_explicit",
+            created_at=record.created_at,
+            updated_at=datetime.now(timezone.utc),
             version=1,
         )
         self.repo.save(updated)
 
         # Stale write with version 1
         stale = MemoryRecord(
-            id="mem-pg-stale", user_id="user-1", category=MemoryCategory.PREFERENCE, key="theme", value="neon",
-            source="user_explicit", created_at=record.created_at, updated_at=datetime.now(timezone.utc),
+            id="mem-pg-stale",
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="theme",
+            value="neon",
+            source="user_explicit",
+            created_at=record.created_at,
+            updated_at=datetime.now(timezone.utc),
             version=1,
         )
         with self.assertRaises(ConcurrentModificationError):

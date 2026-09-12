@@ -43,7 +43,6 @@ from typing import Callable, Optional
 
 import jwt
 import yaml
-
 from identity import AuthContext, AuthenticationError, AuthenticationProvider, Role, permissions_for_roles
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "auth.yaml"
@@ -97,7 +96,9 @@ def load_oidc_config(config_path: Optional[str] = None) -> OIDCConfig:
     audience = os.environ.get("OIDC_AUDIENCE") or auth_cfg.get("audience")
     jwks_url = os.environ.get("OIDC_JWKS_URL") or auth_cfg.get("jwks_url")
 
-    missing = [name for name, value in (("issuer_url", issuer), ("audience", audience), ("jwks_url", jwks_url)) if not value]
+    missing = [
+        name for name, value in (("issuer_url", issuer), ("audience", audience), ("jwks_url", jwks_url)) if not value
+    ]
     if missing:
         raise AuthConfigurationError(f"Missing required OIDC configuration: {', '.join(missing)}")
 
@@ -123,9 +124,14 @@ def load_oidc_config(config_path: Optional[str] = None) -> OIDCConfig:
         raise AuthConfigurationError("clock_skew_seconds must not be negative.")
 
     return OIDCConfig(
-        issuer=issuer, audience=audience, jwks_url=jwks_url, algorithms=algorithms,
-        clock_skew_seconds=clock_skew, required_claims=required_claims,
-        role_claim=auth_cfg.get("role_claim", "roles"), role_mapping=role_mapping,
+        issuer=issuer,
+        audience=audience,
+        jwks_url=jwks_url,
+        algorithms=algorithms,
+        clock_skew_seconds=clock_skew,
+        required_claims=required_claims,
+        role_claim=auth_cfg.get("role_claim", "roles"),
+        role_mapping=role_mapping,
         jwks_timeout_seconds=float(auth_cfg.get("jwks_timeout_seconds", 10.0)),
     )
 
@@ -147,8 +153,11 @@ class OIDCAuthenticationProvider(AuthenticationProvider):
     """
 
     def __init__(
-        self, config: OIDCConfig, signing_key_resolver: Optional[Callable[[str], object]] = None,
-        audit_logger=None, security_detector=None,
+        self,
+        config: OIDCConfig,
+        signing_key_resolver: Optional[Callable[[str], object]] = None,
+        audit_logger=None,
+        security_detector=None,
     ):
         self._config = config
         if signing_key_resolver is not None:
@@ -189,8 +198,11 @@ class OIDCAuthenticationProvider(AuthenticationProvider):
 
         try:
             claims = jwt.decode(
-                token, key, algorithms=list(self._config.algorithms),
-                audience=self._config.audience, issuer=self._config.issuer,
+                token,
+                key,
+                algorithms=list(self._config.algorithms),
+                audience=self._config.audience,
+                issuer=self._config.issuer,
                 leeway=self._config.clock_skew_seconds,
                 options={"require": list(self._config.required_claims)},
             )
@@ -220,13 +232,19 @@ class OIDCAuthenticationProvider(AuthenticationProvider):
             self._security_detector.reset_auth_failures(safe_actor)
         if self._audit_logger is not None:
             from observability_models import EventType
+
             self._audit_logger.record(
-                EventType.AUTH_SUCCESS, outcome="success", actor=subject,
+                EventType.AUTH_SUCCESS,
+                outcome="success",
+                actor=subject,
                 reason="OIDC token accepted.",
             )
         return AuthContext(
-            user_id=subject, authenticated=True, roles=tuple(r.value for r in roles),
-            permissions=permissions_for_roles(roles), authentication_method="oidc",
+            user_id=subject,
+            authenticated=True,
+            roles=tuple(r.value for r in roles),
+            permissions=permissions_for_roles(roles),
+            authentication_method="oidc",
         )
 
     def _map_roles(self, claims: dict) -> tuple[Role, ...]:
@@ -247,6 +265,7 @@ class OIDCAuthenticationProvider(AuthenticationProvider):
     def _deny(self, actor: str, reason: str) -> None:
         if self._audit_logger is not None:
             from observability_models import EventType
+
             self._audit_logger.record(EventType.AUTH_FAILURE, outcome="denied", actor=actor, reason=reason)
         if self._security_detector is not None:
             self._security_detector.record_auth_failure(actor)

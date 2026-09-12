@@ -1,0 +1,59 @@
+# Normalize line endings so behavior is consistent across Windows, Linux,
+# Docker, and CI -- this repo is developed on Windows (core.autocrlf=true is
+# a common local default there) but built/tested/deployed on Linux (Docker,
+# GitHub Actions), so files must be stored with LF in the repository
+# regardless of what a given contributor's checkout renders them as.
+#
+# `text=auto` lets Git detect text vs. binary; `eol=lf` pins the
+# repository (blob) line ending to LF for every text type explicitly
+# listed below, while local checkouts may still render CRLF if a
+# contributor's own core.autocrlf=true converts on checkout -- that's a
+# per-checkout rendering choice, not a repository content difference, so
+# it no longer produces the "LF will be replaced by CRLF" diff noise this
+# session hit on nearly every git add/commit.
+
+* text=auto eol=lf
+
+# Python
+*.py text eol=lf
+
+# Config / data
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.ini  text eol=lf
+*.cfg  text eol=lf
+
+# Docs
+*.md  text eol=lf
+*.txt text eol=lf
+
+# Shell (must stay LF -- a CRLF shebang line breaks execution on Linux/Docker)
+*.sh text eol=lf
+
+# Windows PowerShell scripts are conventionally CRLF and are only ever
+# executed on Windows -- do not force LF on these.
+*.ps1 text eol=crlf
+
+# SQL / misc text
+*.sql text eol=lf
+Dockerfile text eol=lf
+.env.example text eol=lf
+.env.canary.example text eol=lf
+
+# Binary -- never touch line endings, avoids corrupting these regardless
+# of extension-based heuristics above.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.whl binary
+*.pt binary
+*.bin binary
+*.safetensors binary
+*.db binary

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Real-Time Telephony Latency Instrumentation (src/voice/latency_tracker.py)
 
 Instruments, measures, and aggregates real-world latencies across every stage
@@ -95,9 +95,7 @@ class LatencyTracker:
     def __init__(self, session_id: Optional[str] = None):
         self.session_id = session_id or ""
         self._lock = threading.Lock()
-        self._phases: dict[str, PhaseStats] = {
-            name: PhaseStats(name=name) for name in CANARY_LATENCY_METRICS
-        }
+        self._phases: dict[str, PhaseStats] = {name: PhaseStats(name=name) for name in CANARY_LATENCY_METRICS}
         self._active_timers: dict[str, float] = {}
 
     def record(self, metric_name: str, value_ms: float) -> None:
@@ -141,17 +139,11 @@ class LatencyTracker:
 
     def get_summary(self) -> dict[str, dict[str, Any]]:
         with self._lock:
-            return {
-                name: stats.to_dict()
-                for name, stats in self._phases.items()
-                if stats.count > 0
-            }
+            return {name: stats.to_dict() for name, stats in self._phases.items() if stats.count > 0}
 
     def reset(self) -> None:
         with self._lock:
-            self._phases = {
-                name: PhaseStats(name=name) for name in CANARY_LATENCY_METRICS
-            }
+            self._phases = {name: PhaseStats(name=name) for name in CANARY_LATENCY_METRICS}
             self._active_timers.clear()
 
     def to_dict(self) -> dict[str, Any]:

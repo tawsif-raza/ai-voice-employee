@@ -19,13 +19,11 @@ for p in (_VOICE_DIR, _AGENT_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from stt_service import MockSTTService, STTEvent, STTEventType
 from telephony_models import (
     CallSession,
     CallStatus,
-    TwilioMediaData,
-    TwilioStartData,
 )
-from stt_service import MockSTTService, STTEvent, STTEventType
 from tts_service import MockTTSService
 from voice_pipeline import VoiceCallHandler, VoiceCallManager
 
@@ -52,7 +50,6 @@ class MockConversationManager:
 
 
 class TestVoicePipeline(unittest.IsolatedAsyncioTestCase):
-
     async def test_final_transcript_drives_conversation_manager(self):
         outbound = []
 
@@ -182,8 +179,11 @@ class TestVoicePipeline(unittest.IsolatedAsyncioTestCase):
         outbound_1 = []
         outbound_2 = []
 
-        async def send1(msg): outbound_1.append(msg)
-        async def send2(msg): outbound_2.append(msg)
+        async def send1(msg):
+            outbound_1.append(msg)
+
+        async def send2(msg):
+            outbound_2.append(msg)
 
         h1 = manager.register_call("CA-A", "MZ-A", send1, MockSTTService(), MockTTSService())
         h2 = manager.register_call("CA-B", "MZ-B", send2, MockSTTService(), MockTTSService())

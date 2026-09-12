@@ -43,8 +43,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, sessionmaker
 
 _PRODUCTION_MODES = {"production", "postgres", "postgresql"}
 
@@ -177,9 +177,13 @@ def load_database_config(env: Optional[dict] = None) -> DatabaseConfig:
     echo = str(source.get("DB_ECHO", "false")).strip().lower() == "true"
 
     return DatabaseConfig(
-        url=url, safe_url=_mask_url(url), mode=mode,
-        pool_size=pool_size, max_overflow=max_overflow,
-        pool_timeout_seconds=pool_timeout_seconds, pool_recycle_seconds=pool_recycle_seconds,
+        url=url,
+        safe_url=_mask_url(url),
+        mode=mode,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout_seconds=pool_timeout_seconds,
+        pool_recycle_seconds=pool_recycle_seconds,
         echo=echo,
     )
 
@@ -197,9 +201,12 @@ def _build_engine(config: DatabaseConfig) -> Engine:
         connect_args = {"check_same_thread": False} if ":memory:" in config.url else {}
         return create_engine(config.url, echo=config.echo, connect_args=connect_args)
     return create_engine(
-        config.url, echo=config.echo,
-        pool_size=config.pool_size, max_overflow=config.max_overflow,
-        pool_timeout=config.pool_timeout_seconds, pool_recycle=config.pool_recycle_seconds,
+        config.url,
+        echo=config.echo,
+        pool_size=config.pool_size,
+        max_overflow=config.max_overflow,
+        pool_timeout=config.pool_timeout_seconds,
+        pool_recycle=config.pool_recycle_seconds,
         pool_pre_ping=True,  # detects a dropped connection before handing it to a caller, not after
     )
 

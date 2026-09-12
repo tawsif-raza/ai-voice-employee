@@ -26,12 +26,11 @@ protects against races within one Python process.
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import insert, or_, select, update
-from sqlalchemy.exc import IntegrityError
-
-from db import ConcurrentModificationError, Database, upsert_row
+from db import ConcurrentModificationError, Database
 from db_models import SessionRow
 from session_models import SessionState, SessionStatus
+from sqlalchemy import insert, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 
 def _aware(dt: Optional[datetime]) -> Optional[datetime]:
@@ -133,9 +132,7 @@ class PostgresSessionRepository:
                 try:
                     db_session.execute(insert(table).values(**insert_values))
                 except IntegrityError:
-                    raise ConcurrentModificationError(
-                        f"Concurrent insert detected for session '{session.session_id}'"
-                    )
+                    raise ConcurrentModificationError(f"Concurrent insert detected for session '{session.session_id}'")
             else:
                 session.version = new_version
 
@@ -146,7 +143,9 @@ class PostgresSessionRepository:
                 db_session.delete(row)
 
     def try_consume_pending_confirmation(
-        self, session_id: str, user_id: Optional[str] = None,
+        self,
+        session_id: str,
+        user_id: Optional[str] = None,
     ) -> Optional[tuple]:
         """
         Atomic compare-and-swap: transitions `workflow_state` away from
@@ -198,8 +197,6 @@ class PostgresSessionRepository:
                 return None
             action_name, params = row
             db_session.execute(
-                update(table)
-                .where(table.c.session_id == session_id)
-                .values(pending_action=None, pending_parameters={})
+                update(table).where(table.c.session_id == session_id).values(pending_action=None, pending_parameters={})
             )
             return action_name, dict(params or {})

@@ -29,7 +29,13 @@ class Chunk:
         return f"{self.title}. {self.content}"
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "domain": self.domain, "title": self.title, "content": self.content, "tags": list(self.tags)}
+        return {
+            "id": self.id,
+            "domain": self.domain,
+            "title": self.title,
+            "content": self.content,
+            "tags": list(self.tags),
+        }
 
 
 def load_knowledge_base(knowledge_dir: Optional[Path] = None) -> list[Chunk]:

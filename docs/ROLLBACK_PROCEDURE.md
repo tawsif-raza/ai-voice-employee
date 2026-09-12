@@ -1,4 +1,4 @@
-﻿# Canary Rollback Procedure
+# Canary Rollback Procedure
 
 ## 1. When to Roll Back (Rollback Criteria)
 

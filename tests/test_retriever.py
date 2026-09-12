@@ -25,15 +25,40 @@ from retriever import Retriever  # noqa: E402
 
 FAKE_KNOWLEDGE = {
     "faqs": [
-        {"id": "faq_hours", "title": "Store hours", "content": "We are open Monday to Saturday, 9am to 8pm.", "tags": ["hours"]},
-        {"id": "faq_returns", "title": "Returning an item", "content": "Unopened items can be returned within 30 days with a receipt.", "tags": ["returns"]},
+        {
+            "id": "faq_hours",
+            "title": "Store hours",
+            "content": "We are open Monday to Saturday, 9am to 8pm.",
+            "tags": ["hours"],
+        },
+        {
+            "id": "faq_returns",
+            "title": "Returning an item",
+            "content": "Unopened items can be returned within 30 days with a receipt.",
+            "tags": ["returns"],
+        },
     ],
     "medicine": [
-        {"id": "med_ibuprofen", "title": "Ibuprofen", "content": "Ibuprofen is an over-the-counter pain reliever and anti-inflammatory.", "tags": ["pain"]},
-        {"id": "med_vitamin_c", "title": "Vitamin C", "content": "Vitamin C is a common over-the-counter immune-support supplement.", "tags": ["vitamin"]},
+        {
+            "id": "med_ibuprofen",
+            "title": "Ibuprofen",
+            "content": "Ibuprofen is an over-the-counter pain reliever and anti-inflammatory.",
+            "tags": ["pain"],
+        },
+        {
+            "id": "med_vitamin_c",
+            "title": "Vitamin C",
+            "content": "Vitamin C is a common over-the-counter immune-support supplement.",
+            "tags": ["vitamin"],
+        },
     ],
     "appointments": [
-        {"id": "appt_book", "title": "Booking an appointment", "content": "Book an appointment through the app by choosing a date and time.", "tags": ["booking"]},
+        {
+            "id": "appt_book",
+            "title": "Booking an appointment",
+            "content": "Book an appointment through the app by choosing a date and time.",
+            "tags": ["booking"],
+        },
     ],
 }
 
@@ -116,7 +141,9 @@ class TestKnowledgeBaseLoading(unittest.TestCase):
     def test_domain_from_filename(self):
         from knowledge_base import load_knowledge_base
 
-        (self.tmp_dir / "widgets.json").write_text(json.dumps([{"id": "w1", "title": "Widget", "content": "A widget."}]), encoding="utf-8")
+        (self.tmp_dir / "widgets.json").write_text(
+            json.dumps([{"id": "w1", "title": "Widget", "content": "A widget."}]), encoding="utf-8"
+        )
         chunks = load_knowledge_base(self.tmp_dir)
         self.assertEqual(chunks[0].domain, "widgets")
 

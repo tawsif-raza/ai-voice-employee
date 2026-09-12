@@ -12,7 +12,6 @@ import json
 import random
 from pathlib import Path
 
-
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 BITEXT_PATH    = Path("data/processed/bitext_processed.json")
@@ -80,7 +79,7 @@ def merge_datasets(
         seed:           Random seed for reproducible shuffling
     """
     print(f"\n{'='*60}")
-    print(f"MERGE PIPELINE — v2 (all three sources)")
+    print("MERGE PIPELINE — v2 (all three sources)")
     print(f"{'='*60}\n")
 
     # ── Load all three datasets ────────────────────────────────
@@ -179,7 +178,7 @@ def merge_bitext_and_custom(
         seed:        Random seed for reproducible shuffling
     """
     print(f"\n{'='*60}")
-    print(f"MERGE PIPELINE — Final (Bitext + Custom only)")
+    print("MERGE PIPELINE — Final (Bitext + Custom only)")
     print(f"{'='*60}\n")
 
     print("[1/5] Loading datasets...")

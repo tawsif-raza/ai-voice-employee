@@ -2,7 +2,6 @@
 Unit tests for Voice Pipeline Benchmark Harness (src/voice/benchmark.py).
 """
 
-import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -15,7 +14,6 @@ from benchmark import BenchmarkHarness, MetricSummary, VoiceBenchmarkReport
 
 
 class TestVoiceBenchmark(unittest.IsolatedAsyncioTestCase):
-
     def test_metric_summary_calculations(self):
         summary = MetricSummary(name="test_lat", samples=[10.0, 20.0, 30.0, 40.0, 50.0])
         self.assertEqual(summary.count, 5)

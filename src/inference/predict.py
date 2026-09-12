@@ -27,8 +27,8 @@ if _AGENT_DIR not in sys.path:
     sys.path.insert(0, _AGENT_DIR)
 from conversation_manager import ConversationManager, build_conversation_manager  # noqa: E402
 
-
 # ── Inference wrapper (backward-compatible facade) ────────────────────────────
+
 
 class VoiceAssistantInference:
     """
@@ -189,14 +189,14 @@ class VoiceAssistantInference:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Chat with the voice assistant")
     parser.add_argument("--base_model", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument(
         "--adapter_path",
         default=None,
-        help="LoRA checkpoint directory. Auto-resolved from outputs/ or "
-             "models/qwen-voice-assistant if omitted.",
+        help="LoRA checkpoint directory. Auto-resolved from outputs/ or models/qwen-voice-assistant if omitted.",
     )
     parser.add_argument(
         "--no-merge",
