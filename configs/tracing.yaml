@@ -1,0 +1,23 @@
+# Tracing configuration — Phase 14
+# Loaded by src/agent/tracing.py, overridable by environment variables.
+# Environment variables always win over YAML values.
+
+tracing:
+  enabled: false                          # Master kill switch. Override: TRACING_ENABLED
+  service_name: "ai-voice-agent"          # Override: OTEL_SERVICE_NAME
+  exporter: "console"                     # "console" | "otlp" | "memory". Override: OTEL_EXPORTER_TYPE
+  otlp_endpoint: "http://localhost:4317"  # Override: OTEL_EXPORTER_OTLP_ENDPOINT
+  sampler: "parentbased_always_on"        # Override: OTEL_TRACES_SAMPLER
+  sampler_arg: null                       # Override: OTEL_TRACES_SAMPLER_ARG (for traceidratio)
+
+  # Span attribute privacy rules
+  privacy:
+    # Fields that are NEVER recorded as span attributes
+    blocked_attributes:
+      - "user_message"
+      - "llm_response"
+      - "auth_token"
+      - "database_url"
+      - "password"
+      - "credit_card"
+      - "ssn"

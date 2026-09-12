@@ -31,15 +31,35 @@ from text itself (see action_models.py's docstrings for the same
 boundary stated on the types themselves).
 """
 
+import contextlib
 import queue
 import threading
 import time
 from typing import Callable, Optional
 
+from opentelemetry import trace
+
 from action_models import ANONYMOUS_CONTEXT, ActionProposal, AuthContext, ToolExecutionResult, ToolRequest
 from observability_models import EventType
 from reliability import CircuitBreaker, CircuitState, RetryPolicy
 from tool_registry import ToolRegistry
+from tracing import get_tracer, SpanAttributes  # noqa: E402  (Phase 14)
+
+# Phase 14: module-level tracer singleton -- see conversation_manager.py's
+# identical pattern. Zero-cost no-op spans when tracing is disabled.
+_tracer = get_tracer("ai-voice-agent.tool-orchestrator")
+
+
+@contextlib.contextmanager
+def _traced(span_name: str):
+    """Resilient span helper -- see conversation_manager.py's identical _traced()."""
+    try:
+        _cm = _tracer.start_as_current_span(span_name)
+    except Exception:
+        yield trace.INVALID_SPAN
+        return
+    with _cm as _span:
+        yield _span
 
 
 class ToolValidationError(ValueError):
@@ -219,7 +239,24 @@ class ToolOrchestrator:
             if self._registry.get_spec(action_name) is None and self._security_detector is not None:
                 self._security_detector.record_unknown_tool_request(action_name, actor, request_id=request_id)
 
-        result = self._invoke(tool_request, auth)
+        # Phase 14 (Step 14.4.2): root span for the whole gate sequence --
+        # observational only. Every gate/execute child span created inside
+        # _invoke() becomes a child of this one; the returned result and
+        # every audit event above/below are completely unchanged.
+        with _traced("tool_orchestrator.invoke") as _span:
+            try:
+                _span.set_attribute(SpanAttributes.TOOL_NAME, action_name or "")
+                _span.set_attribute(SpanAttributes.TOOL_ACTION, action_name or "")
+                _span.set_attribute(SpanAttributes.REQUEST_ID, request_id or "")
+            except Exception:
+                pass
+
+            result = self._invoke(tool_request, auth)
+
+            try:
+                _span.set_attribute(SpanAttributes.TOOL_OUTCOME, result.status or "")
+            except Exception:
+                pass
 
         if self._audit_logger is not None and action_name:
             self._emit_result_events(result, tool_request, actor, request_id)
@@ -347,63 +384,89 @@ class ToolOrchestrator:
         # (plan.md Step 10.12): an internal PolicyEngine failure here
         # denies the action -- never falls through to execution just
         # because the evaluation itself raised.
-        try:
-            tool_policy = self._policy_engine.evaluate_tool_action(action, tool_request.params)
-        except Exception:
-            return ToolExecutionResult(
-                success=False, tool=action, status="policy_denied", error="POLICY_ENGINE_UNAVAILABLE",
-                request_id=tool_request.request_id,
-            )
-        if not tool_policy.allowed:
-            return ToolExecutionResult(
-                success=False, tool=action, status="policy_denied", error=tool_policy.reason,
-                request_id=tool_request.request_id, metadata={"policy": tool_policy.to_dict()},
-            )
+        with _traced("tool_orchestrator.gate_policy") as _gate_span:
+            try:
+                tool_policy = self._policy_engine.evaluate_tool_action(action, tool_request.params)
+            except Exception:
+                try:
+                    _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "policy_denied")
+                except Exception:
+                    pass
+                return ToolExecutionResult(
+                    success=False, tool=action, status="policy_denied", error="POLICY_ENGINE_UNAVAILABLE",
+                    request_id=tool_request.request_id,
+                )
+            try:
+                _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "allowed" if tool_policy.allowed else "policy_denied")
+            except Exception:
+                pass
+            if not tool_policy.allowed:
+                return ToolExecutionResult(
+                    success=False, tool=action, status="policy_denied", error=tool_policy.reason,
+                    request_id=tool_request.request_id, metadata={"policy": tool_policy.to_dict()},
+                )
 
         # 2. Authentication/authorization -- trusted `auth`, never derived
         # from tool_request or any text. A caller that never supplies
         # `auth` gets ANONYMOUS_CONTEXT, which is unauthenticated by
         # construction (see action_models.py) -- so omitting auth fails
         # closed, not open.
-        if not isinstance(auth, AuthContext) or not auth.authenticated:
-            return ToolExecutionResult(
-                success=False, tool=action, status="failure", error="AUTHENTICATION_REQUIRED",
-                request_id=tool_request.request_id,
-            )
-        if spec.required_role and not auth.has_role(spec.required_role):
-            return ToolExecutionResult(
-                success=False, tool=action, status="failure", error="INSUFFICIENT_PERMISSIONS",
-                request_id=tool_request.request_id,
-            )
-
-        # 2.1. Fine-grained authorization (Phase 7) -- routed through
-        # PolicyEngine.evaluate_authorization(), the single authoritative
-        # authorization decision (plan.md Step 7.6/7.9), never
-        # re-implemented here. Covers both "does this identity hold the
-        # required permission" and, when tool_request.resource_owner_user_id
-        # is set by the caller, "does this identity own the resource" —
-        # e.g. USER + CANCEL_APPOINTMENT + own appointment -> ALLOW,
-        # USER + CANCEL_APPOINTMENT + another user's appointment -> DENY.
-        if spec.required_permission is not None:
-            try:
-                authz = self._policy_engine.evaluate_authorization(
-                    auth, spec.required_permission, resource_owner_user_id=tool_request.resource_owner_user_id,
-                )
-            except Exception:
+        with _traced("tool_orchestrator.gate_authorization") as _gate_span:
+            if not isinstance(auth, AuthContext) or not auth.authenticated:
+                try:
+                    _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "denied")
+                except Exception:
+                    pass
                 return ToolExecutionResult(
-                    success=False, tool=action, status="failure", error="POLICY_ENGINE_UNAVAILABLE",
+                    success=False, tool=action, status="failure", error="AUTHENTICATION_REQUIRED",
                     request_id=tool_request.request_id,
                 )
-            if not authz.allowed:
+            if spec.required_role and not auth.has_role(spec.required_role):
+                try:
+                    _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "denied")
+                except Exception:
+                    pass
                 return ToolExecutionResult(
-                    success=False, tool=action, status="failure", error=authz.rule,
-                    request_id=tool_request.request_id, metadata={"policy": authz.to_dict()},
+                    success=False, tool=action, status="failure", error="INSUFFICIENT_PERMISSIONS",
+                    request_id=tool_request.request_id,
                 )
-            if self._audit_logger is not None:
-                self._audit_logger.record(
-                    EventType.AUTHZ_ALLOW, outcome="allowed", actor=auth.user_id, action=action,
-                    request_id=tool_request.request_id, policy=authz.policy,
-                )
+
+            # 2.1. Fine-grained authorization (Phase 7) -- routed through
+            # PolicyEngine.evaluate_authorization(), the single authoritative
+            # authorization decision (plan.md Step 7.6/7.9), never
+            # re-implemented here. Covers both "does this identity hold the
+            # required permission" and, when tool_request.resource_owner_user_id
+            # is set by the caller, "does this identity own the resource" —
+            # e.g. USER + CANCEL_APPOINTMENT + own appointment -> ALLOW,
+            # USER + CANCEL_APPOINTMENT + another user's appointment -> DENY.
+            if spec.required_permission is not None:
+                try:
+                    authz = self._policy_engine.evaluate_authorization(
+                        auth, spec.required_permission, resource_owner_user_id=tool_request.resource_owner_user_id,
+                    )
+                except Exception:
+                    try:
+                        _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "denied")
+                    except Exception:
+                        pass
+                    return ToolExecutionResult(
+                        success=False, tool=action, status="failure", error="POLICY_ENGINE_UNAVAILABLE",
+                        request_id=tool_request.request_id,
+                    )
+                try:
+                    _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "allowed" if authz.allowed else "denied")
+                except Exception:
+                    pass
+                if not authz.allowed:
+                    return ToolExecutionResult(
+                        success=False, tool=action, status="failure", error=authz.rule,
+                        request_id=tool_request.request_id, metadata={"policy": authz.to_dict()},
+                    )
+                if self._audit_logger is not None:
+                    self._audit_logger.record(
+                        EventType.AUTHZ_ALLOW, outcome="allowed", actor=auth.user_id, action=action,
+                        request_id=tool_request.request_id, policy=authz.policy,
+                    )
 
         # 2.5. Tool-input privacy (Phase 6, only when a PrivacyService is
         # configured) -- scans each string parameter for embedded PII
@@ -413,34 +476,50 @@ class ToolOrchestrator:
         # policies/privacy.yaml). Distinct from step 1's tool policy
         # (which governs the action category, not its parameter content).
         if self._privacy_service is not None:
-            for value in tool_request.params.values():
-                if not isinstance(value, str):
-                    continue
-                pii_decision = self._privacy_service.decide(value, context="TOOL_INPUT")
-                if pii_decision.findings:
-                    self._record_pii_event(pii_decision, action, tool_request, auth)
-                if not pii_decision.allowed:
-                    return ToolExecutionResult(
-                        success=False, tool=action, status="policy_denied", error=pii_decision.reason,
-                        request_id=tool_request.request_id, metadata={"policy": pii_decision.to_dict()},
-                    )
+            with _traced("tool_orchestrator.gate_privacy") as _gate_span:
+                for value in tool_request.params.values():
+                    if not isinstance(value, str):
+                        continue
+                    pii_decision = self._privacy_service.decide(value, context="TOOL_INPUT")
+                    if pii_decision.findings:
+                        self._record_pii_event(pii_decision, action, tool_request, auth)
+                    if not pii_decision.allowed:
+                        try:
+                            _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "policy_denied")
+                        except Exception:
+                            pass
+                        return ToolExecutionResult(
+                            success=False, tool=action, status="policy_denied", error=pii_decision.reason,
+                            request_id=tool_request.request_id, metadata={"policy": pii_decision.to_dict()},
+                        )
 
         # 3. Confirmation -- trusted `tool_request.confirmed`, never
         # derived from anything but that explicit field. Phase 10: an
         # internal PolicyEngine failure here requires confirmation (fail
         # closed) rather than skipping the check.
-        try:
-            confirmation_policy = self._policy_engine.evaluate_confirmation(action, confirmed=tool_request.confirmed)
-        except Exception:
-            return ToolExecutionResult(
-                success=False, tool=action, status="confirmation_required", error="POLICY_ENGINE_UNAVAILABLE",
-                request_id=tool_request.request_id,
-            )
-        if not confirmation_policy.allowed:
-            return ToolExecutionResult(
-                success=False, tool=action, status="confirmation_required", error=confirmation_policy.reason,
-                request_id=tool_request.request_id, metadata={"policy": confirmation_policy.to_dict()},
-            )
+        with _traced("tool_orchestrator.gate_confirmation") as _gate_span:
+            try:
+                confirmation_policy = self._policy_engine.evaluate_confirmation(action, confirmed=tool_request.confirmed)
+            except Exception:
+                try:
+                    _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "confirmation_required")
+                except Exception:
+                    pass
+                return ToolExecutionResult(
+                    success=False, tool=action, status="confirmation_required", error="POLICY_ENGINE_UNAVAILABLE",
+                    request_id=tool_request.request_id,
+                )
+            try:
+                _gate_span.set_attribute(
+                    SpanAttributes.POLICY_OUTCOME, "allowed" if confirmation_policy.allowed else "confirmation_required",
+                )
+            except Exception:
+                pass
+            if not confirmation_policy.allowed:
+                return ToolExecutionResult(
+                    success=False, tool=action, status="confirmation_required", error=confirmation_policy.reason,
+                    request_id=tool_request.request_id, metadata={"policy": confirmation_policy.to_dict()},
+                )
 
         # 4. Idempotency -- a repeated request_id never re-executes,
         # regardless of whether the action is destructive.
@@ -467,15 +546,24 @@ class ToolOrchestrator:
         # out: "Do not rely only on Python locks"). auth.authenticated is
         # already guaranteed True here (step 2 already denied otherwise),
         # so auth.user_id is a real identity, never a guess.
-        using_persisted_idempotency = tool_request.request_id and self._idempotency_repository is not None
-        if tool_request.request_id and not using_persisted_idempotency:
-            with self._executed_request_ids_lock:
-                if tool_request.request_id in self._executed_request_ids:
+        with _traced("tool_orchestrator.gate_idempotency") as _gate_span:
+            using_persisted_idempotency = tool_request.request_id and self._idempotency_repository is not None
+            if tool_request.request_id and not using_persisted_idempotency:
+                with self._executed_request_ids_lock:
+                    if tool_request.request_id in self._executed_request_ids:
+                        try:
+                            _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "duplicate")
+                        except Exception:
+                            pass
+                        return self._idempotency_denied_result(action, tool_request, auth)
+            elif using_persisted_idempotency:
+                reserved = self._idempotency_repository.try_reserve(tool_request.request_id, user_id=auth.user_id, action=action)
+                if not reserved:
+                    try:
+                        _gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, "duplicate")
+                    except Exception:
+                        pass
                     return self._idempotency_denied_result(action, tool_request, auth)
-        elif using_persisted_idempotency:
-            reserved = self._idempotency_repository.try_reserve(tool_request.request_id, user_id=auth.user_id, action=action)
-            if not reserved:
-                return self._idempotency_denied_result(action, tool_request, auth)
 
         # 5. Execute the registered callable ONLY, timeout-bounded (Phase
         # 4). Phase 10 adds a bounded, idempotency-aware retry on top:
@@ -488,7 +576,18 @@ class ToolOrchestrator:
         # execution attempt -- an OPEN circuit fails immediately with a
         # controlled result, never by falling through to some other
         # (e.g. LLM-guessed) behavior.
-        result = self._execute_with_reliability(action, spec, tool_request, auth)
+        with _traced("tool_orchestrator.execute") as _exec_span:
+            _exec_start = time.monotonic()
+            result = self._execute_with_reliability(action, spec, tool_request, auth)
+            try:
+                _exec_span.set_attribute(SpanAttributes.TOOL_OUTCOME, result.status or "")
+                _exec_span.set_attribute(SpanAttributes.LATENCY_MS, (time.monotonic() - _exec_start) * 1000.0)
+                if result.status == "timeout":
+                    from opentelemetry.trace import StatusCode
+                    _exec_span.set_status(StatusCode.ERROR, "DependencyTimeoutError")
+                    _exec_span.set_attribute(SpanAttributes.ERROR_TYPE, "DependencyTimeoutError")
+            except Exception:
+                pass
 
         if tool_request.request_id:
             if using_persisted_idempotency:

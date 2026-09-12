@@ -191,3 +191,44 @@ Today the API container runs the Conversation Manager's orchestration logic, the
 - **Evaluate swapping in a larger or differently-quantized model** via the existing export pipeline, if accuracy needs outgrow the current small-model + heavy-grounding approach.
 - **Move to streaming, bidirectional transport (e.g., WebSockets)** for the voice channel if request/response latency becomes a limiting factor for conversational feel.
 - **A/B testing / experimentation framework** for prompts, retrieval tuning, and detector thresholds, built on top of the existing evaluation harness rather than replacing it.
+
+## 11. Distributed Tracing (Phase 14)
+
+**Note:** the rest of this document (Sections 1-10) predates the Policy Engine, Tool Orchestrator, Session/Memory persistence, and telephony/voice layers added in later phases and describes the pre-Phase-3 system shape; it has not been rewritten here. This section documents only what Phase 14 (`src/agent/tracing.py`) added: OpenTelemetry distributed tracing across the turn-orchestration pipeline described in `PHASE_14_TELEMETRY_TRACING_REPORT.md`.
+
+### Span hierarchy
+
+Every `/generate` turn and tool invocation produces a tree of spans sharing one `trace_id`:
+
+```
+conversation.handle_turn                      (root — one per turn)
+├── conversation.clinical_safety_check         (only when a clinical_guard is configured)
+├── conversation.intent_classify
+├── conversation.policy_evaluate
+├── conversation.rag_retrieve                  (only when a retriever is configured)
+├── conversation.llm_generate
+│   └── tool_orchestrator.invoke               (only on a tool-routed turn; see below)
+└── conversation.handoff_detect
+
+tool_orchestrator.invoke                       (root of the tool-orchestrator's own gate sequence)
+├── tool_orchestrator.gate_policy
+├── tool_orchestrator.gate_authorization
+├── tool_orchestrator.gate_privacy              (only when a privacy_service is configured)
+├── tool_orchestrator.gate_confirmation
+├── tool_orchestrator.gate_idempotency
+└── tool_orchestrator.execute
+```
+
+A tool-routed turn short-circuits before `conversation.rag_retrieve`/`conversation.llm_generate` (Section 6's Communication Rule 2.6 in `conversation_manager.py`), so `tool_orchestrator.invoke` appears as a child of `conversation.handle_turn` directly, not nested under `conversation.llm_generate` — the diagram above shows it there only to indicate it is the same gate sequence `tests/test_tracing_pipeline.py::TestToolActionSpan` exercises independently. Every gate's early-return (deny) short-circuits the remaining gates and `execute`, exactly like the pre-Phase-14 control flow it observes (see `docs/TRACING.md` for the full span/attribute reference).
+
+### Privacy guarantees
+
+Span attributes are restricted to a fixed allow-list (`tracing.SpanAttributes`) — identifiers, categorical outcomes, counts, and latencies only. Raw user input, LLM output text, retrieved chunk content, auth tokens, and connection strings are never attached to a span. `tests/test_tracing_pipeline.py::test_span_attributes_never_contain_user_message` asserts this for a full turn.
+
+### Correlation with logs and audit events
+
+`AuditEvent` (`observability_models.py`) carries `trace_id`/`span_id`, populated by `AuditLogger.record()` from the active span at record time (`audit.py`). `StructuredJSONFormatter` (`src/voice/production_logging.py`) does the same for JSON log lines when `LOG_FORMAT=json`. All three (spans, audit events, logs) for one turn therefore share a single `trace_id` — see `tests/test_tracing_correlation.py`.
+
+### Configuration and enablement
+
+Tracing is disabled by default (`TRACING_ENABLED=false`) and is a strictly additive, fire-and-forget observer: a tracer failure of any kind (including the SDK itself misbehaving) degrades to a no-op rather than affecting the turn (`tracing.py`'s `_SafeTracer`; `tests/test_tracing_pipeline.py::test_tracing_error_does_not_break_turn`). See `docs/TRACING.md` for the full configuration reference and how to view traces locally with Jaeger.

@@ -55,6 +55,7 @@ its expiry can never have its pending action picked back up (enforced by
 SessionManager.get_session() itself — see session_manager.py).
 """
 
+import contextlib
 import json
 import logging
 import re
@@ -66,6 +67,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from opentelemetry import trace
 
 _INFERENCE_DIR = str(Path(__file__).resolve().parents[1] / "inference")
 if _INFERENCE_DIR not in sys.path:
@@ -81,9 +83,36 @@ from session_models import SessionStatus  # noqa: E402
 from privacy_logging import get_privacy_aware_logger, log_event  # noqa: E402
 from privacy_service import PrivacyService  # noqa: E402
 from tool_orchestrator import ToolOrchestrator, ToolValidationError  # noqa: E402
+from tracing import get_tracer, SpanAttributes  # noqa: E402  (Phase 14)
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.yaml"
 _CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "clinical_triggers.yaml"
+
+# Phase 14: module-level tracer singleton. Safe under both the real SDK and
+# tracing.py's NoOpTracerProvider fallback (TRACING_ENABLED=false) -- every
+# span created below becomes a zero-cost no-op in the disabled case.
+_tracer = get_tracer("ai-voice-agent.conversation")
+
+
+@contextlib.contextmanager
+def _traced(span_name: str):
+    """
+    Resilient span helper (Step 14.3.8/14.9): every `with` block below
+    uses this instead of calling `_tracer.start_as_current_span()`
+    directly, so a tracer failure -- even one that replaces
+    `_tracer.start_as_current_span` itself, not just an internal SDK
+    error `_tracer` (tracing.py's `_SafeTracer`) already guards against --
+    can never propagate into and break a turn. Yields a real span on
+    success, `opentelemetry.trace.INVALID_SPAN` (a documented no-op)
+    otherwise.
+    """
+    try:
+        _cm = _tracer.start_as_current_span(span_name)
+    except Exception:
+        yield trace.INVALID_SPAN
+        return
+    with _cm as _span:
+        yield _span
 
 
 class ConversationManager:
@@ -393,6 +422,50 @@ class ConversationManager:
             from observability_models import new_request_id
             request_id = new_request_id()
 
+        # Phase 14: root span for the whole turn. Every span created by
+        # _handle_turn_body() below (clinical/intent/policy/RAG/LLM/handoff)
+        # becomes a child of this one. Tracing is purely observational —
+        # a span-creation failure here must never affect the turn itself,
+        # so attribute-setting and status-recording are wrapped defensively
+        # and the generator's actual output/exceptions pass through
+        # unchanged (plan.md Step 14.3.2/14.3.8).
+        with _traced("conversation.handle_turn") as _turn_span:
+            try:
+                _turn_span.set_attribute(SpanAttributes.REQUEST_ID, request_id or "")
+                _turn_span.set_attribute(SpanAttributes.SESSION_ID, session_id or "")
+            except Exception:
+                pass
+            try:
+                yield from self._handle_turn_body(
+                    user_input, history=history, auth=auth, confirmed=confirmed,
+                    session_id=session_id, request_id=request_id,
+                )
+            except Exception as exc:
+                try:
+                    from opentelemetry.trace import StatusCode
+                    _turn_span.set_status(StatusCode.ERROR, type(exc).__name__)
+                    _turn_span.record_exception(exc, attributes={"exception.type": type(exc).__name__})
+                except Exception:
+                    pass
+                raise
+
+    def _handle_turn_body(
+        self,
+        user_input,
+        history: Optional[list] = None,
+        auth: Optional[AuthContext] = None,
+        confirmed: bool = False,
+        session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ):
+        """
+        The actual turn-handling logic, unchanged from pre-Phase-14
+        handle_turn() -- extracted verbatim into its own method so
+        handle_turn() itself can wrap it in a root tracing span (Step
+        14.3.2) without touching a single line of this body's control
+        flow. request_id is already resolved by handle_turn() by the time
+        this runs. See handle_turn()'s docstring for the full contract.
+        """
         # 1. Input validation — fail safe rather than handing a malformed
         # or empty turn to the clinical guard / retriever / LLM.
         if not isinstance(user_input, str) or not user_input.strip():
@@ -421,21 +494,28 @@ class ConversationManager:
         # re-implements clinical trigger matching itself (see
         # policy_engine.py's module docstring).
         if self.clinical_guard is not None:
-            try:
-                clinical_match = self.clinical_guard.score(user_input)
-            except Exception:
-                clinical_match = HandoffMatch(is_handoff=True, confidence=1.0)
-            # Phase 10 (plan.md Step 10.12): PolicyEngine itself failing
-            # internally must deny/block the same way an unavailable
-            # safety component does -- never fall through to normal
-            # generation just because the *interpretation* step raised.
-            try:
-                clinical_policy = self.policy_engine.evaluate_clinical(clinical_match)
-            except Exception:
-                clinical_policy = PolicyDecision(
-                    allowed=False, policy="clinical", rule="POLICY_ENGINE_UNAVAILABLE", action=Action.HANDOFF,
-                    reason="Clinical policy evaluation failed internally -- failing closed.",
-                )
+            # Phase 14 (Step 14.3.3): observational only -- never gates the
+            # decision below, which is computed exactly as before.
+            with _traced("conversation.clinical_safety_check") as _span:
+                try:
+                    clinical_match = self.clinical_guard.score(user_input)
+                except Exception:
+                    clinical_match = HandoffMatch(is_handoff=True, confidence=1.0)
+                # Phase 10 (plan.md Step 10.12): PolicyEngine itself failing
+                # internally must deny/block the same way an unavailable
+                # safety component does -- never fall through to normal
+                # generation just because the *interpretation* step raised.
+                try:
+                    clinical_policy = self.policy_engine.evaluate_clinical(clinical_match)
+                except Exception:
+                    clinical_policy = PolicyDecision(
+                        allowed=False, policy="clinical", rule="POLICY_ENGINE_UNAVAILABLE", action=Action.HANDOFF,
+                        reason="Clinical policy evaluation failed internally -- failing closed.",
+                    )
+                try:
+                    _span.set_attribute(SpanAttributes.CLINICAL_TRIGGERED, not clinical_policy.allowed)
+                except Exception:
+                    pass
             if not clinical_policy.allowed:
                 if self.audit_logger is not None:
                     from observability_models import EventType
@@ -566,14 +646,19 @@ class ConversationManager:
         # rather than blocking the turn — IntentEngine is a routing/UX
         # classifier, not a safety gate, so an error here should not by
         # itself deny service.
-        try:
-            routing = self.intent_engine.classify(user_input, history=normalized_history)
-        except Exception:
-            routing = RoutingDecision(
-                intent_result=IntentResult(intent=IntentEngine.UNKNOWN_INTENT, confidence=0.0),
-                route=Route.RAG_LLM,
-                reason="intent_engine_error",
-            )
+        with _traced("conversation.intent_classify") as _span:
+            try:
+                routing = self.intent_engine.classify(user_input, history=normalized_history)
+            except Exception:
+                routing = RoutingDecision(
+                    intent_result=IntentResult(intent=IntentEngine.UNKNOWN_INTENT, confidence=0.0),
+                    route=Route.RAG_LLM,
+                    reason="intent_engine_error",
+                )
+            try:
+                _span.set_attribute(SpanAttributes.INTENT_NAME, routing.intent or "")
+            except Exception:
+                pass
 
         # The *decision* of whether this routing decision permits normal
         # generation is routed through PolicyEngine.evaluate_generation()
@@ -598,13 +683,19 @@ class ConversationManager:
         # non-generating fallback (no LLM call, no tool execution, no
         # information disclosure) -- rather than defaulting to ALLOW or
         # raising an uncaught exception out of this generator.
-        try:
-            generation_policy = self.policy_engine.evaluate_generation(routing)
-        except Exception:
-            generation_policy = PolicyDecision(
-                allowed=False, policy="generation", rule="POLICY_ENGINE_UNAVAILABLE", action=Action.CLARIFY,
-                reason="Generation policy evaluation failed internally -- failing closed to clarification.",
-            )
+        with _traced("conversation.policy_evaluate") as _span:
+            try:
+                generation_policy = self.policy_engine.evaluate_generation(routing)
+            except Exception:
+                generation_policy = PolicyDecision(
+                    allowed=False, policy="generation", rule="POLICY_ENGINE_UNAVAILABLE", action=Action.CLARIFY,
+                    reason="Generation policy evaluation failed internally -- failing closed to clarification.",
+                )
+            try:
+                _span.set_attribute(SpanAttributes.POLICY_OUTCOME, generation_policy.action.value if hasattr(generation_policy.action, "value") else str(generation_policy.action))
+                _span.set_attribute(SpanAttributes.POLICY_NAME, generation_policy.policy or "")
+            except Exception:
+                pass
         if generation_policy.action == Action.CLARIFY:
             if self.audit_logger is not None:
                 from observability_models import EventType
@@ -737,88 +828,125 @@ class ConversationManager:
         chunks: list[str] = []
         final_llm = None
 
-        with self._generation_semaphore:
-            if self.llm_circuit_breaker is not None and not self.llm_circuit_breaker.allow_request():
-                if self.audit_logger is not None:
-                    from observability_models import EventType
-                    self.audit_logger.record(
-                        EventType.DEPENDENCY_FAILURE, outcome="denied", actor=turn_actor, action="llm_generate",
-                        request_id=request_id, reason="Circuit breaker open for LLM generation.",
-                    )
-                if self.metrics is not None:
-                    self.metrics.increment("dependency_failures_total")
-                    self.metrics.increment("requests_failed")
-                yield self.LLM_FAILURE_RESPONSE
-                yield self._final(
-                    self.LLM_FAILURE_RESPONSE, is_handoff=True, confidence=1.0, latency_ms=0.0,
-                    retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
-                    clinical_guard_triggered=False, degraded=True, error="llm_generation_failed",
-                )
-                return
-
-            attempt = 1
-            while True:
-                stream_started = False
-                try:
-                    for item in self.llm_service.generate_stream(messages):
-                        stream_started = True
-                        if isinstance(item, str):
-                            chunks.append(item)
-                            yield item
-                        else:
-                            final_llm = item
-                    if self.llm_circuit_breaker is not None:
-                        self.llm_circuit_breaker.record_success()
-                    break
-                except Exception:
+        # Phase 14 (Step 14.3.6): observational only -- every yield/return
+        # below is unchanged from pre-Phase-14 behavior. The LLM response
+        # text itself is NEVER recorded as a span attribute (Step 14.3.6
+        # privacy requirement) -- only provider/model/latency/failover
+        # metadata, all already-existing fields on `final_llm`.
+        with _traced("conversation.llm_generate") as _llm_span:
+            with self._generation_semaphore:
+                if self.llm_circuit_breaker is not None and not self.llm_circuit_breaker.allow_request():
                     if self.audit_logger is not None:
                         from observability_models import EventType
                         self.audit_logger.record(
-                            EventType.DEPENDENCY_FAILURE, outcome="failed", actor=turn_actor, action="llm_generate",
-                            request_id=request_id, reason="LLM generation raised an exception.",
+                            EventType.DEPENDENCY_FAILURE, outcome="denied", actor=turn_actor, action="llm_generate",
+                            request_id=request_id, reason="Circuit breaker open for LLM generation.",
                         )
                     if self.metrics is not None:
                         self.metrics.increment("dependency_failures_total")
-                    if self.llm_circuit_breaker is not None:
-                        self.llm_circuit_breaker.record_failure()
+                        self.metrics.increment("requests_failed")
+                    try:
+                        _llm_span.set_attribute(SpanAttributes.CIRCUIT_BREAKER_STATE, str(self.llm_circuit_breaker.state))
+                        from opentelemetry.trace import StatusCode
+                        _llm_span.set_status(StatusCode.ERROR, "DependencyUnavailableError")
+                    except Exception:
+                        pass
+                    yield self.LLM_FAILURE_RESPONSE
+                    yield self._final(
+                        self.LLM_FAILURE_RESPONSE, is_handoff=True, confidence=1.0, latency_ms=0.0,
+                        retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
+                        clinical_guard_triggered=False, degraded=True, error="llm_generation_failed",
+                    )
+                    return
 
-                    if stream_started:
-                        # Already sent partial output this attempt --
-                        # never safe to retry (would duplicate/confuse
-                        # what the caller already received).
+                attempt = 1
+                while True:
+                    stream_started = False
+                    try:
+                        for item in self.llm_service.generate_stream(messages):
+                            stream_started = True
+                            if isinstance(item, str):
+                                chunks.append(item)
+                                yield item
+                            else:
+                                final_llm = item
+                        if self.llm_circuit_breaker is not None:
+                            self.llm_circuit_breaker.record_success()
+                        break
+                    except Exception as _llm_exc:
+                        if self.audit_logger is not None:
+                            from observability_models import EventType
+                            self.audit_logger.record(
+                                EventType.DEPENDENCY_FAILURE, outcome="failed", actor=turn_actor, action="llm_generate",
+                                request_id=request_id, reason="LLM generation raised an exception.",
+                            )
                         if self.metrics is not None:
-                            self.metrics.increment("requests_failed")
-                        yield self.LLM_FAILURE_RESPONSE
-                        yield self._final(
-                            self.LLM_FAILURE_RESPONSE, is_handoff=True, confidence=1.0, latency_ms=0.0,
-                            retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
-                            clinical_guard_triggered=False, degraded=True, error="llm_generation_failed",
-                        )
-                        return
+                            self.metrics.increment("dependency_failures_total")
+                        if self.llm_circuit_breaker is not None:
+                            self.llm_circuit_breaker.record_failure()
 
-                    decision = self.llm_retry_policy.decide(attempt=attempt, retryable=True)
-                    if not decision.retryable:
+                        if stream_started:
+                            # Already sent partial output this attempt --
+                            # never safe to retry (would duplicate/confuse
+                            # what the caller already received).
+                            if self.metrics is not None:
+                                self.metrics.increment("requests_failed")
+                            try:
+                                from opentelemetry.trace import StatusCode
+                                _llm_span.set_status(StatusCode.ERROR, type(_llm_exc).__name__)
+                                _llm_span.record_exception(_llm_exc, attributes={"exception.type": type(_llm_exc).__name__})
+                            except Exception:
+                                pass
+                            yield self.LLM_FAILURE_RESPONSE
+                            yield self._final(
+                                self.LLM_FAILURE_RESPONSE, is_handoff=True, confidence=1.0, latency_ms=0.0,
+                                retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
+                                clinical_guard_triggered=False, degraded=True, error="llm_generation_failed",
+                            )
+                            return
+
+                        decision = self.llm_retry_policy.decide(attempt=attempt, retryable=True)
+                        if not decision.retryable:
+                            if self.metrics is not None:
+                                self.metrics.increment("requests_failed")
+                            try:
+                                _llm_span.set_attribute(SpanAttributes.RETRY_ATTEMPT, attempt)
+                                from opentelemetry.trace import StatusCode
+                                _llm_span.set_status(StatusCode.ERROR, type(_llm_exc).__name__)
+                                _llm_span.record_exception(_llm_exc, attributes={"exception.type": type(_llm_exc).__name__})
+                            except Exception:
+                                pass
+                            yield self.LLM_FAILURE_RESPONSE
+                            yield self._final(
+                                self.LLM_FAILURE_RESPONSE, is_handoff=True, confidence=1.0, latency_ms=0.0,
+                                retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
+                                clinical_guard_triggered=False, degraded=True, error="llm_generation_failed",
+                            )
+                            return
+
+                        if self.audit_logger is not None:
+                            from observability_models import EventType
+                            self.audit_logger.record(
+                                EventType.RETRY_ATTEMPT, outcome="retrying", actor=turn_actor, action="llm_generate",
+                                request_id=request_id, metadata={"attempt": attempt + 1, "max_attempts": decision.max_attempts},
+                            )
                         if self.metrics is not None:
-                            self.metrics.increment("requests_failed")
-                        yield self.LLM_FAILURE_RESPONSE
-                        yield self._final(
-                            self.LLM_FAILURE_RESPONSE, is_handoff=True, confidence=1.0, latency_ms=0.0,
-                            retrieved_chunks=[c.to_dict() for c in retrieved_chunks],
-                            clinical_guard_triggered=False, degraded=True, error="llm_generation_failed",
-                        )
-                        return
+                            self.metrics.increment("retries_total")
+                        self._sleep_fn(decision.delay_seconds)
+                        attempt += 1
+                        continue
 
-                    if self.audit_logger is not None:
-                        from observability_models import EventType
-                        self.audit_logger.record(
-                            EventType.RETRY_ATTEMPT, outcome="retrying", actor=turn_actor, action="llm_generate",
-                            request_id=request_id, metadata={"attempt": attempt + 1, "max_attempts": decision.max_attempts},
-                        )
-                    if self.metrics is not None:
-                        self.metrics.increment("retries_total")
-                    self._sleep_fn(decision.delay_seconds)
-                    attempt += 1
-                    continue
+                # Reached only via the `break` above (successful generation).
+                try:
+                    _final_llm = final_llm or {}
+                    _llm_span.set_attribute(SpanAttributes.LLM_PROVIDER, _final_llm.get("provider", "") or "")
+                    _llm_span.set_attribute(SpanAttributes.LLM_MODEL, _final_llm.get("model", "") or "")
+                    _llm_span.set_attribute(SpanAttributes.LLM_FAILOVER, bool(_final_llm.get("fallback_used", False)))
+                    _llm_span.set_attribute(SpanAttributes.LATENCY_MS, float(_final_llm.get("latency_ms", 0.0) or 0.0))
+                    if attempt > 1:
+                        _llm_span.set_attribute(SpanAttributes.RETRY_ATTEMPT, attempt - 1)
+                except Exception:
+                    pass
 
         response_text = (final_llm or {}).get("text", "".join(chunks).strip())
         latency_ms = (final_llm or {}).get("latency_ms", 0.0)
@@ -826,10 +954,16 @@ class ConversationManager:
         # 6. Handoff detection — deterministic, runs on the model's output
         # (ARCHITECTURE.md Communication Rule 4). Fails closed on an
         # internal error, same rationale as the clinical guard above.
-        try:
-            handoff_match = self.handoff_detector.score(response_text)
-        except Exception:
-            handoff_match = HandoffMatch(is_handoff=True, confidence=1.0)
+        with _traced("conversation.handoff_detect") as _span:
+            try:
+                handoff_match = self.handoff_detector.score(response_text)
+            except Exception:
+                handoff_match = HandoffMatch(is_handoff=True, confidence=1.0)
+            try:
+                _span.set_attribute(SpanAttributes.HANDOFF_TRIGGERED, handoff_match.is_handoff)
+                _span.set_attribute(SpanAttributes.HANDOFF_CONFIDENCE, handoff_match.confidence)
+            except Exception:
+                pass
 
         # PolicyEngine.evaluate_handoff() aggregates this turn's signals
         # (intent routing + the post-generation handoff_detector result)
@@ -1097,50 +1231,68 @@ class ConversationManager:
         if self.retriever is None:
             return [], False
 
-        if self.rag_circuit_breaker is not None and not self.rag_circuit_breaker.allow_request():
-            if self.audit_logger is not None:
-                from observability_models import EventType
-                self.audit_logger.record(
-                    EventType.DEPENDENCY_FAILURE, outcome="denied", actor=actor, action="rag_retrieve",
-                    request_id=request_id, reason="Circuit breaker open for RAG retrieval.",
-                )
-            if self.metrics is not None:
-                self.metrics.increment("dependency_failures_total")
-            return [], True
+        # Phase 14 (Step 14.3.5): observational only -- every return below
+        # is unchanged from pre-Phase-14 behavior, this only annotates the
+        # span each exit path already takes.
+        with _traced("conversation.rag_retrieve") as _span:
+            def _record(chunks_len: int, degraded: bool, retry_attempt: int = 0) -> None:
+                try:
+                    _span.set_attribute(SpanAttributes.RAG_CHUNKS_RETRIEVED, chunks_len)
+                    _span.set_attribute(SpanAttributes.RAG_DEGRADED, degraded)
+                    if retry_attempt > 0:
+                        _span.set_attribute(SpanAttributes.RETRY_ATTEMPT, retry_attempt)
+                    if self.rag_circuit_breaker is not None:
+                        _span.set_attribute(SpanAttributes.CIRCUIT_BREAKER_STATE, str(self.rag_circuit_breaker.state))
+                except Exception:
+                    pass
 
-        attempt = 1
-        while True:
-            try:
-                chunks = self.retriever.retrieve(user_input, top_k=self.rag_top_k)
-            except Exception:
+            if self.rag_circuit_breaker is not None and not self.rag_circuit_breaker.allow_request():
                 if self.audit_logger is not None:
                     from observability_models import EventType
                     self.audit_logger.record(
-                        EventType.DEPENDENCY_FAILURE, outcome="failed", actor=actor, action="rag_retrieve",
-                        request_id=request_id, reason="RAG retrieval raised an exception.",
+                        EventType.DEPENDENCY_FAILURE, outcome="denied", actor=actor, action="rag_retrieve",
+                        request_id=request_id, reason="Circuit breaker open for RAG retrieval.",
                     )
                 if self.metrics is not None:
                     self.metrics.increment("dependency_failures_total")
-                decision = self.rag_retry_policy.decide(attempt=attempt, retryable=True)
-                if not decision.retryable:
+                _record(0, True)
+                return [], True
+
+            attempt = 1
+            while True:
+                try:
+                    chunks = self.retriever.retrieve(user_input, top_k=self.rag_top_k)
+                except Exception:
+                    if self.audit_logger is not None:
+                        from observability_models import EventType
+                        self.audit_logger.record(
+                            EventType.DEPENDENCY_FAILURE, outcome="failed", actor=actor, action="rag_retrieve",
+                            request_id=request_id, reason="RAG retrieval raised an exception.",
+                        )
+                    if self.metrics is not None:
+                        self.metrics.increment("dependency_failures_total")
+                    decision = self.rag_retry_policy.decide(attempt=attempt, retryable=True)
+                    if not decision.retryable:
+                        if self.rag_circuit_breaker is not None:
+                            self.rag_circuit_breaker.record_failure()
+                        _record(0, True, retry_attempt=attempt - 1)
+                        return [], True
+                    if self.audit_logger is not None:
+                        from observability_models import EventType
+                        self.audit_logger.record(
+                            EventType.RETRY_ATTEMPT, outcome="retrying", actor=actor, action="rag_retrieve",
+                            request_id=request_id, metadata={"attempt": attempt + 1, "max_attempts": decision.max_attempts},
+                        )
+                    if self.metrics is not None:
+                        self.metrics.increment("retries_total")
+                    self._sleep_fn(decision.delay_seconds)
+                    attempt += 1
+                    continue
+                else:
                     if self.rag_circuit_breaker is not None:
-                        self.rag_circuit_breaker.record_failure()
-                    return [], True
-                if self.audit_logger is not None:
-                    from observability_models import EventType
-                    self.audit_logger.record(
-                        EventType.RETRY_ATTEMPT, outcome="retrying", actor=actor, action="rag_retrieve",
-                        request_id=request_id, metadata={"attempt": attempt + 1, "max_attempts": decision.max_attempts},
-                    )
-                if self.metrics is not None:
-                    self.metrics.increment("retries_total")
-                self._sleep_fn(decision.delay_seconds)
-                attempt += 1
-                continue
-            else:
-                if self.rag_circuit_breaker is not None:
-                    self.rag_circuit_breaker.record_success()
-                return chunks, False
+                        self.rag_circuit_breaker.record_success()
+                    _record(len(chunks), False, retry_attempt=attempt - 1)
+                    return chunks, False
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
