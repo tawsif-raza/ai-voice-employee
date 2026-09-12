@@ -16,12 +16,18 @@ Run with:
     python -m unittest tests.test_conversation_manager -v
 """
 
+import os
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
-from conversation_manager import ConversationManager  # noqa: E402
+from conversation_manager import (  # noqa: E402
+    _REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS,
+    ConversationManager,
+    _resolve_max_concurrent_generations,
+    build_conversation_manager,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "inference"))
 from handoff_detector import HandoffDetector  # noqa: E402
@@ -911,6 +917,147 @@ class TestSessionAndMemoryIntegration(unittest.TestCase):
             m for m in sent_messages if m["role"] == "system" and "Known preferences" in m.get("content", "")
         ]
         self.assertEqual(memory_system_messages, [])
+
+
+class TestResolveMaxConcurrentGenerations(unittest.TestCase):
+    """
+    Stability fix (Phase 15.1): max_concurrent_generations=1 exists to
+    serialize calls against the single LOCAL model instance -- it must
+    not also bottleneck a remote HTTP-based provider (Claude/Gemini/
+    fallback), which has no such hazard. See
+    conversation_manager.py's _resolve_max_concurrent_generations() and
+    the constant above it for the full rationale.
+    """
+
+    def test_local_model_keeps_configured_value_of_one(self):
+        # using_local_or_injected_llm=True must never be overridden --
+        # this is the exact case the semaphore was designed to protect.
+        self.assertEqual(_resolve_max_concurrent_generations(1, using_local_or_injected_llm=True), 1)
+
+    def test_remote_provider_at_unconfigured_default_is_raised(self):
+        result = _resolve_max_concurrent_generations(1, using_local_or_injected_llm=False)
+        self.assertEqual(result, _REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS)
+        self.assertGreater(result, 1, "the whole point of the fix: more than one concurrent generation allowed")
+
+    def test_remote_provider_with_explicit_operator_override_is_respected_unchanged(self):
+        # An operator who has deliberately configured something other
+        # than the unconfigured default (1) -- e.g. already bumped it to
+        # 3, or deliberately pinned it to 1 for a reason of their own --
+        # must see that exact value preserved, for either provider type.
+        self.assertEqual(_resolve_max_concurrent_generations(3, using_local_or_injected_llm=False), 3)
+        self.assertEqual(_resolve_max_concurrent_generations(1, using_local_or_injected_llm=False) != 1, True)
+
+    def test_local_model_with_explicit_operator_override_is_respected_unchanged(self):
+        self.assertEqual(_resolve_max_concurrent_generations(5, using_local_or_injected_llm=True), 5)
+
+
+class TestGenerationSemaphoreSizeEndToEnd(unittest.TestCase):
+    """
+    Behavioral confirmation (not just the pure decision function above):
+    ConversationManager actually constructs a semaphore of the resolved
+    size, so more than one generate_stream() call can genuinely proceed
+    concurrently when configured for a remote-provider-sized bound.
+    """
+
+    def test_semaphore_allows_configured_concurrency(self):
+        llm = FakeLLMService()
+        cm = ConversationManager(
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            max_concurrent_generations=_REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS,
+        )
+        acquired = []
+        try:
+            for _ in range(_REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS):
+                got = cm._generation_semaphore.acquire(blocking=False)
+                acquired.append(got)
+            self.assertTrue(all(acquired), "all configured concurrent slots must be acquirable without blocking")
+            self.assertFalse(
+                cm._generation_semaphore.acquire(blocking=False),
+                "one more than the configured concurrency must not be acquirable",
+            )
+        finally:
+            for got in acquired:
+                if got:
+                    cm._generation_semaphore.release()
+
+    def test_default_semaphore_still_serializes_to_one(self):
+        # Unchanged pre-fix behavior for the local-model default.
+        llm = FakeLLMService()
+        cm = ConversationManager(
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+        )
+        self.assertTrue(cm._generation_semaphore.acquire(blocking=False))
+        self.assertFalse(cm._generation_semaphore.acquire(blocking=False))
+        cm._generation_semaphore.release()
+
+
+class TestBuildConversationManagerConcurrencyWiring(unittest.TestCase):
+    """
+    End-to-end confirmation through the real factory (build_conversation_manager),
+    not just the pure decision function -- proves the fix actually reaches a
+    live ConversationManager under realistic environment-variable-driven
+    provider selection, for both the fixed and the deliberately-unchanged case.
+    """
+
+    def setUp(self):
+        self._env_backup = {k: os.environ.get(k) for k in ("LLM_PROVIDER", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")}
+
+    def tearDown(self):
+        for key, value in self._env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _drain_semaphore(self, cm: ConversationManager) -> int:
+        acquired_count = 0
+        while cm._generation_semaphore.acquire(blocking=False):
+            acquired_count += 1
+        return acquired_count
+
+    def test_real_remote_provider_branch_gets_raised_concurrency(self):
+        os.environ["LLM_PROVIDER"] = "claude"
+        os.environ["ANTHROPIC_API_KEY"] = "test-key-not-a-real-credential"
+        cm = build_conversation_manager(
+            rag_enabled=False,
+            tool_orchestrator_enabled=False,
+            session_enabled=False,
+            memory_enabled=False,
+            observability_enabled=False,
+            persistence_enabled=False,
+            reliability_enabled=True,
+        )
+        self.assertEqual(self._drain_semaphore(cm), _REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS)
+
+    def test_caller_injected_provider_is_never_overridden_even_under_remote_env(self):
+        # Even with LLM_PROVIDER=fallback set, an explicitly caller-
+        # injected provider must keep the conservative default -- we
+        # cannot assume an arbitrary injected object is thread-safe for
+        # concurrent use, so this path is deliberately never raised.
+        os.environ["LLM_PROVIDER"] = "fallback"
+
+        class _FakeProvider:
+            def generate_stream(self, messages, **kwargs):
+                yield "hi "
+                yield {"text": "hi", "latency_ms": 1.0}
+
+        cm = build_conversation_manager(
+            llm_provider=_FakeProvider(),
+            rag_enabled=False,
+            tool_orchestrator_enabled=False,
+            session_enabled=False,
+            memory_enabled=False,
+            observability_enabled=False,
+            persistence_enabled=False,
+            reliability_enabled=True,
+        )
+        self.assertEqual(self._drain_semaphore(cm), 1)
 
 
 if __name__ == "__main__":

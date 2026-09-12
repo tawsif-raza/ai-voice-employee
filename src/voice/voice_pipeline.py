@@ -442,7 +442,26 @@ class VoiceCallHandler:
                     pass
 
     async def handle_stop(self) -> None:
-        """Handle call termination event."""
+        """
+        Handle call termination event.
+
+        Idempotency guard (Phase 15.1 stability fix): server.py's
+        websocket_call() calls this both explicitly on a clean STOP frame
+        and unconditionally again in its own `finally` cleanup, and
+        VoiceCallManager.unregister_call() calls it a further time on the
+        first of those -- so a single call previously ran this method's
+        entire body up to 3 times. Before this guard, that meant
+        "voice_calls_completed" was incremented 3x and CALL_COMPLETED was
+        logged 3x per real call, silently corrupting operational metrics
+        and the audit trail. self._is_active is set False exactly once,
+        below, and re-entry is now a no-op -- see
+        tests/test_voice_pipeline.py::TestHandleStopIdempotency.
+        """
+        if not self._is_active:
+            logger.debug(
+                "Call %s: handle_stop() called again after already stopped -- ignoring.", self.session.call_sid
+            )
+            return
         self._is_active = False
         self.session.status = CallStatus.COMPLETED
         if self._active_turn_task and not self._active_turn_task.done():

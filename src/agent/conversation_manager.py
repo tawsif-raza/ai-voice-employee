@@ -56,6 +56,7 @@ SessionManager.get_session() itself — see session_manager.py).
 """
 
 import contextlib
+import logging
 import os
 import re
 import sys
@@ -83,6 +84,8 @@ from tracing import SpanAttributes, get_tracer  # noqa: E402  (Phase 14)
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.yaml"
 _CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "clinical_triggers.yaml"
+
+logger = logging.getLogger("ai_voice_agent.conversation")
 
 # Phase 14: module-level tracer singleton. Safe under both the real SDK and
 # tracing.py's NoOpTracerProvider fallback (TRACING_ENABLED=false) -- every
@@ -1606,6 +1609,42 @@ def resolve_persistence_repositories(persistence_enabled: bool = True) -> Persis
     )
 
 
+# Stability fix (Phase 15.1): max_concurrent_generations exists to
+# serialize calls against a single, non-thread-verified LOCAL model
+# instance (plan.md Step 10.16/10.17) -- it was never meant to also
+# bottleneck a remote HTTP-based provider (Claude/Gemini/fallback, via
+# src/inference/llm_provider.py), which has no shared-mutable-state
+# hazard (verified: ClaudeLLMProvider/GeminiLLMProvider hold only
+# read-only config; FallbackLLMProvider's one mutable field,
+# _primary_cooldown_until, is a plain float whose worst-case concurrent
+# access is a benign timing race, not corruption). Applied only when
+# configs/reliability.yaml's max_concurrent_generations is still at its
+# unconfigured default (1) -- an operator who has deliberately set a
+# different value keeps exactly that value, for either provider type.
+_REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS = 10
+
+
+def _resolve_max_concurrent_generations(configured_value: int, using_local_or_injected_llm: bool) -> int:
+    """
+    Pure decision extracted from build_conversation_manager() so it's
+    directly unit-testable without invoking the full factory (which needs
+    a real/injected LLM provider, RAG stack, persistence layer, etc.).
+    See _REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS's comment for
+    the full rationale. Logs when the override actually fires.
+    """
+    if not using_local_or_injected_llm and configured_value == 1:
+        effective = _REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS
+        logger.info(
+            "max_concurrent_generations raised from configs/reliability.yaml's unconfigured "
+            "default (1) to %s: a remote HTTP-based LLM provider is active, which has no "
+            "shared-mutable-state hazard requiring serialization against a single local "
+            "model instance.",
+            effective,
+        )
+        return effective
+    return configured_value
+
+
 def build_conversation_manager(
     base_model_name: str = "Qwen/Qwen2.5-0.5B-Instruct",
     adapter_path: Optional[str] = None,
@@ -1650,6 +1689,13 @@ def build_conversation_manager(
     if _INFERENCE_DIR not in sys.path:
         sys.path.insert(0, _INFERENCE_DIR)
 
+    # Tracks which max_concurrent_generations default applies below --
+    # True unless the remote HTTP-based provider branch is actually
+    # taken, so a caller-injected llm_provider (tests, or any future
+    # caller) keeps today's exact serialized-by-default behavior rather
+    # than guessing at an arbitrary injected object's thread-safety.
+    using_local_or_injected_llm = True
+
     if llm_provider is not None:
         llm_service = llm_provider
     elif os.environ.get("LLM_PROVIDER") in ("fallback", "claude", "gemini") or (
@@ -1659,6 +1705,7 @@ def build_conversation_manager(
         from llm_provider import build_llm_provider
 
         llm_service = build_llm_provider(audit_logger=audit_logger, metrics=metrics)
+        using_local_or_injected_llm = False
     else:
         from llm_service import LLMService  # noqa: E402
 
@@ -1756,7 +1803,9 @@ def build_conversation_manager(
             failure_threshold=rel.tools.circuit_failure_threshold,
             recovery_timeout_seconds=rel.tools.circuit_recovery_timeout_seconds,
         )
-        max_concurrent_generations = rel.max_concurrent_generations
+        max_concurrent_generations = _resolve_max_concurrent_generations(
+            rel.max_concurrent_generations, using_local_or_injected_llm
+        )
 
     tool_orchestrator = None
     if tool_orchestrator_enabled:

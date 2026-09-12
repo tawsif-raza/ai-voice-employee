@@ -19,6 +19,7 @@ for p in (_VOICE_DIR, _AGENT_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from metrics import MetricsRegistry
 from stt_service import MockSTTService, STTEvent, STTEventType
 from telephony_models import (
     CallSession,
@@ -197,6 +198,75 @@ class TestVoicePipeline(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(manager.get_handler("MZ-A"))
         self.assertIsNotNone(manager.get_handler("MZ-B"))
         await manager.unregister_call("MZ-B")
+
+
+class TestHandleStopIdempotency(unittest.IsolatedAsyncioTestCase):
+    """
+    Stability fix: server.py's websocket_call() calls handle_stop() up to
+    3 times per real call (once explicitly on STOP, once again inside
+    VoiceCallManager.unregister_call(), once more in websocket_call()'s
+    own `finally`). Before the idempotency guard, that meant
+    "voice_calls_completed" was incremented 3x and CALL_COMPLETED was
+    logged 3x for a single call.
+    """
+
+    async def _build_handler(self, metrics: MetricsRegistry) -> VoiceCallHandler:
+        cm = MockConversationManager([])
+        stt = MockSTTService()
+        tts = MockTTSService()
+        session = CallSession(call_sid="CA200", stream_sid="MZ200", session_id="sess_200")
+        return VoiceCallHandler(
+            session=session,
+            send_to_twilio_fn=lambda msg: None,
+            conversation_manager=cm,
+            stt_service=stt,
+            tts_service=tts,
+            metrics=metrics,
+        )
+
+    async def test_repeated_handle_stop_increments_metric_exactly_once(self):
+        metrics = MetricsRegistry()
+        handler = await self._build_handler(metrics)
+
+        self.assertEqual(metrics.get_counter("voice_calls_completed"), 0)
+
+        await handler.handle_stop()
+        await handler.handle_stop()
+        await handler.handle_stop()
+
+        self.assertEqual(
+            metrics.get_counter("voice_calls_completed"),
+            1,
+            "handle_stop() must be idempotent -- repeated invocation (matching "
+            "websocket_call()'s real STOP-event/finally/unregister_call sequence) "
+            "must not increment the completed-calls counter more than once",
+        )
+
+    async def test_repeated_handle_stop_via_unregister_call_increments_metric_exactly_once(self):
+        """
+        Reproduces the exact real sequence from server.py's websocket_call():
+        explicit handle_stop(), then unregister_call() (which itself calls
+        handle_stop() again internally), then a final direct handle_stop()
+        call from the `finally` block.
+        """
+        metrics = MetricsRegistry()
+        manager = VoiceCallManager(conversation_manager=MockConversationManager([]), metrics=metrics)
+        handler = manager.register_call("CA201", "MZ201", lambda msg: None, MockSTTService(), MockTTSService())
+
+        await handler.handle_stop()  # explicit call (server.py's STOP branch)
+        await manager.unregister_call("MZ201")  # internally calls handle_stop() again
+        await handler.handle_stop()  # server.py's unconditional `finally` call
+
+        self.assertEqual(metrics.get_counter("voice_calls_completed"), 1)
+
+    async def test_handle_stop_is_active_false_after_first_call(self):
+        handler = await self._build_handler(MetricsRegistry())
+        self.assertTrue(handler.is_active)
+        await handler.handle_stop()
+        self.assertFalse(handler.is_active)
+        # Calling again must not raise and must not flip state back.
+        await handler.handle_stop()
+        self.assertFalse(handler.is_active)
 
 
 if __name__ == "__main__":
