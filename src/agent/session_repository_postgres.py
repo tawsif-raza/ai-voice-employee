@@ -26,9 +26,10 @@ protects against races within one Python process.
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import or_, update
+from sqlalchemy import insert, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
-from db import Database, upsert_row
+from db import ConcurrentModificationError, Database, upsert_row
 from db_models import SessionRow
 from session_models import SessionState, SessionStatus
 
@@ -69,6 +70,7 @@ def _row_to_state(row: SessionRow) -> SessionState:
         pending_parameters=dict(row.pending_parameters or {}),
         confirmation_state=dict(row.confirmation_state or {}),
         metadata=dict(row.metadata_ or {}),
+        version=getattr(row, "version", 1) or 1,
     )
 
 
@@ -86,6 +88,7 @@ def _state_to_values(session: SessionState) -> dict:
         "pending_parameters": dict(session.pending_parameters),
         "confirmation_state": dict(session.confirmation_state),
         "metadata": dict(session.metadata),
+        "version": getattr(session, "version", 1) or 1,
     }
 
 
@@ -101,9 +104,40 @@ class PostgresSessionRepository:
             return _row_to_state(row)
 
     def save(self, session: SessionState) -> None:
+        table = SessionRow.__table__
         values = _state_to_values(session)
+        expected_version = getattr(session, "version", 1) or 1
+        new_version = expected_version + 1
+
         with self._database.session_scope() as db_session:
-            upsert_row(db_session.connection(), SessionRow.__table__, values, ["session_id"])
+            update_values = {k: v for k, v in values.items() if k != "session_id"}
+            update_values["version"] = new_version
+            stmt = (
+                update(table)
+                .where(table.c.session_id == session.session_id)
+                .where(table.c.version == expected_version)
+                .values(**update_values)
+            )
+            res = db_session.execute(stmt)
+            if res.rowcount == 0:
+                existing_ver = db_session.execute(
+                    select(table.c.version).where(table.c.session_id == session.session_id)
+                ).scalar_one_or_none()
+                if existing_ver is not None:
+                    raise ConcurrentModificationError(
+                        f"Concurrent modification detected for session '{session.session_id}': "
+                        f"expected version {expected_version}, current version {existing_ver}"
+                    )
+                insert_values = dict(values)
+                insert_values["version"] = expected_version
+                try:
+                    db_session.execute(insert(table).values(**insert_values))
+                except IntegrityError:
+                    raise ConcurrentModificationError(
+                        f"Concurrent insert detected for session '{session.session_id}'"
+                    )
+            else:
+                session.version = new_version
 
     def delete(self, session_id: str) -> None:
         with self._database.session_scope() as db_session:
@@ -154,7 +188,7 @@ class PostgresSessionRepository:
         consume_stmt = (
             update(table)
             .where(guard)
-            .values(workflow_state=None, updated_at=now)
+            .values(workflow_state=None, updated_at=now, version=table.c.version + 1)
             .returning(table.c.pending_action, table.c.pending_parameters)
         )
 

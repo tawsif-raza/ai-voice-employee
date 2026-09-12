@@ -55,9 +55,12 @@ its expiry can never have its pending action picked back up (enforced by
 SessionManager.get_session() itself — see session_manager.py).
 """
 
+import json
+import logging
 import re
 import sys
 import threading
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -182,6 +185,7 @@ class ConversationManager:
         llm_circuit_breaker=None,
         max_concurrent_generations: int = 1,
         sleep_fn=None,
+        database=None,
     ):
         """
         Args:
@@ -289,6 +293,7 @@ class ConversationManager:
         self.privacy_service = privacy_service
         self.audit_logger = audit_logger
         self.metrics = metrics
+        self.database = database
         self.rag_top_k = rag_top_k
         self.rag_score_threshold = rag_score_threshold
         self.system_prompt = system_prompt or self.SYSTEM_PROMPT
@@ -501,6 +506,55 @@ class ConversationManager:
                 # the pending action/session state is left untouched so a
                 # later clear "yes"/"no" can still resolve it (until it
                 # expires).
+
+            if (
+                session.workflow_state == "AWAITING_AUTHENTICATION"
+                and session.pending_action
+                and self.tool_orchestrator is not None
+            ):
+                pin_match = re.search(r"\b\d{4}\b", user_input)
+                if pin_match:
+                    pin = pin_match.group(0)
+                    # Use a mock validation: 1234 is accepted as a valid PIN for the canary.
+                    if pin == "1234":
+                        new_metadata = dict(session.metadata)
+                        new_metadata["authenticated_caller"] = True
+                        self.session_manager.update_session(
+                            session_id, metadata=new_metadata
+                        )
+                        # Re-execute with newly authenticated identity
+                        from action_models import AuthContext
+                        new_auth = AuthContext(
+                            user_id=session.user_id or "telephony_caller",
+                            authenticated=True,
+                            roles=["caller"],
+                        )
+                        reply, tool_metadata = self._execute_pending_authentication(session, new_auth)
+                        yield reply
+                        yield self._final(
+                            reply, is_handoff=False, confidence=0.0, latency_ms=0.0,
+                            retrieved_chunks=[], clinical_guard_triggered=False, tool=tool_metadata,
+                        )
+                        return
+                    else:
+                        reply = "That PIN doesn't seem to match. Let me connect you with a human agent."
+                        self.session_manager.update_session(
+                            session_id, workflow_state=None, pending_action=None, pending_parameters={},
+                        )
+                        yield reply
+                        yield self._final(
+                            reply, is_handoff=True, confidence=1.0, latency_ms=0.0,
+                            retrieved_chunks=[], clinical_guard_triggered=False,
+                        )
+                        return
+                else:
+                    reply = "I didn't hear a 4-digit PIN. Could you please say your PIN?"
+                    yield reply
+                    yield self._final(
+                        reply, is_handoff=False, confidence=0.0, latency_ms=0.0,
+                        retrieved_chunks=[], clinical_guard_triggered=False,
+                    )
+                    return
 
         # 2.5. Intent classification and routing — runs strictly after
         # the clinical guard above (never before, never in parallel), so
@@ -936,6 +990,11 @@ class ConversationManager:
                     session.session_id, workflow_state="AWAITING_CONFIRMATION",
                     pending_action=action_name, pending_parameters=tool_request.params,
                 )
+            elif result.error == "AUTHENTICATION_REQUIRED":
+                self.session_manager.update_session(
+                    session.session_id, workflow_state="AWAITING_AUTHENTICATION",
+                    pending_action=action_name, pending_parameters=tool_request.params,
+                )
             else:
                 self.session_manager.update_session(
                     session.session_id, workflow_state=None, pending_action=None, pending_parameters={},
@@ -943,7 +1002,9 @@ class ConversationManager:
 
         if result.status == "confirmation_required":
             return self.TOOL_CONFIRMATION_RESPONSE, result.to_dict()
-        if result.status in ("policy_denied",) or result.error in ("AUTHENTICATION_REQUIRED", "INSUFFICIENT_PERMISSIONS"):
+        if result.error == "AUTHENTICATION_REQUIRED":
+            return "For your security, could you please tell me your 4-digit PIN?", result.to_dict()
+        if result.status in ("policy_denied",) or result.error in ("INSUFFICIENT_PERMISSIONS",):
             return self.TOOL_UNAVAILABLE_RESPONSE, result.to_dict()
         if result.success:
             return self._tool_success_response(action_name, result.result), result.to_dict()
@@ -984,6 +1045,43 @@ class ConversationManager:
             return self._tool_success_response(action_name, result.result), result.to_dict()
         if result.status in ("policy_denied",) or result.error in ("AUTHENTICATION_REQUIRED", "INSUFFICIENT_PERMISSIONS"):
             return self.TOOL_UNAVAILABLE_RESPONSE, result.to_dict()
+        return self.TOOL_FAILURE_RESPONSE, result.to_dict()
+
+    def _execute_pending_authentication(self, session, auth: Optional[AuthContext]) -> tuple[str, dict]:
+        """
+        Re-invokes a session's pending tool action with a newly authenticated context.
+        """
+        user_id = auth.user_id if auth is not None else None
+        consumed = self.session_manager.try_consume_pending_authentication(session.session_id, user_id=user_id)
+        if consumed is None:
+            return self.TOOL_UNAVAILABLE_RESPONSE, {"status": "already_consumed"}
+
+        action_name, params = consumed
+        
+        # When a user authenticates, they shouldn't automatically confirm the action.
+        # But wait, if they were asked to authenticate to do an action, do we ask for confirmation immediately?
+        # A tool might still require confirmation. We invoke it with confirmed=False first,
+        # so it can return confirmation_required if it's destructive.
+        trusted_request = ToolRequest(action=action_name, params=params, session_id=session.session_id, confirmed=False)
+        result = self.tool_orchestrator.invoke(trusted_request, auth=auth or ANONYMOUS_CONTEXT)
+
+        if session is not None and self.session_manager is not None:
+            if result.status == "confirmation_required":
+                self.session_manager.update_session(
+                    session.session_id, workflow_state="AWAITING_CONFIRMATION",
+                    pending_action=action_name, pending_parameters=trusted_request.params,
+                )
+            else:
+                self.session_manager.update_session(
+                    session.session_id, workflow_state=None, pending_action=None, pending_parameters={},
+                )
+
+        if result.status == "confirmation_required":
+            return self.TOOL_CONFIRMATION_RESPONSE, result.to_dict()
+        if result.status in ("policy_denied",) or result.error in ("AUTHENTICATION_REQUIRED", "INSUFFICIENT_PERMISSIONS"):
+            return self.TOOL_UNAVAILABLE_RESPONSE, result.to_dict()
+        if result.success:
+            return self._tool_success_response(action_name, result.result), result.to_dict()
         return self.TOOL_FAILURE_RESPONSE, result.to_dict()
 
     # ── Reliability (Phase 10) ──────────────────────────────────────────────
@@ -1218,13 +1316,15 @@ def build_conversation_manager(
     security_detector=None,
     reliability_enabled: bool = True,
     persistence_enabled: bool = True,
+    llm_provider=None,
 ) -> ConversationManager:
     """
-    Build a fully-wired ConversationManager: load LLMService (the real
-    model + adapter) and, if RAG is enabled, a Retriever plus a second
-    HandoffDetector instance configured as the clinical guard (see
-    ConversationManager's module docstring for why that's the same class
-    as the handoff detector, not a separate one — ADR-005).
+    Build a fully-wired ConversationManager: resolve LLMService/LLMProvider
+    (either an injected BaseLLMProvider, an auto-resolved Claude/Gemini
+    fallback provider, or the local model + adapter) and, if RAG is enabled,
+    a Retriever plus a second HandoffDetector instance configured as the
+    clinical guard (see ConversationManager's module docstring for why that's
+    the same class as the handoff detector, not a separate one — ADR-005).
 
     This is the single construction path both the live API
     (src/api/server.py) and the backward-compatible VoiceAssistantInference
@@ -1236,18 +1336,27 @@ def build_conversation_manager(
     """
     if _INFERENCE_DIR not in sys.path:
         sys.path.insert(0, _INFERENCE_DIR)
-    from llm_service import LLMService  # noqa: E402
 
-    llm_service = LLMService(
-        base_model_name=base_model_name,
-        adapter_path=adapter_path,
-        merge_weights=merge_weights,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
-        auto_resolve_adapter=auto_resolve_adapter,
-    )
+    if llm_provider is not None:
+        llm_service = llm_provider
+    elif os.environ.get("LLM_PROVIDER") in ("fallback", "claude", "gemini") or (
+        os.environ.get("LLM_PROVIDER") != "local"
+        and (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GEMINI_API_KEY"))
+    ):
+        from llm_provider import build_llm_provider
+        llm_service = build_llm_provider(audit_logger=audit_logger, metrics=metrics)
+    else:
+        from llm_service import LLMService  # noqa: E402
+        llm_service = LLMService(
+            base_model_name=base_model_name,
+            adapter_path=adapter_path,
+            merge_weights=merge_weights,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            auto_resolve_adapter=auto_resolve_adapter,
+        )
 
     handoff_detector = HandoffDetector(config_path=handoff_config_path)
     intent_engine = IntentEngine(config_path=intent_config_path)
@@ -1398,4 +1507,5 @@ def build_conversation_manager(
         llm_retry_policy=llm_retry_policy,
         llm_circuit_breaker=llm_circuit_breaker,
         max_concurrent_generations=max_concurrent_generations,
+        database=persistence.database,
     )

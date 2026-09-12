@@ -17,10 +17,12 @@ that ever decides whether a candidate gets persisted is
 PolicyEngine.evaluate_privacy() in validate_memory()/persist_memory().
 """
 
+import dataclasses
 import threading
 from datetime import datetime, timezone
 from typing import Optional
 
+from db import ConcurrentModificationError
 from memory_models import MemoryCategory, MemoryRecord, new_memory_id
 
 
@@ -43,44 +45,67 @@ class MemoryOwnershipError(PermissionError):
     test_duplicate_memory_ids_do_not_raise's *same-user* id-reuse case,
     which this fix does not affect), so a caller able to guess/forge
     another user's record id could previously overwrite their memory
-    outright, regardless of which repository backend was configured.
-    Mirrors remove_memory()'s existing ownership-check pattern exactly
-    (same "check owner, deny without confirming/denying existence any
-    other way" discipline) rather than inventing a new one.
+    content simply by calling propose_memory() with their own user_id but
+    reusing the other user's id string on the candidate.
     """
 
 
 class MemoryRepository:
     """
-    In-memory storage. Swappable, mirroring session_manager.py's
-    SessionRepository pattern. Thread-safe (Phase 10, plan.md Step
-    10.14/10.17): `MemoryRecord` is frozen (memory_models.py), so unlike
-    SessionState there is no in-place-mutation race to guard against at
-    the manager layer -- the lock here only needs to protect the dict
-    itself, primarily so `list_for_user()`'s iteration can never race
-    with a concurrent `save()`/`delete()` (which would otherwise risk
-    "dictionary changed size during iteration" under real concurrency).
+    In-memory storage with optimistic concurrency (Phase 13, Step 13.2).
+    Swappable, mirroring session_manager.py's SessionRepository pattern.
+    Thread-safe (Phase 10, plan.md Step 10.14/10.17) and version-checked.
     """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._records: dict[str, MemoryRecord] = {}
+        self._versions: dict[str, int] = {}
 
     def get(self, memory_id: str) -> Optional[MemoryRecord]:
         with self._lock:
-            return self._records.get(memory_id)
+            rec = self._records.get(memory_id)
+            if rec is None:
+                return None
+            ver = self._versions.get(memory_id, getattr(rec, "version", 1))
+            if getattr(rec, "version", 1) != ver:
+                return dataclasses.replace(rec, version=ver)
+            return rec
 
     def save(self, record: MemoryRecord) -> None:
         with self._lock:
-            self._records[record.id] = record
+            mid = record.id
+            expected_version = getattr(record, "version", 1) or 1
+            if mid in self._records:
+                current_ver = self._versions.get(mid, 1)
+                if expected_version != current_ver:
+                    raise ConcurrentModificationError(
+                        f"Concurrent modification detected for memory '{mid}': "
+                        f"expected version {expected_version}, current version {current_ver}"
+                    )
+                new_ver = current_ver + 1
+                self._versions[mid] = new_ver
+                self._records[mid] = dataclasses.replace(record, version=new_ver)
+            else:
+                self._versions[mid] = expected_version
+                self._records[mid] = dataclasses.replace(record, version=expected_version)
 
     def delete(self, memory_id: str) -> None:
         with self._lock:
             self._records.pop(memory_id, None)
+            self._versions.pop(memory_id, None)
 
     def list_for_user(self, user_id: str) -> list[MemoryRecord]:
         with self._lock:
-            return [r for r in self._records.values() if r.user_id == user_id]
+            res = []
+            for r in self._records.values():
+                if r.user_id == user_id:
+                    ver = self._versions.get(r.id, getattr(r, "version", 1))
+                    if getattr(r, "version", 1) != ver:
+                        res.append(dataclasses.replace(r, version=ver))
+                    else:
+                        res.append(r)
+            return res
 
 
 class MemoryManager:
@@ -180,6 +205,7 @@ class MemoryManager:
                     value=self._privacy_service.redact(record.value, list(pii_decision.findings)),
                     source=record.source, created_at=record.created_at, updated_at=record.updated_at,
                     expires_at=record.expires_at, metadata=record.metadata,
+                    version=getattr(record, "version", 1),
                 )
 
         self._repository.save(record)

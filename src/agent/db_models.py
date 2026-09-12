@@ -26,7 +26,7 @@ advantages are not needed here; switching to JSONB later, if a genuine
 query need arises, would be a non-breaking column-type migration.
 """
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Index, String, Text
+from sqlalchemy import CheckConstraint, Column, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.types import JSON
 
@@ -58,6 +58,7 @@ class SessionRow(Base):
     pending_parameters = Column(JSON, nullable=False, default=dict)
     confirmation_state = Column(JSON, nullable=False, default=dict)
     metadata_ = Column("metadata", JSON, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=1, server_default="1")
 
     __table_args__ = (
         CheckConstraint(f"status IN {_sql_in_list(_SESSION_STATUSES)}", name="ck_sessions_status_valid"),
@@ -81,6 +82,7 @@ class MemoryRecordRow(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=True)
     metadata_ = Column("metadata", JSON, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=1, server_default="1")
 
     __table_args__ = (
         CheckConstraint(f"category IN {_sql_in_list(_MEMORY_CATEGORIES)}", name="ck_memory_records_category_valid"),

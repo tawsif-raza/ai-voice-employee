@@ -82,6 +82,7 @@ class SessionState:
     pending_parameters: dict = field(default_factory=dict)
     confirmation_state: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
+    version: int = 1
 
     def is_expired(self, now: Optional[datetime] = None) -> bool:
         current = now or datetime.now(timezone.utc)
@@ -100,6 +101,7 @@ class SessionState:
             "pending_action": self.pending_action,
             "pending_parameters": dict(self.pending_parameters),
             "metadata": dict(self.metadata),
+            "version": self.version,
         }
 
 

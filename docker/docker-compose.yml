@@ -50,6 +50,11 @@ services:
       - HF_TOKEN=${HF_TOKEN:-}
       - MERGED_MODEL_DIR=/app/outputs/merged_model
       - PORT=8000
+      # Phase 14: OpenTelemetry tracing configuration
+      - TRACING_ENABLED=${TRACING_ENABLED:-false}
+      - OTEL_SERVICE_NAME=ai-voice-agent
+      - OTEL_EXPORTER_TYPE=${OTEL_EXPORTER_TYPE:-console}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
     deploy:
       resources:
         reservations:
@@ -65,5 +70,35 @@ services:
       retries: 3
       start_period: 60s
 
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["test", "dev"]
+    environment:
+      - POSTGRES_DB=ai_voice_agent
+      - POSTGRES_USER=voice_app
+      - POSTGRES_PASSWORD=voice_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voice_app -d ai_voice_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Phase 14: Jaeger all-in-one for distributed trace collection and visualization.
+  jaeger:
+    image: jaegertracing/jaeger:2
+    profiles: ["observability"]
+    ports:
+      - "16686:16686"    # Jaeger UI
+      - "4317:4317"      # OTLP gRPC receiver
+      - "4318:4318"      # OTLP HTTP receiver
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    restart: unless-stopped
+
 volumes:
   hf_cache:
+  postgres_data:

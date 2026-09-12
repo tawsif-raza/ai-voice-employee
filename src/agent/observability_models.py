@@ -99,15 +99,22 @@ class CorrelationContext:
     session_id: Optional[str] = None
     user_id: Optional[str] = None
     turn_id: Optional[str] = None
+    trace_id: Optional[str] = None   # Phase 14: hex string from OpenTelemetry
+    span_id: Optional[str] = None    # Phase 14: hex string from OpenTelemetry
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "request_id": self.request_id,
             "conversation_id": self.conversation_id,
             "session_id": self.session_id,
             "user_id": self.user_id,
             "turn_id": self.turn_id,
         }
+        if self.trace_id is not None:
+            d["trace_id"] = self.trace_id
+        if self.span_id is not None:
+            d["span_id"] = self.span_id
+        return d
 
 
 @dataclass(frozen=True)
@@ -132,9 +139,11 @@ class AuditEvent:
     policy: Optional[str] = None
     reason: Optional[str] = None
     metadata: dict = field(default_factory=dict)
+    trace_id: Optional[str] = None   # Phase 14: OpenTelemetry trace correlation
+    span_id: Optional[str] = None    # Phase 14: OpenTelemetry span correlation
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "event_id": self.event_id,
             "timestamp": self.timestamp.isoformat(),
             "event_type": self.event_type.value,
@@ -149,6 +158,11 @@ class AuditEvent:
             "reason": self.reason,
             "metadata": self.metadata,
         }
+        if self.trace_id is not None:
+            d["trace_id"] = self.trace_id
+        if self.span_id is not None:
+            d["span_id"] = self.span_id
+        return d
 
 
 @dataclass(frozen=True)

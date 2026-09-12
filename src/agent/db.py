@@ -68,6 +68,14 @@ class DatabaseUnavailableError(Exception):
     """
 
 
+class ConcurrentModificationError(Exception):
+    """
+    Raised when an optimistic-concurrency compare-and-swap fails because
+    the row was modified concurrently (version mismatch). Never silently
+    overwrites or drops the write.
+    """
+
+
 def _mask_url(url: str) -> str:
     """
     Returns `url` with any embedded password replaced by `***` — the only

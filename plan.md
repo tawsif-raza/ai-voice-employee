@@ -13307,4 +13307,949 @@ services
 repository interfaces
  ↓
 PostgreSQL
+```
+
+---
+
+# Phase 13 — Operational Readiness and Multi-Process Write-Race Hardening
+
+## Objective
+
+Phase 12.15 closed persistence with two disclosed, genuine gaps and one deferred validation:
+
+1. `Database.health_check()` (`src/agent/db.py`) exists but nothing calls it from the live
+   application — `/ready` (`src/api/server.py:304`) only checks `_conversation_manager is not None`,
+   so a instance can report itself ready while its database connection is actually dead.
+2. `docs/DATABASE.md` is still the Step 12.1-era placeholder (every section reads `_(TBD)_`).
+3. `SessionRepository.save()` / `MemoryRepository.save()` (both SQLite and Postgres
+   implementations) are plain upserts with no optimistic-concurrency check — safe for this
+   repository's actual single-process deployment (`docker/docker-compose.yml` runs one `api`
+   service) but a real race if that ever changes.
+4. Every Phase 12 test and benchmark ran against SQLite as a disclosed stand-in for PostgreSQL —
+   never actually validated against a real Postgres instance.
+
+This phase closes (1)-(3) with real code and closes (4) as far as this environment allows: Docker
+Desktop is installed but its daemon is not currently running here, so add the Postgres service
+definition and a validation script, attempt to bring the daemon up, and if it cannot be reached,
+disclose that honestly rather than fabricating results — exactly the pattern every prior phase
+report has followed.
+
+Do NOT implement new business features. Do NOT touch PolicyEngine, ClinicalSafetyGuard, or
+ToolOrchestrator decision logic.
+
+---
+
+# Strict Architectural Principles
+
+These principles are NON-NEGOTIABLE, unchanged from every prior phase:
+
+1. The LLM remains untrusted and is not involved in this phase at all.
+2. No business logic inside PolicyEngine / ClinicalSafetyGuard / SessionManager / MemoryManager /
+   ToolOrchestrator decision-making may be rewritten. Only the specific, justified changes below.
+3. `/ready` reporting real database health must fail closed (503) on a broken/unreachable database
+   in production persistence mode — never silently report ready.
+4. `/ready` must NOT regress dev-mode (`PERSISTENCE_MODE` unset/`dev`) behavior, which has no
+   database to check.
+5. Optimistic-concurrency hardening must reject a stale write deterministically — never silently
+   overwrite a newer row, never silently drop the caller's write without telling it.
+6. Do not weaken or remove existing tests.
+7. Do not claim a real-PostgreSQL run happened if the Docker daemon could not be reached — disclose
+   it plainly, the same way Phase 12.14 disclosed its SQLite stand-in.
+
+---
+
+# Step 13.1 — Wire Database Health into `/ready`
+
+Inspect `src/agent/db.py::Database.health_check()` and how
+`resolve_persistence_repositories()` (Step 12.10) exposes the `Database` instance to
+`build_conversation_manager()`. Inspect how `src/api/server.py` currently constructs
+`_conversation_manager` at startup and what, if anything, it already holds a reference to.
+
+Add a real DB check to `GET /ready`:
+
+* In dev/in-memory persistence mode, behavior is unchanged (no DB to check).
+* In production persistence mode, `/ready` must call `Database.health_check()` and return 503 with
+  `{"ready": false}` if it fails, without leaking connection strings or internal error detail in the
+  response body (log the detail server-side instead, consistent with the Step 8/9 posture on error
+  responses).
+* Do not add a new import cycle; if `server.py` cannot reach the `Database` instance cleanly from
+  its current construction path, add the smallest accessor needed (e.g. exposing it alongside
+  `_conversation_manager`) rather than restructuring startup.
+
+Add tests: dev-mode `/ready` unaffected; production-mode `/ready` 200 when DB healthy; production-
+mode `/ready` 503 when DB unhealthy (mock `health_check()` returning False and raising).
+
+---
+
+# Step 13.2 — Optimistic Concurrency for Session and Memory Writes
+
+Inspect `SessionRepository.save()` and `MemoryRepository.save()` in both the in-memory and Postgres
+implementations (`src/agent/session_repository_postgres.py:103`,
+`src/agent/memory_repository_postgres.py:60`, and their SQLite/in-memory counterparts).
+
+Add a `version` (or reuse `updated_at`) compare-and-swap on save:
+
+* Read the row's current version before/at write time.
+* Write only succeeds if the version matches what the caller last read (classic optimistic lock).
+* On mismatch, raise a typed, specific exception (e.g. `ConcurrentModificationError`) rather than
+  silently overwriting or silently dropping the write.
+* This MUST require a schema change (new Alembic migration) for the Postgres tables — follow the
+  existing migration conventions from Step 12.3/12.9.
+* Callers (`SessionManager`, `MemoryManager`) that don't currently pass/track a version should be
+  updated to do so for existing read-modify-write paths; this is expected to be a narrow, mechanical
+  change, not a rewrite of their decision logic.
+* Confirm this does not change behavior for the actual single-process deployment shape — add a test
+  proving two sequential writes from the same "process" still succeed normally, and a test proving a
+  simulated concurrent write (stale version) is rejected deterministically rather than silently lost.
+
+---
+
+# Step 13.3 — Real PostgreSQL Validation (Best-Effort, Disclosed)
+
+Add a `postgres` service to `docker/docker-compose.yml` (new `test`/`dev` profile, not the existing
+`trainer`/`api` profiles) using an official `postgres` image, with a throwaway volume, exposing
+5432, and reasonable defaults for local validation only (never used in the `api` service's
+production profile).
+
+Attempt to start it (`docker compose --profile test up -d postgres` or equivalent) and, if the
+Docker daemon is reachable, run:
+
+* `alembic upgrade head` against it.
+* The persistence-focused test suite (`test_db_migrations.py`,
+  `test_persistence_failure_injection.py`, session/memory/audit/idempotency repository tests) with
+  `DATABASE_URL` pointed at the real Postgres instance.
+* `scripts/benchmark_persistence.py` if it completes in reasonable time.
+
+If the Docker daemon cannot be reached (as observed at the start of this phase), do not fabricate
+numbers. Document the compose service as ready-to-use infrastructure, state plainly that it was not
+exercised against a live daemon in this run, and give the exact command a future session/human
+should run to validate it.
+
+---
+
+# Step 13.4 — Fill In `docs/DATABASE.md`
+
+Replace every `_(TBD)_` placeholder with real content drawn from what Phase 12 actually built and
+what Step 13.2/13.3 added:
+
+* Overview / current state: SQLAlchemy + Alembic, `PERSISTENCE_MODE` dev vs. production, fail-closed
+  production startup (Step 12.2).
+* Schema: the 5 Phase-12.3 tables plus the Step 12.9 idempotency revision plus this phase's version
+  columns — table-by-table, not a copy of the migration file.
+* Data retention: session/memory expiration semantics, idempotency TTL.
+* Backup & recovery: what Step 12.12's restart-recovery testing actually verified, and what is out
+  of scope (no automated backup tooling exists — say so).
+* Concurrency: the Step 13.2 optimistic-locking model and why it exists.
+* Open questions: keep this honest — carry forward genuinely open items from Phase 12.15's tech-debt
+  list that this phase didn't close (multi-process row-level tuning beyond CAS, real-Postgres
+  performance numbers if 13.3 couldn't run).
+
+---
+
+# Step 13.5 — Regression Testing
+
+Run, in order:
+
+1. New Step 13.1 `/ready` tests.
+2. New Step 13.2 optimistic-concurrency tests.
+3. Full session/memory/repository test files (SQLite path).
+4. `test_db_migrations.py` (confirm the new migration applies/rolls back cleanly).
+5. Full persistence suite from Phase 12 (12.6/12.7/12.11/12.12/12.13).
+6. Policy/ToolOrchestrator/ClinicalSafetyGuard/API test suites (confirm zero regression).
+7. The complete project test suite.
+
+Record exact pass/fail counts from an actual run. Do not reuse Phase 12.15's numbers.
+
+---
+
+# Step 13.6 — Final Markdown Report
+
+Create `PHASE_13_OPERATIONAL_READINESS_REPORT.md` in the project root, following the same structure
+as prior phase reports:
+
+1. Executive Summary
+2. `/ready` health-check wiring (before/after behavior, dev vs. production mode)
+3. Optimistic-concurrency design (schema change, migration, exception type, caller changes)
+4. Real-Postgres validation outcome — explicit about whether the daemon was reachable and what ran
+5. `docs/DATABASE.md` — what was filled in
+6. Tests: added / executed / passed / failed, with exact counts from an actual run
+7. Compatibility: confirm PolicyEngine / ClinicalSafetyGuard / ToolOrchestrator / existing
+   persistence behavior unchanged
+8. Remaining technical debt (genuine only)
+9. Recommended next phase (do not implement it)
+
+---
+
+# Completion Criteria
+
+Phase 13 is COMPLETE only when:
+
+* [x] `/ready` reflects real database health in production persistence mode.
+* [x] `/ready` is unchanged in dev mode.
+* [x] Optimistic concurrency exists for session and memory writes, with a typed conflict exception.
+* [x] A migration adds whatever schema the concurrency check needs.
+* [x] `docker-compose.yml` has a Postgres validation service (new profile, not touching `api`/`trainer`).
+* [x] Real-Postgres validation was attempted; its actual outcome (ran vs. daemon unreachable) is
+      disclosed honestly in the report — not fabricated.
+* [x] `docs/DATABASE.md` no longer contains `_(TBD)_` placeholders.
+* [x] No PolicyEngine/ClinicalSafetyGuard/ToolOrchestrator decision logic was rewritten.
+* [x] Full relevant test suite executed with real, current pass/fail counts.
+* [x] `PHASE_13_OPERATIONAL_READINESS_REPORT.md` exists.
+
+---
+
+# Final Autonomous Execution Instructions
+
+Work autonomously through Steps 13.1 → 13.6. Do not ask for confirmation between steps unless a
+genuinely destructive action or unresolved architectural ambiguity comes up. Prefer minimal,
+backward-compatible changes. Do not claim tests passed, or that real PostgreSQL was validated,
+unless it actually happened in this run.
+
+When finished, provide a concise final summary containing:
+
+1. Implementation completed
+2. Files created
+3. Files modified
+4. Tests executed
+5. Test results
+6. Real-Postgres validation outcome
+7. Final report path
+8. Remaining technical debt
+9. Recommended next phase
+
+End with:
+
+`PHASE 13 COMPLETE`
+
+# Phase 14 — Distributed Tracing & Telemetry with OpenTelemetry
+
+## Objective
+
+Phase 13 closed the persistence and operational-readiness layers. The system now has:
+
+* 28 in-memory counters and 10 histograms in `MetricsRegistry` (`src/agent/metrics.py`).
+* A comprehensive `AuditLogger` / `AuditRepository` event system with 28 event types
+  (`src/agent/audit.py`, `observability_models.py`).
+* A `CorrelationContext` carrying `request_id`, `conversation_id`, `session_id`, `user_id`,
+  `turn_id` — propagated through middleware, audit events, and structured logs.
+* A `StructuredJSONFormatter` that already reads `OTEL_SERVICE_NAME` from the environment.
+* **Zero** OpenTelemetry packages installed, zero spans created, zero trace context propagated.
+
+What is **missing** is the ability to observe a single turn as a distributed trace — to see the
+full latency breakdown across clinical safety check → intent classification → policy evaluation →
+RAG retrieval (with retries) → memory assembly → LLM generation (with failover) → handoff
+detection → response delivery, with each phase as a named span carrying timing, outcome, and
+fault attributes.
+
+This phase introduces OpenTelemetry distributed tracing and structured telemetry across the
+entire turn orchestration pipeline. The goals are:
+
+1. **Turn-level trace visibility**: Every `/generate` request and `/ws/call` WebSocket turn
+   produces a complete trace with child spans for each pipeline stage.
+2. **Correlation bridge**: OpenTelemetry `trace_id` and `span_id` are injected into the existing
+   `CorrelationContext`, `AuditEvent`, and structured log output — unifying traces, logs, and
+   audit events under a single correlation key.
+3. **Auto-instrumentation**: FastAPI, SQLAlchemy, and `requests` HTTP calls are automatically
+   instrumented with zero code changes to those libraries.
+4. **Privacy-safe**: No PII, credentials, raw user messages, or LLM outputs are ever stored in
+   span attributes or exported. Span attributes follow the same sanitization discipline as
+   `AuditLogger` and `PrivacyService`.
+5. **Configurable export**: Console exporter for dev, in-memory exporter for tests, OTLP exporter
+   for production (Jaeger, Google Cloud Trace, Grafana Tempo, etc.).
+6. **Backward-compatible**: All existing tests, metrics, and audit behavior remain unchanged.
+   Tracing is additive — it observes, never gates.
+
+Do NOT implement new business features. Do NOT touch PolicyEngine, ClinicalSafetyGuard, or
+ToolOrchestrator decision logic. Do NOT make tracing a prerequisite for any safety or policy
+decision — tracing is strictly observational.
+
+---
+
+# Strict Architectural Principles
+
+These principles are NON-NEGOTIABLE, unchanged from every prior phase:
+
+1. The LLM remains untrusted and is not involved in this phase at all.
+2. No business logic inside PolicyEngine / ClinicalSafetyGuard / SessionManager / MemoryManager /
+   ToolOrchestrator decision-making may be rewritten. Only the specific, justified changes below.
+3. Tracing is strictly observational — it MUST NOT be in the execution path of any safety or
+   policy decision. A tracing failure (SDK error, exporter timeout, span creation failure) MUST
+   NOT cause a request to fail, degrade, or change behavior. All tracing calls must be
+   fire-and-forget, with errors logged and swallowed.
+4. No PII, user messages, LLM outputs, credentials, tokens, or connection strings may appear in
+   span attributes or resource attributes. Span attribute values follow the same allow-list
+   discipline as `AuditLogger`: event types, action names, latency values, boolean outcomes,
+   policy names, tool names — never raw content.
+5. The existing `MetricsRegistry` and `AuditLogger` remain the authoritative metric and audit
+   stores. OpenTelemetry tracing coexists alongside them — it does not replace them.
+6. Do not weaken or remove existing tests.
+7. Tracing must be fully disableable via a single environment variable (`TRACING_ENABLED=false`)
+   with zero runtime overhead when disabled (no-op tracer).
+
+---
+
+# Step 14.1 — OpenTelemetry SDK Bootstrap & Configuration
+
+## 14.1.1 — Dependencies
+
+Add the following to `requirements.txt`:
+
+```
+# Distributed tracing (Phase 14)
+opentelemetry-api==1.33.0
+opentelemetry-sdk==1.33.0
+opentelemetry-instrumentation-fastapi==0.54b0
+opentelemetry-instrumentation-sqlalchemy==0.54b0
+opentelemetry-instrumentation-requests==0.54b0
+opentelemetry-exporter-otlp-proto-grpc==1.33.0
+```
+
+Pin versions explicitly (same discipline as all other dependencies). Install into `.venv`.
+
+## 14.1.2 — Tracing Configuration Module
+
+Create `src/agent/tracing.py` with the following responsibilities:
+
+1. **`TracingConfig` dataclass** loaded from environment variables:
+   - `TRACING_ENABLED` (bool, default `false`) — master kill switch.
+   - `OTEL_SERVICE_NAME` (str, default `ai-voice-agent`) — reuses the existing env var from
+     `production_logging.py`.
+   - `OTEL_EXPORTER_TYPE` (str, default `console`) — one of `console`, `otlp`, `memory`
+     (in-memory for testing).
+   - `OTEL_EXPORTER_OTLP_ENDPOINT` (str, default `http://localhost:4317`) — OTLP gRPC endpoint.
+   - `OTEL_TRACES_SAMPLER` (str, default `parentbased_always_on`) — sampling strategy.
+   - `OTEL_TRACES_SAMPLER_ARG` (float, optional) — for `traceidratio` sampler.
+
+2. **`init_tracing(config: TracingConfig) -> TracerProvider`**:
+   - If `TRACING_ENABLED=false`: sets a `NoOpTracerProvider` as the global provider and returns
+     immediately. All `tracer.start_as_current_span()` calls become zero-cost no-ops.
+   - If enabled: creates a `TracerProvider` with:
+     - `Resource` with `service.name`, `service.version`, `deployment.environment`.
+     - `BatchSpanProcessor` wrapping the selected exporter.
+     - The configured sampler.
+   - Sets the global `TracerProvider` via `trace.set_tracer_provider()`.
+   - Returns the provider (for shutdown in lifespan).
+
+3. **`get_tracer(name: str) -> Tracer`**: Thin wrapper around
+   `trace.get_tracer(name, "14.0.0")`. Each module gets its own named tracer
+   (e.g., `"ai-voice-agent.conversation"`, `"ai-voice-agent.tool-orchestrator"`).
+
+4. **`shutdown_tracing(provider: TracerProvider)`**: Calls `provider.shutdown()` to flush
+   pending spans on application exit.
+
+5. **`SpanAttributes` constants class**: Named constants for all span attribute keys used in
+   this phase, preventing typos and enforcing the allow-list:
+   - `REQUEST_ID = "app.request_id"`
+   - `SESSION_ID = "app.session_id"`
+   - `CONVERSATION_ID = "app.conversation_id"`
+   - `TURN_ID = "app.turn_id"`
+   - `INTENT_NAME = "app.intent.name"`
+   - `POLICY_OUTCOME = "app.policy.outcome"`
+   - `POLICY_NAME = "app.policy.name"`
+   - `TOOL_NAME = "app.tool.name"`
+   - `TOOL_ACTION = "app.tool.action"`
+   - `TOOL_OUTCOME = "app.tool.outcome"`
+   - `RAG_CHUNKS_RETRIEVED = "app.rag.chunks_retrieved"`
+   - `RAG_DEGRADED = "app.rag.degraded"`
+   - `LLM_PROVIDER = "app.llm.provider"`
+   - `LLM_MODEL = "app.llm.model"`
+   - `LLM_FAILOVER = "app.llm.failover"`
+   - `LLM_TOKENS_GENERATED = "app.llm.tokens_generated"`
+   - `HANDOFF_TRIGGERED = "app.handoff.triggered"`
+   - `HANDOFF_CONFIDENCE = "app.handoff.confidence"`
+   - `CLINICAL_TRIGGERED = "app.clinical.triggered"`
+   - `CIRCUIT_BREAKER_STATE = "app.circuit_breaker.state"`
+   - `RETRY_ATTEMPT = "app.retry.attempt"`
+   - `ERROR_TYPE = "app.error.type"`
+   - `LATENCY_MS = "app.latency_ms"`
+
+   These attributes MUST NOT include `user_id`, `user_message`, `llm_response`, `auth_token`,
+   `database_url`, or any PII-bearing field. The `user_id` is deliberately excluded from span
+   attributes — it exists only in the `CorrelationContext` for audit purposes, never exported
+   to a tracing backend.
+
+## 14.1.3 — Tests for Bootstrap
+
+Create `tests/test_tracing_bootstrap.py`:
+
+* `test_tracing_disabled_returns_noop`: When `TRACING_ENABLED=false`, `get_tracer()` returns a
+  no-op tracer whose spans do not record.
+* `test_tracing_enabled_console_exporter`: When enabled with console exporter, spans are created
+  and flushed.
+* `test_tracing_enabled_memory_exporter`: Spans are captured by `InMemorySpanExporter` for
+  assertion.
+* `test_span_attributes_no_pii`: Create a span with all `SpanAttributes` values — assert none
+  contain PII patterns (reuse `PIIDetector` from `src/agent/pii_detector.py`).
+* `test_shutdown_flushes_spans`: After `shutdown_tracing()`, the in-memory exporter contains all
+  recorded spans.
+
+---
+
+# Step 14.2 — Server Integration & Auto-Instrumentation
+
+## 14.2.1 — Lifespan Wiring
+
+Modify `src/api/server.py` lifespan:
+
+* At startup (after existing initialization): call `init_tracing(TracingConfig.from_env())`.
+  Store the returned `TracerProvider` alongside `_conversation_manager` and `_db_instance`.
+* At shutdown (before existing cleanup): call `shutdown_tracing(provider)`.
+* This is a 4-line change in the lifespan function — no restructuring.
+
+## 14.2.2 — FastAPI Auto-Instrumentation
+
+After creating the FastAPI `app`, call:
+
+```python
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+FastAPIInstrumentor.instrument_app(app)
+```
+
+This automatically creates root spans for every HTTP request (`/health`, `/ready`, `/generate`,
+etc.) with standard HTTP semantic conventions (`http.method`, `http.route`, `http.status_code`,
+`http.url` — note: `http.url` is the route pattern, not query strings with PII).
+
+Verify that `X-Request-ID` from `_correlation_id_middleware` is injected into the root span as
+`app.request_id` by adding a small hook in the middleware:
+
+```python
+from opentelemetry import trace
+span = trace.get_current_span()
+if span.is_recording():
+    span.set_attribute(SpanAttributes.REQUEST_ID, request_id)
+```
+
+## 14.2.3 — SQLAlchemy Auto-Instrumentation
+
+If `PERSISTENCE_MODE=production` and `Database` is initialized:
+
+```python
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+SQLAlchemyInstrumentor().instrument(engine=db.engine)
+```
+
+This creates spans for every SQL query executed through the ORM. The engine reference is already
+available from `Database._engine` (Phase 12). Do NOT capture SQL statement text in span
+attributes (privacy risk) — configure `enable_commenter=False` and verify `db.statement` is not
+populated with raw SQL containing user data.
+
+## 14.2.4 — Requests Auto-Instrumentation
+
+```python
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+RequestsInstrumentor().instrument()
+```
+
+This instruments all outbound HTTP calls made via the `requests` library (used by
+`ClaudeLLMProvider`, `GeminiLLMProvider`, `ElevenLabs TTS`, etc.), creating child spans with
+`http.method`, `http.url` (hostname + path, no query params), and `http.status_code`.
+
+## 14.2.5 — Tests for Server Integration
+
+Add to `tests/test_server_api.py` (or create `tests/test_tracing_server.py`):
+
+* `test_generate_request_creates_trace`: POST to `/generate`, assert the in-memory exporter
+  contains a root span with `http.route="/generate"` and `app.request_id` attribute.
+* `test_health_endpoint_traced`: GET `/health` creates a span.
+* `test_tracing_disabled_no_spans`: When `TRACING_ENABLED=false`, no spans are exported.
+* `test_correlation_id_in_span`: The `X-Request-ID` header value matches `app.request_id` span
+  attribute.
+
+---
+
+# Step 14.3 — Turn Pipeline Manual Instrumentation
+
+This is the core of Phase 14. Add named child spans for each stage of
+`ConversationManager.handle_turn()`. Each span is created using `tracer.start_as_current_span()`
+as a context manager, so it automatically records start/end time, status, and exceptions.
+
+## 14.3.1 — Conversation Manager Tracer
+
+At the top of `conversation_manager.py`, add:
+
+```python
+from src.agent.tracing import get_tracer, SpanAttributes
+_tracer = get_tracer("ai-voice-agent.conversation")
+```
+
+This is a module-level singleton — safe because `get_tracer()` uses the global provider which is
+either the real SDK or a no-op.
+
+## 14.3.2 — Root Turn Span
+
+Wrap the entire `handle_turn()` body in:
+
+```python
+with _tracer.start_as_current_span("conversation.handle_turn") as turn_span:
+    turn_span.set_attribute(SpanAttributes.REQUEST_ID, request_id)
+    turn_span.set_attribute(SpanAttributes.SESSION_ID, session_id or "")
+    # ... existing handle_turn body ...
+```
+
+All child spans created within this context automatically become children of `turn_span`.
+
+## 14.3.3 — Child Span: Clinical Safety Check
+
+```python
+with _tracer.start_as_current_span("conversation.clinical_safety_check") as span:
+    clinical_result = self._clinical_guard.score(user_input)
+    triggered = policy_engine.evaluate_clinical(clinical_result)
+    span.set_attribute(SpanAttributes.CLINICAL_TRIGGERED, triggered)
+```
+
+## 14.3.4 — Child Span: Intent Classification & Policy Evaluation
+
+```python
+with _tracer.start_as_current_span("conversation.intent_classify") as span:
+    intent_result = self._intent_engine.classify(user_input)
+    span.set_attribute(SpanAttributes.INTENT_NAME, intent_result.intent_name)
+
+with _tracer.start_as_current_span("conversation.policy_evaluate") as span:
+    policy_result = self._policy_engine.evaluate_generation(...)
+    span.set_attribute(SpanAttributes.POLICY_OUTCOME, policy_result.outcome)
+    span.set_attribute(SpanAttributes.POLICY_NAME, policy_result.policy_name or "")
+```
+
+## 14.3.5 — Child Span: RAG Retrieval
+
+Wrap `_retrieve_with_reliability()`:
+
+```python
+with _tracer.start_as_current_span("conversation.rag_retrieve") as span:
+    # ... existing retrieval + retry + circuit breaker logic ...
+    span.set_attribute(SpanAttributes.RAG_CHUNKS_RETRIEVED, len(chunks))
+    span.set_attribute(SpanAttributes.RAG_DEGRADED, degraded)
+    if retry_attempt > 0:
+        span.set_attribute(SpanAttributes.RETRY_ATTEMPT, retry_attempt)
+    if circuit_breaker_state != "CLOSED":
+        span.set_attribute(SpanAttributes.CIRCUIT_BREAKER_STATE, str(state))
+```
+
+## 14.3.6 — Child Span: LLM Generation
+
+Wrap the LLM generation section:
+
+```python
+with _tracer.start_as_current_span("conversation.llm_generate") as span:
+    span.set_attribute(SpanAttributes.LLM_PROVIDER, provider_name)
+    span.set_attribute(SpanAttributes.LLM_MODEL, model_name)
+    # ... existing generation + retry + circuit breaker + failover logic ...
+    span.set_attribute(SpanAttributes.LLM_TOKENS_GENERATED, token_count)
+    span.set_attribute(SpanAttributes.LLM_FAILOVER, used_fallback)
+    span.set_attribute(SpanAttributes.LATENCY_MS, generation_latency_ms)
+```
+
+Important: The LLM response text MUST NOT be stored as a span attribute. Only metadata
+(provider, model, token count, latency, failover boolean) is recorded.
+
+## 14.3.7 — Child Span: Handoff Detection
+
+```python
+with _tracer.start_as_current_span("conversation.handoff_detect") as span:
+    handoff_result = self._handoff_detector.score(response_text)
+    span.set_attribute(SpanAttributes.HANDOFF_TRIGGERED, handoff_result.is_handoff)
+    span.set_attribute(SpanAttributes.HANDOFF_CONFIDENCE, handoff_result.confidence)
+```
+
+## 14.3.8 — Error Recording
+
+When exceptions occur within any span, record the exception on the span:
+
+```python
+except Exception as exc:
+    span.set_status(StatusCode.ERROR, str(type(exc).__name__))
+    span.record_exception(exc)
+    raise
+```
+
+Use `type(exc).__name__` for the status description — NEVER the exception message, which could
+contain user data or internal details. The `record_exception` call stores exception type and
+message in span events — verify these do not contain PII. If the existing exception messages
+might contain user input (inspect each), use a sanitized version:
+
+```python
+span.record_exception(exc, attributes={"exception.type": type(exc).__name__})
+```
+
+## 14.3.9 — Tests for Turn Pipeline Spans
+
+Create `tests/test_tracing_pipeline.py`:
+
+* `test_full_turn_produces_span_tree`: Execute a complete `handle_turn()` with mocked
+  dependencies, assert the in-memory exporter contains spans:
+  - `conversation.handle_turn` (root)
+  - `conversation.clinical_safety_check` (child)
+  - `conversation.intent_classify` (child)
+  - `conversation.policy_evaluate` (child)
+  - `conversation.rag_retrieve` (child)
+  - `conversation.llm_generate` (child)
+  - `conversation.handoff_detect` (child)
+  All sharing the same `trace_id` and with correct parent-child relationships.
+
+* `test_clinical_short_circuit_minimal_spans`: When clinical guard triggers, only
+  `handle_turn` and `clinical_safety_check` spans exist (no RAG, LLM, or handoff spans).
+
+* `test_tool_action_span`: When the turn routes to `ToolOrchestrator`, a
+  `tool_orchestrator.invoke` span is present (see Step 14.4).
+
+* `test_rag_retry_recorded_in_span`: When RAG fails once and retries, the span has
+  `app.retry.attempt=1`.
+
+* `test_llm_failover_recorded_in_span`: When Claude fails and Gemini fallback is used,
+  `app.llm.failover=true` and `app.llm.provider="gemini"`.
+
+* `test_span_attributes_never_contain_user_message`: For every span in the exported trace,
+  assert no attribute value contains the test user's input message.
+
+* `test_tracing_error_does_not_break_turn`: Monkeypatch `_tracer.start_as_current_span` to
+  raise `RuntimeError`. Assert `handle_turn()` still completes successfully and returns a
+  valid response (tracing failure must be swallowed).
+
+---
+
+# Step 14.4 — Tool Orchestrator Span Instrumentation
+
+## 14.4.1 — Tool Orchestrator Tracer
+
+At the top of `tool_orchestrator.py`:
+
+```python
+from src.agent.tracing import get_tracer, SpanAttributes
+_tracer = get_tracer("ai-voice-agent.tool-orchestrator")
+```
+
+## 14.4.2 — Tool Invocation Span
+
+Wrap `invoke()`:
+
+```python
+with _tracer.start_as_current_span("tool_orchestrator.invoke") as span:
+    span.set_attribute(SpanAttributes.TOOL_NAME, tool_request.tool_name)
+    span.set_attribute(SpanAttributes.TOOL_ACTION, tool_request.action)
+    span.set_attribute(SpanAttributes.REQUEST_ID, tool_request.request_id or "")
+
+    # Gate 1: Policy
+    with _tracer.start_as_current_span("tool_orchestrator.gate_policy") as gate_span:
+        policy_result = self._policy_engine.evaluate_tool_action(...)
+        gate_span.set_attribute(SpanAttributes.POLICY_OUTCOME, policy_result.outcome)
+
+    # Gate 2: Authorization
+    with _tracer.start_as_current_span("tool_orchestrator.gate_authorization") as gate_span:
+        ...
+
+    # Gate 3: Privacy check
+    with _tracer.start_as_current_span("tool_orchestrator.gate_privacy") as gate_span:
+        ...
+
+    # Gate 4: Confirmation
+    with _tracer.start_as_current_span("tool_orchestrator.gate_confirmation") as gate_span:
+        ...
+
+    # Gate 5: Idempotency
+    with _tracer.start_as_current_span("tool_orchestrator.gate_idempotency") as gate_span:
+        ...
+
+    # Gate 6: Execution with reliability
+    with _tracer.start_as_current_span("tool_orchestrator.execute") as exec_span:
+        exec_span.set_attribute(SpanAttributes.TOOL_OUTCOME, result.status)
+        exec_span.set_attribute(SpanAttributes.LATENCY_MS, execution_latency_ms)
+```
+
+## 14.4.3 — Tests for Tool Spans
+
+Add to `tests/test_tracing_pipeline.py`:
+
+* `test_tool_invoke_span_tree`: Execute a tool invocation, assert the span hierarchy:
+  `tool_orchestrator.invoke` → `gate_policy` → `gate_authorization` → `gate_privacy` →
+  `gate_confirmation` → `gate_idempotency` → `execute`.
+* `test_tool_denied_short_circuit`: When policy denies, only `invoke` and `gate_policy` spans
+  exist (no execution span).
+* `test_tool_span_records_timeout`: When the tool times out, the `execute` span has
+  `StatusCode.ERROR` and `app.error.type="DependencyTimeoutError"`.
+
+---
+
+# Step 14.5 — Correlation Bridge: Traces ↔ Logs ↔ Audit Events
+
+## 14.5.1 — Inject Trace Context into CorrelationContext
+
+Extend `CorrelationContext` in `observability_models.py` with two optional fields:
+
+```python
+@dataclass(frozen=True)
+class CorrelationContext:
+    request_id: str
+    conversation_id: Optional[str] = None
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    turn_id: Optional[str] = None
+    trace_id: Optional[str] = None   # NEW — hex string from OpenTelemetry
+    span_id: Optional[str] = None    # NEW — hex string from OpenTelemetry
+```
+
+These fields are populated from the current span context when a `CorrelationContext` is created:
+
+```python
+from opentelemetry import trace
+
+def with_trace_context(ctx: CorrelationContext) -> CorrelationContext:
+    span = trace.get_current_span()
+    span_ctx = span.get_span_context()
+    if span_ctx.is_valid:
+        return CorrelationContext(
+            **{**vars(ctx),
+               "trace_id": format(span_ctx.trace_id, '032x'),
+               "span_id": format(span_ctx.span_id, '016x')}
+        )
+    return ctx
+```
+
+Call this helper at the point where `CorrelationContext` is constructed in
+`ConversationManager.handle_turn()` and `ToolOrchestrator.invoke()`.
+
+## 14.5.2 — Inject Trace Context into AuditEvent
+
+`AuditEvent` in `observability_models.py` gains two optional fields:
+
+```python
+trace_id: Optional[str] = None
+span_id: Optional[str] = None
+```
+
+`AuditLogger.record()` populates these from the active span context at record time, using the
+same extraction logic. This means every audit event is automatically correlated with its trace.
+
+## 14.5.3 — Inject Trace Context into Structured Logs
+
+Modify `StructuredJSONFormatter.format()` in `production_logging.py` to include `trace_id` and
+`span_id` from the current span context in the JSON output:
+
+```python
+from opentelemetry import trace
+
+span = trace.get_current_span()
+span_ctx = span.get_span_context()
+if span_ctx.is_valid:
+    log_entry["trace_id"] = format(span_ctx.trace_id, '032x')
+    log_entry["span_id"] = format(span_ctx.span_id, '016x')
+```
+
+This enables log correlation in production: a log line can be linked to its parent trace in
+Jaeger/Cloud Trace/Grafana by `trace_id`.
+
+## 14.5.4 — Tests for Correlation Bridge
+
+Create `tests/test_tracing_correlation.py`:
+
+* `test_correlation_context_gets_trace_ids`: Within a span, `with_trace_context()` returns a
+  context with valid `trace_id` and `span_id`.
+* `test_correlation_context_without_span`: Outside a span, `with_trace_context()` returns the
+  original context with `trace_id=None`.
+* `test_audit_event_carries_trace_id`: Record an audit event within a span, assert the event's
+  `trace_id` matches the span's trace ID.
+* `test_structured_log_includes_trace_id`: Emit a log within a span using
+  `StructuredJSONFormatter`, parse the JSON output, assert `trace_id` is present and valid.
+* `test_trace_id_consistent_across_turn`: Within a single `handle_turn()`, assert all audit
+  events and child spans share the same `trace_id`.
+
+---
+
+# Step 14.6 — Tracing Configuration File
+
+## 14.6.1 — Add `configs/tracing.yaml`
+
+Create a YAML configuration file (consistent with the project's config-driven philosophy):
+
+```yaml
+# Tracing configuration — Phase 14
+# Loaded by src/agent/tracing.py, overridable by environment variables.
+
+tracing:
+  enabled: false                          # Master kill switch. Override: TRACING_ENABLED
+  service_name: "ai-voice-agent"          # Override: OTEL_SERVICE_NAME
+  exporter: "console"                     # "console" | "otlp" | "memory". Override: OTEL_EXPORTER_TYPE
+  otlp_endpoint: "http://localhost:4317"  # Override: OTEL_EXPORTER_OTLP_ENDPOINT
+  sampler: "parentbased_always_on"        # Override: OTEL_TRACES_SAMPLER
+  sampler_arg: null                       # Override: OTEL_TRACES_SAMPLER_ARG (for traceidratio)
+
+  # Span attribute privacy rules
+  privacy:
+    # Fields that are NEVER recorded as span attributes
+    blocked_attributes:
+      - "user_message"
+      - "llm_response"
+      - "auth_token"
+      - "database_url"
+      - "password"
+      - "credit_card"
+      - "ssn"
+```
+
+## 14.6.2 — Config Loader
+
+`TracingConfig.from_env()` loads the YAML first, then lets environment variables override
+(same pattern as `ReliabilityConfig` from Phase 10). Environment variables always win.
+
+---
+
+# Step 14.7 — Docker & Observability Stack
+
+## 14.7.1 — Add Jaeger Service to Docker Compose
+
+Add a `jaeger` service to `docker/docker-compose.yml` under a new `observability` profile:
+
+```yaml
+  jaeger:
+    image: jaegertracing/jaeger:2
+    profiles: ["observability"]
+    ports:
+      - "16686:16686"    # Jaeger UI
+      - "4317:4317"      # OTLP gRPC receiver
+      - "4318:4318"      # OTLP HTTP receiver
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    restart: unless-stopped
+```
+
+This is **not** touched by the existing `api`, `trainer`, or `test` profiles.
+
+## 14.7.2 — Wire API Service
+
+Add environment variables to the `api` service in docker-compose:
+
+```yaml
+    environment:
+      TRACING_ENABLED: "${TRACING_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "ai-voice-agent"
+      OTEL_EXPORTER_TYPE: "${OTEL_EXPORTER_TYPE:-console}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+```
+
+## 14.7.3 — Update `.env.example`
+
+Add the new environment variables to `.env.example` with documentation comments:
+
+```bash
+# --- Tracing (Phase 14) ---
+# TRACING_ENABLED=false            # Set to "true" to enable OpenTelemetry tracing
+# OTEL_SERVICE_NAME=ai-voice-agent # Service name in traces
+# OTEL_EXPORTER_TYPE=console       # "console" | "otlp" | "memory"
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317  # Jaeger/Tempo/Cloud Trace endpoint
+```
+
+---
+
+# Step 14.8 — Documentation
+
+## 14.8.1 — Update `docs/ARCHITECTURE.md`
+
+Add a new section documenting the tracing architecture:
+
+* Span hierarchy diagram (root → children).
+* Privacy guarantees (what is and is not exported).
+* How `trace_id` correlates traces, logs, and audit events.
+* Configuration options and how to enable/disable.
+
+## 14.8.2 — Create `docs/TRACING.md`
+
+Create a dedicated tracing guide:
+
+1. **Quick Start**: How to enable tracing locally with Jaeger.
+2. **Span Reference**: Table of all span names, their parent, and attributes.
+3. **Configuration**: Full list of env vars and `configs/tracing.yaml` options.
+4. **Production Deployment**: How to point to Cloud Trace / Grafana Tempo.
+5. **Privacy**: What is never exported, and how to audit.
+6. **Troubleshooting**: Common issues (no spans appearing, exporter timeouts).
+
+---
+
+# Step 14.9 — Regression Testing
+
+Run, in order:
+
+1. New `test_tracing_bootstrap.py` tests.
+2. New `test_tracing_pipeline.py` tests.
+3. New `test_tracing_correlation.py` tests.
+4. New server integration tracing tests.
+5. Full existing test suite — `python -m pytest tests/ -v`.
+6. Confirm zero regressions in:
+   - Policy / ToolOrchestrator / ClinicalSafetyGuard tests.
+   - Persistence / database tests.
+   - Metrics / observability tests.
+   - API server tests.
+   - Voice pipeline tests.
+
+Record exact pass/fail counts from an actual run. Do not reuse Phase 13's numbers.
+
+---
+
+# Step 14.10 — Final Markdown Report
+
+Create `PHASE_14_TELEMETRY_TRACING_REPORT.md` in the project root, following the same structure
+as prior phase reports:
+
+1. Executive Summary
+2. OpenTelemetry SDK configuration (bootstrap, exporters, samplers)
+3. Auto-instrumentation (FastAPI, SQLAlchemy, requests — what each provides)
+4. Manual span instrumentation (span hierarchy table, attribute summary)
+5. Correlation bridge (traces ↔ logs ↔ audit events)
+6. Privacy guarantees (what is blocked, how it's enforced)
+7. Docker observability stack (Jaeger service, compose profiles)
+8. Configuration reference (env vars, YAML, defaults)
+9. Tests: added / executed / passed / failed, with exact counts from an actual run
+10. Compatibility: confirm PolicyEngine / ClinicalSafetyGuard / ToolOrchestrator / existing
+    metrics / audit / persistence behavior unchanged
+11. Remaining technical debt (genuine only)
+12. Recommended next phase (do not implement it)
+
+---
+
+# Completion Criteria
+
+Phase 14 is COMPLETE only when:
+
+* [ ] `opentelemetry-*` packages are in `requirements.txt` and installed.
+* [ ] `src/agent/tracing.py` exists with `TracingConfig`, `init_tracing()`, `get_tracer()`,
+      `shutdown_tracing()`, and `SpanAttributes`.
+* [ ] `configs/tracing.yaml` exists with documented defaults.
+* [ ] Tracing is fully disabled by default (`TRACING_ENABLED=false`) with zero overhead.
+* [ ] FastAPI, SQLAlchemy, and `requests` are auto-instrumented when tracing is enabled.
+* [ ] `ConversationManager.handle_turn()` produces a span tree with child spans for each
+      pipeline stage (clinical → intent → policy → RAG → LLM → handoff).
+* [ ] `ToolOrchestrator.invoke()` produces a span tree with child spans for each gate
+      (policy → authz → privacy → confirmation → idempotency → execute).
+* [ ] `CorrelationContext` and `AuditEvent` carry `trace_id` and `span_id` from the active span.
+* [ ] `StructuredJSONFormatter` includes `trace_id` and `span_id` in JSON log output.
+* [ ] No PII, user messages, LLM outputs, or credentials appear in any span attribute.
+* [ ] A tracing SDK failure does not cause a request to fail (fire-and-forget).
+* [ ] `docker/docker-compose.yml` has a Jaeger service under the `observability` profile.
+* [ ] `.env.example` documents the new tracing environment variables.
+* [ ] `docs/TRACING.md` exists with span reference, configuration, and privacy documentation.
+* [ ] `docs/ARCHITECTURE.md` updated with tracing section.
+* [ ] No PolicyEngine/ClinicalSafetyGuard/ToolOrchestrator decision logic was rewritten.
+* [ ] Full relevant test suite executed with real, current pass/fail counts.
+* [ ] `PHASE_14_TELEMETRY_TRACING_REPORT.md` exists.
+
+---
+
+# Final Autonomous Execution Instructions
+
+Work autonomously through Steps 14.1 → 14.10. Do not ask for confirmation between steps unless a
+genuinely destructive action or unresolved architectural ambiguity comes up. Prefer minimal,
+backward-compatible changes. Do not claim tests passed unless it actually happened in this run.
+
+When finished, provide a concise final summary containing:
+
+1. Implementation completed
+2. Files created
+3. Files modified
+4. Tests executed
+5. Test results
+6. Final report path
+7. Remaining technical debt
+8. Recommended next phase
+
+End with:
+
+`PHASE 14 COMPLETE`
 

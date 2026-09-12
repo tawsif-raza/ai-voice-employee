@@ -1,0 +1,121 @@
+﻿# ============================================================================
+# AI Voice Agent — Canary / Production Docker Compose
+# ============================================================================
+# Usage (run from the repo root):
+#   docker compose -f docker/docker-compose.canary.yml --env-file .env.canary up -d
+#
+# Prerequisites:
+#   cp .env.canary.example .env.canary
+#   # Edit .env.canary and fill in ALL [REQUIRED] values
+#
+# All secrets are sourced exclusively from the --env-file / shell environment.
+# NO secret is hardcoded in this file.
+# ============================================================================
+
+services:
+
+  # -- Application API -------------------------------------------------------
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ai-voice-employee:canary
+    restart: unless-stopped
+
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+
+    volumes:
+      - ../outputs:/app/outputs:ro
+      - ../configs:/app/configs:ro
+      - hf_cache:/app/.cache/huggingface
+
+    environment:
+      PORT: "${PORT:-8000}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      LOG_FORMAT: "${LOG_FORMAT:-json}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-fallback}"
+      BASE_MODEL_NAME: "${BASE_MODEL_NAME:-Qwen/Qwen2.5-0.5B-Instruct}"
+      MERGED_MODEL_DIR: "${MERGED_MODEL_DIR:-/app/outputs/merged_model}"
+      HF_TOKEN: "${HF_TOKEN:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-3-5-haiku-latest}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.5-flash}"
+      AUTH_MODE: "${AUTH_MODE:-production}"
+      DEV_AUTH_ENABLED: "${DEV_AUTH_ENABLED:-false}"
+      OIDC_ISSUER_URL: "${OIDC_ISSUER_URL:-}"
+      OIDC_AUDIENCE: "${OIDC_AUDIENCE:-}"
+      OIDC_JWKS_URL: "${OIDC_JWKS_URL:-}"
+      PERSISTENCE_MODE: "${PERSISTENCE_MODE:-production}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      DEEPGRAM_API_KEY: "${DEEPGRAM_API_KEY:-}"
+      DEEPGRAM_MODEL: "${DEEPGRAM_MODEL:-nova-3}"
+      ELEVENLABS_API_KEY: "${ELEVENLABS_API_KEY:-}"
+      ELEVENLABS_VOICE_ID: "${ELEVENLABS_VOICE_ID:-21m00Tcm4TlvDq8ikWAM}"
+      ELEVENLABS_MODEL_ID: "${ELEVENLABS_MODEL_ID:-eleven_flash_v2_5}"
+      TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID:-}"
+      TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN:-}"
+      TWILIO_PHONE_NUMBER: "${TWILIO_PHONE_NUMBER:-}"
+      TWILIO_MEDIA_STREAM_URL: "${TWILIO_MEDIA_STREAM_URL:-}"
+      VOICE_PUBLIC_URL: "${VOICE_PUBLIC_URL:-}"
+      VOICE_MOCK_SERVICES: "${VOICE_MOCK_SERVICES:-false}"
+      OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-ai-voice-agent-canary}"
+      CANARY_DEPLOYMENT_ID: "${CANARY_DEPLOYMENT_ID:-canary-001}"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8000/ready',timeout=5); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - canary_net
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # -- PostgreSQL ------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-ai_voice_agent}"
+      POSTGRES_USER: "${POSTGRES_USER:-voice_app}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voice_app -d ai_voice_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    networks:
+      - canary_net
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  canary_net:
+    driver: bridge
+
+volumes:
+  hf_cache:
+  postgres_data:

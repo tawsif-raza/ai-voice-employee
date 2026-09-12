@@ -17,14 +17,17 @@ Run with:
 """
 
 import json
+import os
 import sys
 import unittest
+from unittest.mock import MagicMock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "api"))
 import server  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
+from db import DatabaseUnavailableError  # noqa: E402
 from conversation_manager import ConversationManager  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "inference"))
@@ -145,16 +148,41 @@ class TestHealthEndpoint(unittest.TestCase):
 
 
 class TestReadyEndpoint(unittest.TestCase):
-    """Phase 8, plan.md Step 8.14 — /ready is readiness, distinct from /health's liveness-only check."""
+    """
+    Phase 8, plan.md Step 8.14; updated Phase 13 Step 13.1 — /ready reports readiness:
+    - In dev mode: model loaded -> 200, model missing -> 503.
+    - In production mode: model loaded + DB healthy -> 200; DB unhealthy or missing -> 503.
+    - Error responses never leak internal detail or connection strings.
+    """
+
+    def setUp(self):
+        self._prior_pm = os.environ.get("PERSISTENCE_MODE")
+        self._prior_db_url = os.environ.get("DATABASE_URL")
+        self._prior_cm = server._conversation_manager
+        self._prior_db = server._database
+
+    def tearDown(self):
+        if self._prior_pm is None:
+            os.environ.pop("PERSISTENCE_MODE", None)
+        else:
+            os.environ["PERSISTENCE_MODE"] = self._prior_pm
+        if self._prior_db_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = self._prior_db_url
+        server._conversation_manager = self._prior_cm
+        server._database = self._prior_db
 
     def test_not_ready_before_model_loaded(self):
+        os.environ.pop("PERSISTENCE_MODE", None)
         server._conversation_manager = None
         client = TestClient(server.app)
         resp = client.get("/ready")
         self.assertEqual(resp.status_code, 503)
         self.assertEqual(resp.json(), {"ready": False})
 
-    def test_ready_after_model_loaded(self):
+    def test_ready_after_model_loaded_dev_mode(self):
+        os.environ.pop("PERSISTENCE_MODE", None)
         server._conversation_manager = _build_fake_conversation_manager()
         client = TestClient(server.app)
         resp = client.get("/ready")
@@ -162,10 +190,77 @@ class TestReadyEndpoint(unittest.TestCase):
         self.assertEqual(resp.json(), {"ready": True})
 
     def test_ready_response_exposes_no_internal_detail(self):
+        os.environ.pop("PERSISTENCE_MODE", None)
         server._conversation_manager = None
         client = TestClient(server.app)
         resp = client.get("/ready")
         self.assertEqual(set(resp.json().keys()), {"ready"})
+
+    def test_production_mode_ready_when_database_healthy(self):
+        os.environ["PERSISTENCE_MODE"] = "production"
+        os.environ["DATABASE_URL"] = "postgresql://user:pass@localhost:5432/db"
+        server._conversation_manager = _build_fake_conversation_manager()
+        mock_db = MagicMock()
+        mock_db.health_check.return_value = True
+        server._database = mock_db
+
+        client = TestClient(server.app)
+        resp = client.get("/ready")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ready": True})
+        mock_db.health_check.assert_called_once()
+
+    def test_production_mode_not_ready_when_database_health_check_returns_false(self):
+        os.environ["PERSISTENCE_MODE"] = "production"
+        os.environ["DATABASE_URL"] = "postgresql://user:pass@localhost:5432/db"
+        server._conversation_manager = _build_fake_conversation_manager()
+        mock_db = MagicMock()
+        mock_db.health_check.return_value = False
+        server._database = mock_db
+
+        client = TestClient(server.app)
+        resp = client.get("/ready")
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json(), {"ready": False})
+
+    def test_production_mode_not_ready_when_database_health_check_raises(self):
+        os.environ["PERSISTENCE_MODE"] = "production"
+        os.environ["DATABASE_URL"] = "postgresql://user:pass@localhost:5432/db"
+        server._conversation_manager = _build_fake_conversation_manager()
+        mock_db = MagicMock()
+        mock_db.health_check.side_effect = DatabaseUnavailableError("DB unreachable")
+        server._database = mock_db
+
+        client = TestClient(server.app)
+        resp = client.get("/ready")
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json(), {"ready": False})
+
+    def test_production_mode_not_ready_when_no_database_available(self):
+        os.environ["PERSISTENCE_MODE"] = "production"
+        os.environ["DATABASE_URL"] = "postgresql://user:pass@localhost:5432/db"
+        server._conversation_manager = _build_fake_conversation_manager()
+        server._database = None
+
+        client = TestClient(server.app)
+        resp = client.get("/ready")
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json(), {"ready": False})
+
+    def test_production_mode_unhealthy_response_exposes_no_internal_detail(self):
+        os.environ["PERSISTENCE_MODE"] = "production"
+        os.environ["DATABASE_URL"] = "postgresql://secret_user:super_secret_password@localhost:5432/secret_db"
+        server._conversation_manager = _build_fake_conversation_manager()
+        mock_db = MagicMock()
+        mock_db.health_check.side_effect = DatabaseUnavailableError("secret_user:super_secret_password failed")
+        server._database = mock_db
+
+        client = TestClient(server.app)
+        resp = client.get("/ready")
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(set(resp.json().keys()), {"ready"})
+        self.assertNotIn("secret", str(resp.json()))
+        self.assertNotIn("Traceback", str(resp.json()))
 
 
 class TestRequestIdMiddleware(unittest.TestCase):

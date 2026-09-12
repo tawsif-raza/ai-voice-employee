@@ -36,6 +36,7 @@ class MemoryRecord:
     updated_at: datetime
     expires_at: Optional[datetime] = None
     metadata: dict = field(default_factory=dict)
+    version: int = 1
 
     def is_expired(self, now: Optional[datetime] = None) -> bool:
         if self.expires_at is None:
@@ -54,6 +55,7 @@ class MemoryRecord:
             "updated_at": self.updated_at.isoformat(),
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "metadata": dict(self.metadata),
+            "version": self.version,
         }
 
 

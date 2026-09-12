@@ -42,3 +42,11 @@ pygame-ce==2.5.7
 SQLAlchemy==2.0.52
 psycopg2-binary==2.9.12
 alembic==1.19.1
+
+# Distributed tracing (Phase 14)
+opentelemetry-api==1.33.0
+opentelemetry-sdk==1.33.0
+opentelemetry-instrumentation-fastapi==0.54b0
+opentelemetry-instrumentation-sqlalchemy==0.54b0
+opentelemetry-instrumentation-requests==0.54b0
+opentelemetry-exporter-otlp-proto-grpc==1.33.0

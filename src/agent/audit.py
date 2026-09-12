@@ -146,11 +146,21 @@ class AuditLogger:
             if self._privacy_service is not None and safe_metadata:
                 safe_metadata = self._privacy_service.sanitize(safe_metadata, context="LOGGING")
 
+            # Phase 14: inject OpenTelemetry trace correlation into every
+            # audit event.  Fire-and-forget — extraction failure is swallowed.
+            _trace_id, _span_id = None, None
+            try:
+                from tracing import get_current_trace_context
+                _trace_id, _span_id = get_current_trace_context()
+            except Exception:
+                pass
+
             event = AuditEvent(
                 event_id=new_event_id(), timestamp=now_utc(), event_type=event_type,
                 request_id=request_id, conversation_id=conversation_id, session_id=session_id,
                 actor=actor, action=action, resource=resource, outcome=outcome,
                 policy=policy, reason=reason, metadata=safe_metadata,
+                trace_id=_trace_id, span_id=_span_id,
             )
             self._repository.append(event)
             log_event(self._logger, f"audit:{event_type.value}", event.to_dict())

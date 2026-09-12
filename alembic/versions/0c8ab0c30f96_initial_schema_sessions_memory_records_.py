@@ -84,7 +84,7 @@ def upgrade() -> None:
     sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('current_intent', sa.String(length=128), nullable=True),
     sa.Column('workflow_state', sa.String(length=64), nullable=True),
-    sa.Column('pending_action', sa.String(length=64), nullable=True),
+    sa.Column('pending_action', sa.String(length=64), nullable=True),   
     sa.Column('pending_parameters', sa.JSON(), nullable=False),
     sa.Column('confirmation_state', sa.JSON(), nullable=False),
     sa.Column('metadata', sa.JSON(), nullable=False),

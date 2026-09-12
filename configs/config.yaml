@@ -89,3 +89,25 @@ export:
   quant_types:
     - Q4_K_M
     - Q8_0
+
+# LLM Provider Configuration (src/inference/llm_provider.py).
+# Decoupled provider hierarchy: Claude Primary -> Gemini Fallback.
+# Overridden by environment variables (LLM_PROVIDER, ANTHROPIC_MODEL, GEMINI_MODEL).
+llm:
+  provider: fallback
+  claude:
+    # Primary model: Claude 3.5 Haiku is optimized for sub-300ms voice TTFT
+    # and strict phone-cadence instruction following.
+    model: claude-3-5-haiku-latest
+    timeout_seconds: 30
+    max_tokens: 350
+    temperature: 0.7
+  gemini:
+    # Automatic fallback model: Gemini 2.5 Flash provides high concurrency,
+    # ultra-fast generation, and seamless rate-limit resilience.
+    model: gemini-2.5-flash
+    timeout_seconds: 30
+    max_tokens: 350
+    temperature: 0.7
+  fallback:
+    cooldown_seconds: 60

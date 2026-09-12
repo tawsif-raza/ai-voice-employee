@@ -20,10 +20,12 @@ Security-relevant behavior, all covered by tests/test_session_manager.py:
   example).
 """
 
+import copy
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from db import ConcurrentModificationError
 from session_models import ALLOWED_TRANSITIONS, DEFAULT_SESSION_TTL, SessionState, SessionStatus, new_session_id
 
 
@@ -37,29 +39,48 @@ class InvalidTransitionError(ValueError):
 
 class SessionRepository:
     """
-    In-memory session storage. Swappable — SessionManager depends only on
-    this interface (get/save/delete). Individually thread-safe (Phase 10,
-    plan.md Step 10.14) — but SessionManager's own read-modify-write
-    sequences (get, then mutate, then save) need SessionManager's own
-    coarser lock on top of this, since locking each dict operation alone
-    doesn't make a multi-step sequence atomic; see SessionManager below.
+    In-memory session storage with optimistic concurrency (Phase 13, Step 13.2).
+    Swappable — SessionManager depends only on this interface (get/save/delete).
+    Individually thread-safe (Phase 10, plan.md Step 10.14) and version-checked.
     """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._sessions: dict[str, SessionState] = {}
+        self._versions: dict[str, int] = {}
 
     def get(self, session_id: str) -> Optional[SessionState]:
         with self._lock:
-            return self._sessions.get(session_id)
+            s = self._sessions.get(session_id)
+            if s is None:
+                return None
+            res = copy.copy(s)
+            res.version = self._versions.get(session_id, getattr(s, "version", 1))
+            return res
 
     def save(self, session: SessionState) -> None:
         with self._lock:
-            self._sessions[session.session_id] = session
+            sid = session.session_id
+            expected_version = getattr(session, "version", 1) or 1
+            if sid in self._sessions:
+                current_ver = self._versions.get(sid, 1)
+                if expected_version != current_ver:
+                    raise ConcurrentModificationError(
+                        f"Concurrent modification detected for session '{sid}': "
+                        f"expected version {expected_version}, current version {current_ver}"
+                    )
+                new_ver = current_ver + 1
+                self._versions[sid] = new_ver
+                session.version = new_ver
+                self._sessions[sid] = copy.copy(session)
+            else:
+                self._versions[sid] = expected_version
+                self._sessions[sid] = copy.copy(session)
 
     def delete(self, session_id: str) -> None:
         with self._lock:
             self._sessions.pop(session_id, None)
+            self._versions.pop(session_id, None)
 
 
 _UPDATABLE_FIELDS = {
@@ -97,6 +118,7 @@ class SessionManager:
             sid = session_id or new_session_id()
             if not isinstance(sid, str) or not sid.strip():
                 raise ValueError("session_id must be a non-empty string")
+            self._repository.delete(sid)
             now = datetime.now(timezone.utc)
             session = SessionState(session_id=sid, user_id=user_id, created_at=now, updated_at=now, expires_at=now + self._ttl)
             self._repository.save(session)
@@ -249,6 +271,30 @@ class SessionManager:
             if session is None:
                 return None
             if session.workflow_state != "AWAITING_CONFIRMATION" or not session.pending_action:
+                return None
+            action_name = session.pending_action
+            params = dict(session.pending_parameters)
+            session.workflow_state = None
+            session.pending_action = None
+            session.pending_parameters = {}
+            session.updated_at = datetime.now(timezone.utc)
+            self._repository.save(session)
+            return action_name, params
+
+    def try_consume_pending_authentication(self, session_id, user_id: Optional[str] = None) -> Optional[tuple[str, dict]]:
+        """
+        Atomically checks whether `session_id` has a pending
+        AWAITING_AUTHENTICATION action and, if so, clears it and returns
+        `(action_name, parameters)` in one lock-held step.
+        """
+        repo_consume = getattr(self._repository, "try_consume_pending_authentication", None)
+        if callable(repo_consume):
+            return repo_consume(session_id, user_id=user_id)
+        with self._lock:
+            session = self.get_session(session_id, user_id=user_id)
+            if session is None:
+                return None
+            if session.workflow_state != "AWAITING_AUTHENTICATION" or not session.pending_action:
                 return None
             action_name = session.pending_action
             params = dict(session.pending_parameters)

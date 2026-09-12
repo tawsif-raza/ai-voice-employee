@@ -111,6 +111,17 @@ class TestCleanDatabaseMigration(_IsolatedSQLiteMigration):
         ):
             self.assertIn(expected, indexes)
 
+    def test_version_columns_exist_after_migration(self):
+        command.upgrade(self.config, "head")
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            sess_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            self.assertIn("version", sess_cols)
+            mem_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_records)").fetchall()}
+            self.assertIn("version", mem_cols)
+        finally:
+            conn.close()
+
 
 class TestConstraintsRejectInvalidData(_IsolatedSQLiteMigration):
     def setUp(self):
