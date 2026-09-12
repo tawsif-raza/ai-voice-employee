@@ -19,6 +19,10 @@ mypy==2.3.1
 # never declared explicitly. Same "declare what you actually import"
 # fix as pytest/pytest-asyncio above.
 httpx==0.28.1
+# psutil: process CPU/RAM sampling for scripts/stability_verification.py
+# (Phase 16). Was already present transitively in this environment but
+# never declared -- same "declare what you actually import" fix.
+psutil==7.2.2
 # No separate sqlalchemy[mypy] extra needed -- the mypy plugin
 # (sqlalchemy.ext.mypy.plugin, configured in pyproject.toml) ships inside
 # the base sqlalchemy package already declared in requirements.txt.
