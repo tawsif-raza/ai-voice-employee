@@ -47,6 +47,7 @@ to start rather than serving traffic with broken or absent authentication
 (plan.md Principle 32/33).
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -73,6 +74,7 @@ from audit import AuditLogger, SecurityEventDetector  # noqa: E402
 from conversation_manager import ConversationManager, build_conversation_manager  # noqa: E402
 from db import Database, load_database_config  # noqa: E402
 from identity import AuthenticationError, DevelopmentAuthenticationProvider  # noqa: E402
+from jobs import JobStatus, JobStore  # noqa: E402
 from metrics import MetricsRegistry  # noqa: E402
 from observability_models import EventType, new_request_id  # noqa: E402
 from oidc_provider import OIDCAuthenticationProvider, load_oidc_config  # noqa: E402
@@ -140,6 +142,9 @@ _conversation_manager: Optional[ConversationManager] = None
 _database: Optional[Database] = None
 _voice_call_manager: Optional[VoiceCallManager] = None
 _tracer_provider = None  # Phase 14: OpenTelemetry TracerProvider lifecycle
+# Phase 15 (request/heavy-work isolation): in-process job registry backing
+# POST /jobs/generate + GET /jobs/{job_id} -- see jobs.py's module docstring.
+_job_store = JobStore()
 
 
 def _get_active_database() -> Optional[Database]:
@@ -543,6 +548,120 @@ def generate(req: ChatRequest, request: Request, identity: AuthContext = Depends
     return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
 
+# ── Heavy-Work Job Isolation (Phase 15) ─────────────────────────────────────
+#
+# Problem: POST /generate above runs ConversationManager.handle_turn() --
+# RAG retrieval + LLM generation, the heaviest work in this codebase --
+# synchronously within the request/response cycle. The HTTP connection
+# and this process's single generation semaphore
+# (conversation_manager.py's _generation_semaphore) are held for the
+# entire duration of one generation, with no way for a client to get a
+# fast acknowledgement and check back later.
+#
+# Fix (Phase 1 stabilization -- see PHASE_15_REQUEST_ISOLATION_REPORT.md
+# for the full before/after measurement; deliberately NOT a distributed
+# task queue): POST /jobs/generate validates the request and returns a
+# job_id immediately; the actual handle_turn() call is dispatched to a
+# background thread via the same loop.run_in_executor() pattern
+# voice_pipeline.py already uses for the identical underlying call.
+# GET /jobs/{job_id} polls for the result. The heavy work still runs in
+# this same process -- only its relationship to the request/response
+# cycle changes.
+
+
+class JobSubmitResponse(BaseModel):
+    job_id: str
+    status: str
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    result: Optional[ChatResponse] = None
+    error: Optional[str] = None
+
+
+def _run_generate_job(job_id: str, req: ChatRequest, identity: AuthContext, request_id: str) -> None:
+    """
+    Runs in a worker thread (via loop.run_in_executor), never on the
+    event loop and never inside the original request's lifecycle.
+
+    MUST NOT let any exception escape -- a failing job is recorded as
+    JobStatus.FAILED via the same _job_store all callers read from, never
+    raised into the executor's own exception handling. This is what makes
+    "one failed job cannot terminate the application" true: nothing here
+    depends on the caller of run_in_executor ever observing this
+    function's return value or exception.
+    """
+    _job_store.mark_running(job_id)
+    try:
+        if _conversation_manager is None:
+            raise RuntimeError("Model not loaded yet.")
+        result = None
+        for item in _conversation_manager.handle_turn(
+            req.message,
+            history=req.history,
+            auth=identity,
+            session_id=req.session_id,
+            request_id=request_id,
+        ):
+            if not isinstance(item, str):
+                result = item
+        _job_store.mark_completed(
+            job_id,
+            {
+                "response": result["response"],
+                "is_handoff": result["is_handoff"],
+                "latency_ms": result["latency_ms"],
+            },
+        )
+    except Exception as exc:
+        # Never the raw exception message/args -- same "no internal
+        # failure detail exposed" posture as generate()'s own error
+        # handling and _safe_exception_handler() above.
+        _error_logger.error("Job %s failed: %s", job_id, type(exc).__name__)
+        _job_store.mark_failed(job_id, type(exc).__name__)
+
+
+@app.post("/jobs/generate", response_model=JobSubmitResponse, status_code=202)
+async def submit_generate_job(
+    req: ChatRequest, request: Request, identity: AuthContext = Depends(resolve_identity)
+) -> JobSubmitResponse:
+    """
+    Same turn logic as POST /generate, decoupled from the request/
+    response cycle. Returns a job_id immediately (fast, no model access
+    on this path) regardless of how long the underlying generation takes.
+    Poll GET /jobs/{job_id} for the result.
+    """
+    if _conversation_manager is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet.")
+    if req.stream:
+        raise HTTPException(status_code=400, detail="stream=true is not supported for /jobs/generate.")
+
+    request_id = getattr(request.state, "request_id", None) or new_request_id()
+    job_id = new_request_id()
+    _job_store.create(job_id)
+
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, _run_generate_job, job_id, req, identity, request_id)
+
+    return JobSubmitResponse(job_id=job_id, status=JobStatus.QUEUED.value)
+
+
+@app.get("/jobs/{job_id}", response_model=JobStatusResponse)
+def get_job_status(job_id: str) -> JobStatusResponse:
+    record = _job_store.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id.")
+
+    response = JobStatusResponse(job_id=record.job_id, status=record.status.value)
+    if record.status == JobStatus.COMPLETED and record.result is not None:
+        response.result = ChatResponse(**record.result)
+    elif record.status == JobStatus.FAILED:
+        response.error = record.error
+    return response
+
+
 # ── Telephony / Voice Gateway Endpoints ─────────────────────────────────────
 
 
@@ -637,8 +756,6 @@ async def websocket_call(websocket: WebSocket):
                 )
                 await current_handler.handle_start(parsed_data)
                 # Launch STT processing loop in background
-                import asyncio
-
                 stt_task = asyncio.create_task(current_handler.process_stt_events())
 
             elif event_type == TwilioEventType.MEDIA:

@@ -13,6 +13,12 @@ pytest==9.1.1
 pytest-asyncio==1.4.0
 ruff==0.16.4
 mypy==2.3.1
+# httpx: used directly by tests/test_job_isolation.py (Phase 15) to make
+# real HTTP requests against a live uvicorn server -- previously only a
+# transitive dependency (via elevenlabs/fastapi's own soft dependency),
+# never declared explicitly. Same "declare what you actually import"
+# fix as pytest/pytest-asyncio above.
+httpx==0.28.1
 # No separate sqlalchemy[mypy] extra needed -- the mypy plugin
 # (sqlalchemy.ext.mypy.plugin, configured in pyproject.toml) ships inside
 # the base sqlalchemy package already declared in requirements.txt.
