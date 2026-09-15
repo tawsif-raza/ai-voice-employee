@@ -320,6 +320,19 @@ class GeminiLLMProvider(BaseLLMProvider):
         }
         if top_p is not None:
             gen_config["topP"] = top_p
+        if "2.5" in self.model:
+            # Gemini 2.5 models reserve part of maxOutputTokens for internal
+            # "thinking" tokens by default, and how much they spend is
+            # non-deterministic per call. With a modest token budget this can
+            # consume the entire budget on reasoning and leave zero tokens
+            # for visible text -- a real HTTP 200 with a genuinely empty
+            # response, no exception raised. Demonstrated live against the
+            # real API (docs/phase1.4-external-integration-report.md);
+            # disabled here since this app needs a visible reply within its
+            # configured token budget, not internal reasoning. Only applied
+            # to 2.5 models -- older models (1.5/2.0) don't recognize this
+            # field.
+            gen_config["thinkingConfig"] = {"thinkingBudget": 0}
 
         payload: dict[str, Any] = {
             "contents": contents,

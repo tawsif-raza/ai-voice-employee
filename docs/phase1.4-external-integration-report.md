@@ -2,11 +2,21 @@
 
 Phase 1.3 is accepted; classification entering this pass remains **B —
 Mostly Stable**, and the internal 867-test result from that pass is
-accepted as-is. This pass's job was NOT to run the live integrations
-(no credentials were supplied — the user explicitly chose "mark both
-UNVERIFIED" again this round) but to **prepare the repository** so that
-whoever does have credentials and a staging Twilio environment can run
-one command each and get a real, honestly-labeled result.
+accepted as-is. This pass's initial work was NOT to run the live
+integrations (no credentials were supplied — the user explicitly chose
+"mark both UNVERIFIED" again this round) but to **prepare the
+repository** so that whoever does have credentials and a staging Twilio
+environment can run one command each and get a real, honestly-labeled
+result.
+
+**Update (same Phase 1.4 pass, second session):** a real (test-safe)
+`GEMINI_API_KEY` was later supplied — no `ANTHROPIC_API_KEY` and no
+Twilio credentials/staging endpoint were supplied. `scripts/
+live_provider_verification.py` was run for real against Gemini. See
+Section 4a for what this closed and Section 13 for a real defect it
+found and a real fix applied as a direct result — the first genuine
+LIVE evidence and the first genuine code fix in this whole Phase 1.x
+track.
 
 No application defect was demonstrated this pass (none could be, since no
 live external test ran), so per Section 7's instruction, no unrelated
@@ -139,24 +149,63 @@ results.json` / `docs/phase1.4-live-twilio-results.json`, gitignored —
 regenerate by actually running the scripts). No entry above was upgraded
 to PASS without the script itself reporting PASS; the one real PASS
 (`claude/malformed_response_handling`) is LOCAL, labeled as such, and is
-not counted toward external-integration closure.
+not counted toward external-integration closure. This is the table as of
+the FIRST session of this pass (no credentials at all) — see Section 4a
+for the update after a real Gemini key was supplied.
+
+## 4a. Real Gemini Verification (second session of this pass)
+
+A real, test-safe `GEMINI_API_KEY` was supplied (no `ANTHROPIC_API_KEY`).
+`scripts/live_provider_verification.py` was run for real, twice, directly
+against `https://generativelanguage.googleapis.com`:
+
+| Provider | Scenario | Result | Latency | Source |
+|---|---|---|---|---|
+| gemini | successful_real_request | **PASS** | 1159.7ms | LIVE |
+| gemini | streaming_response | **PASS** | 1159.7ms | LIVE |
+| gemini | timeout_handling | **PASS** | 43.6ms | LIVE |
+| gemini | provider_error_handling | **PASS** | 731.0ms | LIVE |
+| claude | successful_real_request / streaming_response / timeout_handling / provider_error_handling | NOT RUN | — | missing_credentials (no `ANTHROPIC_API_KEY`) |
+| failover | claude_fails_gemini_succeeds | NOT RUN | — | missing_credentials (requires both keys) |
+
+**The first run of this session initially FAILED**
+`gemini/successful_real_request` and `gemini/streaming_response` with
+`error_category: empty_response` / `no_chunks_streamed` — a real,
+reproducible defect, not a bad key (confirmed: the same key, called
+directly against the real API outside the app, alternated between a real
+HTTP 200 with genuinely empty candidates and, once, a transient real
+`400 API_KEY_INVALID` that resolved on retry — consistent with normal
+Google Cloud API key propagation delay for a freshly issued key, not an
+application bug). See Section 13 for the root cause and the fix, applied
+and verified live in this same session (all 4 Gemini scenarios PASS
+cleanly on the re-run above). Exact evidence trail, including the raw
+Google API responses captured during diagnosis, is not reproduced here
+verbatim (it was ephemeral interactive debugging, not a checked-in
+artifact) — Section 13 states the root cause and the fix precisely enough
+to be independently re-verified by anyone with a Gemini key.
+
+**Not closed by this update:** Claude (no key supplied — remains exactly
+as unverified as before), the failover scenario (needs both keys), and
+Twilio (no credentials or staging endpoint supplied — remains exactly as
+unverified as before, see Section 6).
 
 ## 5. Real Latency
 
-**No LIVE latency measurements exist from this pass** — no live call was
-made. The only real numbers available are from Phase 1.2 (LOCAL: real
-Qwen2.5-0.5B CPU inference, 1.2-1.4s per call) and Phase 1.2's SIMULATED
-mixed-workload figures (fake LLM services). Claude TTFT, Gemini TTFT, STT
-latency, TTS first-audio latency, end-to-end response latency, Twilio
-WebSocket latency, and barge-in latency are all **UNVERIFIED** — none are
-fabricated or estimated here. `scripts/latency_report.py` (pre-existing)
-is ready to consume real canary logs once they exist, with the SLA
-thresholds already defined in `docs/CANARY_TESTING_PROCEDURE.md`.
+Gemini TTFT/full-response latency is now real (Section 4a, second
+session): a single non-streaming-visible chunk at ~1.16s for a 10-token
+budget reply (`gemini-2.5-flash`, not a streaming-shaped response in this
+harness's test prompt — see the note in Section 4a's table). Claude,
+STT, TTS, end-to-end, Twilio WebSocket, and barge-in latency remain
+**UNVERIFIED** — no Claude key, no STT/TTS keys, and no Twilio/staging
+endpoint were supplied this pass either. None of these are fabricated or
+estimated. `scripts/latency_report.py` (pre-existing) is ready to consume
+real canary logs once they exist, with the SLA thresholds already defined
+in `docs/CANARY_TESTING_PROCEDURE.md`.
 
 | Metric | Status |
 |---|---|
 | Claude TTFT | UNVERIFIED |
-| Gemini TTFT | UNVERIFIED |
+| Gemini TTFT / full response | **LIVE**: ~1.16s (gemini-2.5-flash, 10-token budget, thinking disabled — Section 13) |
 | STT latency | UNVERIFIED |
 | TTS first-audio latency | UNVERIFIED |
 | End-to-end response latency (real call) | UNVERIFIED |
@@ -168,21 +217,53 @@ thresholds already defined in `docs/CANARY_TESTING_PROCEDURE.md`.
 ## 6. Phase Closure Rule
 
 Both external integration groups require at least one successful LIVE
-validation. Neither has one:
+validation.
 
-- Claude/Gemini: **NOT RUN** (no credentials supplied)
-- Twilio: **UNVERIFIED** (no reachable staging deployment supplied)
+- Claude/Gemini: **PARTIALLY CLOSED.** Gemini now has 4 real LIVE PASS
+  results (Section 4a) — the group's own stated bar ("at least one
+  successful LIVE validation") is technically met by Gemini alone, since
+  Claude/Gemini is tracked as one combined external-LLM-provider group
+  throughout this Phase 1.x track. Stated plainly rather than let a
+  narrow technical reading overclaim: Claude itself is still exactly as
+  unverified as it was before this update (no key was ever supplied), and
+  the failover path (the specific behavior of falling from a real Claude
+  failure to a real Gemini success) is still NOT RUN, because it requires
+  both keys by design (Section 1's script gates it that way on purpose —
+  a real Claude failure needs a real, authenticating Claude key, not just
+  Gemini). Anyone reading only "Claude/Gemini: closed" without this
+  paragraph would be misled about what was and wasn't actually verified.
+- Twilio: **UNVERIFIED** (no reachable staging deployment or credentials
+  supplied this pass either — unchanged from the first session).
 
-**Status: CONDITIONAL / BLOCKED.**
+**Status: CONDITIONAL / BLOCKED.** Not CLOSED: Twilio has zero real
+evidence, and the specific Claude-fails/Gemini-succeeds failover
+behavior — arguably the single most production-relevant scenario in the
+whole Claude/Gemini group, since `LLM_PROVIDER=fallback` is this
+deployment's documented default — has also never been exercised for
+real. Phase 2 is not started.
 
 ## 7. No Unnecessary Code Changes
 
-Confirmed: no application logic outside the three permitted categories was
-touched. `src/api/server.py`'s only functional change is signature
-enforcement (required by Section 2) and the new credential-readiness log
-line (required by Section 3) — no existing route's non-security behavior
+Confirmed for the first (no-credential) session of this pass: no
+application logic outside the three permitted categories was touched.
+`src/api/server.py`'s only functional change was signature enforcement
+(required by Section 2) and the new credential-readiness log line
+(required by Section 3) — no existing route's non-security behavior
 changed, and every pre-existing test for those routes still passes
 unmodified.
+
+**Updated for the second session:** one additional, narrowly-scoped
+application change was made — `src/inference/llm_provider.py`'s
+`GeminiLLMProvider.generate_stream()` now sets
+`generationConfig.thinkingConfig.thinkingBudget = 0` for Gemini 2.5
+models. This is an exception to "no code changes" made under this same
+task's own explicit rule: *fix defects demonstrated by real integration
+tests*. See Section 13 for the full Problem/Evidence/Root cause/Fix/
+Regression-test/Real-verification writeup. No other application logic
+was touched; the fix is scoped to exactly the one method, guarded to
+apply only to 2.5-family models so 1.5/2.0 deployments are unaffected
+(regression test: `tests/test_llm_provider.py::TestLLMProvider::
+test_gemini_1_5_does_not_set_thinking_budget`).
 
 ## 8. Final Output — Exact Steps To Actually Close This
 
@@ -265,13 +346,96 @@ were created solely for it.
 
 ---
 
+## 13. Real Defect Found and Fixed: Gemini 2.5 Silent Empty Response
+
+```
+Problem: GeminiLLMProvider.generate_stream() (src/inference/
+  llm_provider.py) can return a genuinely empty response -- HTTP 200,
+  well-formed SSE, zero candidates/text -- with NO exception raised, for
+  a real, valid, authenticating GEMINI_API_KEY and a real, on-topic
+  prompt.
+
+Evidence: Running scripts/live_provider_verification.py against the real
+  Gemini API (gemini-2.5-flash, maxOutputTokens=10 -- this harness's
+  intentionally small smoke-test budget) failed
+  gemini/successful_real_request and gemini/streaming_response with
+  error_category empty_response / no_chunks_streamed on the first run of
+  this session. Direct, repeated calls to the same real endpoint with the
+  same key and payload (outside the harness, for diagnosis) reproduced a
+  real HTTP 200 response whose only candidate had an empty `parts` array
+  and `"finishReason": "MAX_TOKENS"`, alongside a
+  `"thoughtsTokenCount": 5` field in `usageMetadata` -- confirming Gemini
+  2.5's default "thinking" behavior had spent part or all of the
+  10-token budget on internal reasoning tokens that never became visible
+  text. A separate call in the same diagnosis session got a genuine
+  `400 API_KEY_INVALID` (most likely explained by ordinary propagation
+  delay for a freshly issued Google Cloud API key, not this defect) --
+  disclosed for completeness, not claimed as caused by this bug.
+
+Root cause: Gemini 2.5 model family reserves part of
+  generationConfig.maxOutputTokens for internal "thinking" tokens by
+  default, and the amount spent per call is non-deterministic. With a
+  modest maxOutputTokens value, the model can spend the ENTIRE budget on
+  internal reasoning and return zero tokens of visible text --
+  legitimately, from Google's API's own perspective (200 OK,
+  finishReason MAX_TOKENS is an accurate description of what happened) --
+  but GeminiLLMProvider.generate_stream() had no thinkingConfig at all,
+  so it always inherited this default, unpredictable behavior. This is a
+  genuine production risk, not just a smoke-test artifact: this
+  provider's own default_max_tokens is 350 (larger, so less likely to be
+  fully consumed by thinking, but not immune -- the amount of thinking
+  Gemini 2.5 does is prompt-dependent and not bounded to a small
+  fraction of the budget by anything in this codebase), and a silent
+  empty reply that raises no exception would bypass this app's retry/
+  fallback logic entirely (FallbackLLMProvider only fails over on a
+  raised exception) -- a real caller could receive dead air with no
+  error logged anywhere.
+
+Fix: src/inference/llm_provider.py, GeminiLLMProvider.generate_stream()
+  -- when self.model contains "2.5", generationConfig now includes
+  "thinkingConfig": {"thinkingBudget": 0}, disabling internal reasoning
+  tokens entirely so the full maxOutputTokens budget is always available
+  for visible text. Scoped to 2.5-family models only: Gemini 1.5/2.0
+  don't recognize this field, and this deployment's DEFAULT_MODEL /
+  GEMINI_MODEL env var could be configured to either family.
+
+Regression test: tests/test_llm_provider.py ::
+  test_gemini_2_5_disables_thinking_budget (confirms the field is sent,
+  with the exact value, for a 2.5 model) and ::
+  test_gemini_1_5_does_not_set_thinking_budget (confirms it is NOT sent
+  for an older model, so that family's behavior is unchanged). Both run
+  fully offline (mocked requests.post), so they run in the normal suite
+  on every commit, not gated behind RUN_LIVE_PROVIDER_TESTS. Full suite:
+  895 passed, 0 failed (893 + these 2 new tests) after the fix.
+
+Real verification: scripts/live_provider_verification.py re-run against
+  the real Gemini API, same key, same maxOutputTokens=10 budget, after
+  the fix: gemini/successful_real_request, streaming_response,
+  timeout_handling, and provider_error_handling all PASS (Section 4a's
+  table). A separate 5-call direct-loop check (outside the harness) got
+  4/5 real "OK" responses and 1/5 a real, correctly-raised
+  LLMOverloadedError (HTTP 503 from Google -- genuine transient server
+  load, unrelated to this fix, surfaced as an exception exactly as
+  designed) -- 0/5 empty responses, versus the pre-fix behavior where
+  empty responses were reproducible.
+```
+
+---
+
 ## Recommendation
 
-**REMAIN BLOCKED.**
+**REMAIN CONDITIONAL / BLOCKED** (downgraded from the first session's
+"REMAIN BLOCKED" only in the sense that real progress now exists; the
+overall gate is not open).
 
-Every artifact needed to close this gap now exists — the harness scripts,
-the signature validation, the credential-readiness observability, and this
-exact runbook — and none of it required guessing at credentials or
-fabricating a result. But per Section 6's own rule, Phase 1 stays CLOSED
-only once both external groups have at least one real PASS, and neither
-does yet. Phase 2 is not started.
+Every artifact needed to close the credential-gated part of this gap now
+exists — the harness scripts, the signature validation, the credential-
+readiness observability, and the runbook — and, as of this session, real
+evidence exists too: Gemini's 4 core scenarios are genuinely LIVE-PASS,
+and a real defect the first LIVE run surfaced was root-caused, fixed
+narrowly, regression-tested offline, and re-verified live, all in this
+same pass. But per Section 6's own rule, stated precisely rather than
+rounded up: Claude has no key and is exactly as unverified as before;
+the Claude-fails/Gemini-succeeds failover path — this deployment's
+actual default production behavior — has still never been exercised for
+real; and Twilio has zero real evidence. Phase 2 is not started.

@@ -89,6 +89,68 @@ class TestLLMProvider(unittest.TestCase):
         self.assertEqual(contents[1]["role"], "model")
         self.assertEqual(contents[1]["parts"][0]["text"], "Answer.")
 
+    def test_gemini_2_5_disables_thinking_budget(self):
+        """
+        Regression test for a real defect found via live verification
+        (docs/phase1.4-external-integration-report.md): Gemini 2.5 models
+        reserve part of maxOutputTokens for internal "thinking" tokens by
+        default, non-deterministically, and can consume the entire budget
+        on reasoning with zero tokens left for visible text -- a genuine
+        HTTP 200 with an empty response, no exception. Confirmed live
+        against the real API: 2/5 calls with maxOutputTokens=10 and no
+        thinkingConfig returned empty text; 0/5 did once thinkingConfig=
+        {"thinkingBudget": 0} was added. This test only checks the request
+        payload (not a live call) so it runs in the normal offline suite.
+        """
+        captured_payload = {}
+
+        class _FakeResponse:
+            status_code = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_lines(self, decode_unicode=True):
+                return iter(['data: {"candidates": [{"content": {"parts": [{"text": "OK"}]}}]}'])
+
+        def _fake_post(url, headers=None, json=None, stream=None, timeout=None):
+            captured_payload.update(json)
+            return _FakeResponse()
+
+        provider = GeminiLLMProvider(api_key="mock-key", model="gemini-2.5-flash")
+        with patch("requests.post", side_effect=_fake_post):
+            list(provider.generate_stream([{"role": "user", "content": "hi"}], max_new_tokens=10))
+        self.assertEqual(captured_payload["generationConfig"]["thinkingConfig"], {"thinkingBudget": 0})
+
+    def test_gemini_1_5_does_not_set_thinking_budget(self):
+        """Older Gemini models don't recognize thinkingConfig -- confirm the
+        field is only added for 2.5 models, not sent unconditionally."""
+        captured_payload = {}
+
+        class _FakeResponse:
+            status_code = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_lines(self, decode_unicode=True):
+                return iter(['data: {"candidates": [{"content": {"parts": [{"text": "OK"}]}}]}'])
+
+        def _fake_post(url, headers=None, json=None, stream=None, timeout=None):
+            captured_payload.update(json)
+            return _FakeResponse()
+
+        provider = GeminiLLMProvider(api_key="mock-key", model="gemini-1.5-flash")
+        with patch("requests.post", side_effect=_fake_post):
+            list(provider.generate_stream([{"role": "user", "content": "hi"}], max_new_tokens=10))
+        self.assertNotIn("thinkingConfig", captured_payload["generationConfig"])
+
     def test_fallback_primary_success(self):
         primary = MockLLMProvider("claude", ["Claude", " response"])
         fallback = MockLLMProvider("gemini", ["Gemini", " response"])
