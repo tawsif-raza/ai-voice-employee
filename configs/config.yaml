@@ -94,18 +94,18 @@ export:
 # Decoupled provider hierarchy. Overridden by environment variables
 # (LLM_PROVIDER, ANTHROPIC_MODEL, GEMINI_MODEL, GROQ_MODEL).
 #
-# `provider` is deliberately left unset here (not hardcoded to "fallback")
-# so that, absent an explicit LLM_PROVIDER env var, the provider is
-# auto-selected from whichever credentials are actually present --
-# see llm_provider._default_provider_mode(): "fallback" (paid, Claude
-# primary -> Gemini fallback) only when ANTHROPIC_API_KEY is genuinely
-# configured; "free_fallback" (Gemini primary -> Groq fallback, both
-# free-tier) when Gemini+Groq keys are present but no Claude key;
-# "gemini"/"groq" solo; else "local" (fully offline, zero cost). A
-# deployment that always wants one specific mode regardless of which
-# keys happen to be set should uncomment `provider:` below.
+# `provider` is deliberately left unset here (not hardcoded) so the mode
+# is auto-selected from whichever credentials are actually present --
+# see llm_provider._default_provider_mode(): "free_fallback" (Gemini
+# primary -> Groq fallback, both free-tier, no spend) whenever
+# GEMINI_API_KEY + GROQ_API_KEY are configured and there's no
+# ANTHROPIC_API_KEY -- which is this deployment's actual setup. Hardcoding
+# "free_fallback" here instead would break a zero-credential checkout
+# (every turn would raise, instead of gracefully using the local model),
+# so auto-detection is kept as the safe default. Uncomment `provider:`
+# below only if you want one fixed mode regardless of which keys are set.
 llm:
-  # provider: fallback
+  # provider: free_fallback
   claude:
     # Primary model when LLM_PROVIDER=fallback (paid). Claude 3.5 Haiku is
     # optimized for sub-300ms voice TTFT and strict phone-cadence
