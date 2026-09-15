@@ -129,7 +129,7 @@ def _llm_service_is_safe_for_concurrent_generation(llm_service) -> bool:
     False (conservative) for the plain local LLMService itself or any
     caller-injected/test-double object of unknown type.
     """
-    from llm_provider import ClaudeLLMProvider, FallbackLLMProvider, GeminiLLMProvider, LocalLLMProvider
+    from llm_provider import ClaudeLLMProvider, FallbackLLMProvider, GeminiLLMProvider, GroqLLMProvider, LocalLLMProvider
 
     if isinstance(llm_service, LocalLLMProvider):
         return False
@@ -137,7 +137,7 @@ def _llm_service_is_safe_for_concurrent_generation(llm_service) -> bool:
         return _llm_service_is_safe_for_concurrent_generation(
             llm_service.primary
         ) and _llm_service_is_safe_for_concurrent_generation(llm_service.fallback)
-    return isinstance(llm_service, (ClaudeLLMProvider, GeminiLLMProvider))
+    return isinstance(llm_service, (ClaudeLLMProvider, GeminiLLMProvider, GroqLLMProvider))
 
 
 def _resolve_max_concurrent_generations(configured_value: Optional[int], llm_service) -> int:
@@ -1743,9 +1743,13 @@ def build_conversation_manager(
     # provider injected directly.
     if llm_provider is not None:
         llm_service = llm_provider
-    elif os.environ.get("LLM_PROVIDER") in ("fallback", "claude", "gemini") or (
+    elif os.environ.get("LLM_PROVIDER") in ("fallback", "free_fallback", "claude", "gemini", "groq") or (
         os.environ.get("LLM_PROVIDER") != "local"
-        and (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GEMINI_API_KEY"))
+        and (
+            os.environ.get("ANTHROPIC_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GROQ_API_KEY")
+        )
     ):
         from llm_provider import build_llm_provider
 

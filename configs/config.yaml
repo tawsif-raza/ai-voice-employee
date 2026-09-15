@@ -91,21 +91,42 @@ export:
     - Q8_0
 
 # LLM Provider Configuration (src/inference/llm_provider.py).
-# Decoupled provider hierarchy: Claude Primary -> Gemini Fallback.
-# Overridden by environment variables (LLM_PROVIDER, ANTHROPIC_MODEL, GEMINI_MODEL).
+# Decoupled provider hierarchy. Overridden by environment variables
+# (LLM_PROVIDER, ANTHROPIC_MODEL, GEMINI_MODEL, GROQ_MODEL).
+#
+# `provider` is deliberately left unset here (not hardcoded to "fallback")
+# so that, absent an explicit LLM_PROVIDER env var, the provider is
+# auto-selected from whichever credentials are actually present --
+# see llm_provider._default_provider_mode(): "fallback" (paid, Claude
+# primary -> Gemini fallback) only when ANTHROPIC_API_KEY is genuinely
+# configured; "free_fallback" (Gemini primary -> Groq fallback, both
+# free-tier) when Gemini+Groq keys are present but no Claude key;
+# "gemini"/"groq" solo; else "local" (fully offline, zero cost). A
+# deployment that always wants one specific mode regardless of which
+# keys happen to be set should uncomment `provider:` below.
 llm:
-  provider: fallback
+  # provider: fallback
   claude:
-    # Primary model: Claude 3.5 Haiku is optimized for sub-300ms voice TTFT
-    # and strict phone-cadence instruction following.
+    # Primary model when LLM_PROVIDER=fallback (paid). Claude 3.5 Haiku is
+    # optimized for sub-300ms voice TTFT and strict phone-cadence
+    # instruction following.
     model: claude-3-5-haiku-latest
     timeout_seconds: 30
     max_tokens: 350
     temperature: 0.7
   gemini:
-    # Automatic fallback model: Gemini 2.5 Flash provides high concurrency,
-    # ultra-fast generation, and seamless rate-limit resilience.
+    # Free-tier eligible. Primary in "free_fallback" / "gemini" modes,
+    # automatic fallback in "fallback" mode. High concurrency, ultra-fast
+    # generation, seamless rate-limit resilience.
     model: gemini-2.5-flash
+    timeout_seconds: 30
+    max_tokens: 350
+    temperature: 0.7
+  groq:
+    # Free-tier. Fallback in "free_fallback" mode, or standalone in "groq"
+    # mode. qwen/qwen3.8-27b avoids Groq's reasoning-model token-budget
+    # trap (see GroqLLMProvider's docstring / docs/FREE_TIER_SETUP.md).
+    model: qwen/qwen3.8-27b
     timeout_seconds: 30
     max_tokens: 350
     temperature: 0.7

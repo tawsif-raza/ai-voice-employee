@@ -69,6 +69,7 @@ from pydantic import BaseModel, Field, field_validator
 # importing across src/ subpackages.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "voice"))
+_INFERENCE_DIR = str(Path(__file__).resolve().parent.parent / "inference")
 from action_models import ANONYMOUS_CONTEXT, AuthContext  # noqa: E402
 from audit import AuditLogger, SecurityEventDetector  # noqa: E402
 from conversation_manager import ConversationManager, build_conversation_manager  # noqa: E402
@@ -197,8 +198,9 @@ def _log_credential_readiness() -> None:
     need none of these), it's operator-facing information.
     """
     required = {
-        "ANTHROPIC_API_KEY": "Claude LLM provider",
-        "GEMINI_API_KEY": "Gemini LLM provider",
+        "ANTHROPIC_API_KEY": "Claude LLM provider (paid)",
+        "GEMINI_API_KEY": "Gemini LLM provider (free-tier)",
+        "GROQ_API_KEY": "Groq LLM provider (free-tier, see docs/FREE_TIER_SETUP.md)",
         "DEEPGRAM_API_KEY": "Deepgram STT (voice pipeline)",
         "ELEVENLABS_API_KEY": "ElevenLabs TTS (voice pipeline)",
         "TWILIO_ACCOUNT_SID": "Twilio telephony",
@@ -443,10 +445,20 @@ def voice_health() -> dict:
     elevenlabs_configured = bool(os.environ.get("ELEVENLABS_API_KEY"))
     claude_configured = bool(os.environ.get("ANTHROPIC_API_KEY"))
     gemini_configured = bool(os.environ.get("GEMINI_API_KEY"))
+    groq_configured = bool(os.environ.get("GROQ_API_KEY"))
     twilio_account_configured = bool(os.environ.get("TWILIO_ACCOUNT_SID"))
     twilio_signature_enforced = is_validation_configured(os.environ.get("TWILIO_AUTH_TOKEN", ""))
     mock_mode = os.environ.get("VOICE_MOCK_SERVICES", "false").strip().lower() == "true"
     active_calls = len(_voice_call_manager._active_calls) if _voice_call_manager else 0
+
+    # Reports the ACTUAL resolved provider mode, not just the raw env var --
+    # LLM_PROVIDER is frequently unset, and the effective mode then depends
+    # on which credentials are present (see llm_provider._default_provider_mode()).
+    if _INFERENCE_DIR not in sys.path:
+        sys.path.insert(0, _INFERENCE_DIR)
+    from llm_provider import load_llm_config
+
+    effective_llm_provider = load_llm_config().provider
 
     return {
         "status": "ok",
@@ -458,7 +470,8 @@ def voice_health() -> dict:
             "elevenlabs_configured": elevenlabs_configured or mock_mode,
             "claude_configured": claude_configured,
             "gemini_configured": gemini_configured,
-            "llm_provider": os.environ.get("LLM_PROVIDER", "fallback"),
+            "groq_configured": groq_configured,
+            "llm_provider": effective_llm_provider,
             "twilio_account_configured": twilio_account_configured,
             "twilio_signature_enforced": twilio_signature_enforced,
         },

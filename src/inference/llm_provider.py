@@ -2,13 +2,20 @@
 LLM Provider Abstraction Layer (src/inference/llm_provider.py)
 
 Decouples LLM reasoning from any specific model provider, supporting:
-1. Claude (Anthropic) as Primary provider (Claude 3.5 Haiku / Sonnet).
+1. Claude (Anthropic) as Primary provider (Claude 3.5 Haiku / Sonnet). Paid;
+   only used when ANTHROPIC_API_KEY is actually configured.
 2. Gemini (Google) as Automatic Fallback provider (Gemini 2.5 Flash / 2.0 Flash)
    when Claude quota is exhausted, rate-limited (HTTP 429), or overloaded (HTTP 529).
-3. Local (Qwen 2.5) provider preserving full backward compatibility with existing
-   in-repo models and offline tests.
-4. FallbackLLMProvider orchestrating seamless failover without coupling business
-   logic to either vendor.
+   Free-tier eligible.
+3. Groq as a free-tier LLM option (OpenAI-compatible API) -- either standalone
+   ("groq") or paired with Gemini as "free_fallback" (Gemini primary, Groq
+   fallback) so a deployment with no ANTHROPIC_API_KEY never needs to spend
+   money. See docs/FREE_TIER_SETUP.md.
+4. Local (Qwen 2.5) provider preserving full backward compatibility with existing
+   in-repo models and offline tests -- the default when no API key is configured
+   at all; fully offline, zero cost.
+5. FallbackLLMProvider orchestrating seamless failover without coupling business
+   logic to any specific vendor (used by both "fallback" and "free_fallback").
 
 Contract:
 Every provider implements `generate_stream(messages, **kwargs)` yielding text tokens
@@ -407,6 +414,132 @@ class GeminiLLMProvider(BaseLLMProvider):
         }
 
 
+# ── Groq Provider ────────────────────────────────────────────────────────────
+
+
+class GroqLLMProvider(BaseLLMProvider):
+    """
+    Groq provider (free-tier LLM option -- see docs/FREE_TIER_SETUP.md).
+    OpenAI-compatible chat-completions API, so no message-format conversion
+    is needed (unlike Claude/Gemini): messages are passed through as-is.
+
+    Default model deliberately avoids Groq's "reasoning" models (e.g.
+    openai/gpt-oss-*): those spend part of max_tokens on a hidden
+    `reasoning` field non-deterministically and can return a genuinely
+    empty `content` within a modest token budget -- the exact same class
+    of defect fixed for Gemini 2.5's thinking budget (see GeminiLLMProvider
+    above / docs/phase1.4-external-integration-report.md Section 13).
+    qwen/qwen3.8-27b was verified live to have no such reasoning overhead.
+    """
+
+    provider_name = "groq"
+    DEFAULT_MODEL = "qwen/qwen3.8-27b"
+    API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        timeout_seconds: float = 30.0,
+        default_max_tokens: int = 350,
+        default_temperature: float = 0.7,
+    ):
+        self.api_key = api_key or os.environ.get("GROQ_API_KEY", "")
+        self.model = model or os.environ.get("GROQ_MODEL", self.DEFAULT_MODEL)
+        self.timeout_seconds = timeout_seconds
+        self.default_max_tokens = default_max_tokens
+        self.default_temperature = default_temperature
+
+    def generate_stream(
+        self,
+        messages: list[dict],
+        max_new_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        **kwargs,
+    ) -> Iterator[Union[str, dict]]:
+        import requests
+
+        if not self.api_key:
+            raise LLMProviderError("GROQ_API_KEY is not configured", provider=self.provider_name)
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": msg.get("role", "user"), "content": msg.get("content", "")} for msg in messages],
+            "max_tokens": max_new_tokens or self.default_max_tokens,
+            "temperature": temperature if temperature is not None else self.default_temperature,
+            "stream": True,
+        }
+        if top_p is not None:
+            payload["top_p"] = top_p
+
+        start_time = time.perf_counter()
+        accumulated_text = []
+
+        try:
+            with requests.post(
+                self.API_URL,
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json=payload,
+                stream=True,
+                timeout=self.timeout_seconds,
+            ) as resp:
+                if resp.status_code == 429:
+                    error_msg = resp.text
+                    try:
+                        error_msg = resp.json().get("error", {}).get("message", error_msg)
+                    except Exception:
+                        pass
+                    raise LLMQuotaExceededError(
+                        f"Groq rate limit/quota exhausted: {error_msg}", provider=self.provider_name
+                    )
+
+                if resp.status_code in (503, 500):
+                    raise LLMOverloadedError(
+                        f"Groq server error (status {resp.status_code})", provider=self.provider_name
+                    )
+
+                if resp.status_code != 200:
+                    raise LLMProviderError(
+                        f"Groq API failed with status {resp.status_code}: {resp.text}",
+                        provider=self.provider_name,
+                        status_code=resp.status_code,
+                    )
+
+                for line in resp.iter_lines(decode_unicode=True):
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = event.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        text_chunk = delta.get("content", "")
+                        if text_chunk:
+                            accumulated_text.append(text_chunk)
+                            yield text_chunk
+
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            raise LLMProviderError(
+                f"Groq network connection error: {exc}", provider=self.provider_name, retryable=True
+            ) from exc
+
+        latency_ms = (time.perf_counter() - start_time) * 1000
+        full_text = "".join(accumulated_text).strip()
+        yield {
+            "text": full_text,
+            "latency_ms": latency_ms,
+            "provider": self.provider_name,
+            "model": self.model,
+        }
+
+
 # ── Local Model (Qwen) Provider ─────────────────────────────────────────────
 
 
@@ -612,6 +745,7 @@ class LLMRuntimeConfig:
     provider: str
     claude: ProviderRuntimeConfig
     gemini: ProviderRuntimeConfig
+    groq: ProviderRuntimeConfig
     fallback_cooldown_seconds: float
 
 
@@ -632,17 +766,10 @@ def load_llm_config(config_path: Optional[Path] = None) -> LLMRuntimeConfig:
 
     claude_cfg = yaml_cfg.get("claude", {})
     gemini_cfg = yaml_cfg.get("gemini", {})
+    groq_cfg = yaml_cfg.get("groq", {})
     fallback_cfg = yaml_cfg.get("fallback", {})
 
-    provider = (
-        (
-            os.environ.get("LLM_PROVIDER")
-            or yaml_cfg.get("provider")
-            or ("fallback" if (os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("GEMINI_API_KEY")) else "local")
-        )
-        .strip()
-        .lower()
-    )
+    provider = (os.environ.get("LLM_PROVIDER") or yaml_cfg.get("provider") or _default_provider_mode()).strip().lower()
 
     claude_model = os.environ.get("ANTHROPIC_MODEL") or claude_cfg.get("model") or "claude-3-5-haiku-latest"
     claude_timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS") or claude_cfg.get("timeout_seconds") or 30.0)
@@ -654,6 +781,11 @@ def load_llm_config(config_path: Optional[Path] = None) -> LLMRuntimeConfig:
     gemini_max_tokens = int(os.environ.get("LLM_MAX_TOKENS") or gemini_cfg.get("max_tokens") or 350)
     gemini_temp = float(os.environ.get("LLM_TEMPERATURE") or gemini_cfg.get("temperature") or 0.7)
 
+    groq_model = os.environ.get("GROQ_MODEL") or groq_cfg.get("model") or "qwen/qwen3.8-27b"
+    groq_timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS") or groq_cfg.get("timeout_seconds") or 30.0)
+    groq_max_tokens = int(os.environ.get("LLM_MAX_TOKENS") or groq_cfg.get("max_tokens") or 350)
+    groq_temp = float(os.environ.get("LLM_TEMPERATURE") or groq_cfg.get("temperature") or 0.7)
+
     cooldown = float(os.environ.get("LLM_FALLBACK_COOLDOWN_SECONDS") or fallback_cfg.get("cooldown_seconds") or 60.0)
 
     return LLMRuntimeConfig(
@@ -664,8 +796,41 @@ def load_llm_config(config_path: Optional[Path] = None) -> LLMRuntimeConfig:
         gemini=ProviderRuntimeConfig(
             model=gemini_model, timeout_seconds=gemini_timeout, max_tokens=gemini_max_tokens, temperature=gemini_temp
         ),
+        groq=ProviderRuntimeConfig(
+            model=groq_model, timeout_seconds=groq_timeout, max_tokens=groq_max_tokens, temperature=groq_temp
+        ),
         fallback_cooldown_seconds=cooldown,
     )
+
+
+def _default_provider_mode() -> str:
+    """
+    Auto-selects a provider mode from whichever credentials are actually
+    present, when LLM_PROVIDER is not explicitly set. Prefers a genuinely
+    free path over the local model whenever a free API key is available,
+    without ever silently defaulting to the paid Claude path:
+      - ANTHROPIC_API_KEY + GEMINI_API_KEY  -> "fallback" (Claude primary,
+        Gemini fallback) -- unchanged from before; only chosen when a real
+        Claude key is present, i.e. the operator has opted into paying.
+      - GEMINI_API_KEY + GROQ_API_KEY       -> "free_fallback" (Gemini
+        primary, Groq fallback -- both free-tier, no Claude spend).
+      - GEMINI_API_KEY only                 -> "gemini"
+      - GROQ_API_KEY only                   -> "groq"
+      - none of the above                   -> "local" (Qwen2.5-0.5B,
+        fully offline, zero network, zero cost -- the original default).
+    """
+    has_claude = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
+    has_groq = bool(os.environ.get("GROQ_API_KEY"))
+    if has_claude and has_gemini:
+        return "fallback"
+    if has_gemini and has_groq:
+        return "free_fallback"
+    if has_gemini:
+        return "gemini"
+    if has_groq:
+        return "groq"
+    return "local"
 
 
 def build_llm_provider(
@@ -680,48 +845,68 @@ def build_llm_provider(
     Reads declarative configuration from configs/config.yaml and environment variables.
 
     Provider modes:
-      - "fallback" (default in production): Claude Primary -> Gemini Fallback
+      - "fallback" (Claude Primary -> Gemini Fallback; paid, auto-selected
+        only when both ANTHROPIC_API_KEY and GEMINI_API_KEY are set)
+      - "free_fallback" (Gemini Primary -> Groq Fallback; both free-tier,
+        auto-selected when GEMINI_API_KEY and GROQ_API_KEY are set but no
+        ANTHROPIC_API_KEY)
       - "claude": Claude only
       - "gemini": Gemini only
-      - "local": Local Qwen model (HuggingFace)
+      - "groq": Groq only (free-tier)
+      - "local": Local Qwen model (HuggingFace) -- default when no API key
+        is configured; fully offline, zero cost.
+    See _default_provider_mode() for the exact auto-selection rule applied
+    when LLM_PROVIDER is not explicitly set.
     """
     config = load_llm_config(config_path)
     mode = (provider_mode or config.provider).strip().lower()
 
-    if mode == "fallback":
-        primary = ClaudeLLMProvider(
-            model=config.claude.model,
-            timeout_seconds=config.claude.timeout_seconds,
-            default_max_tokens=config.claude.max_tokens,
-            default_temperature=config.claude.temperature,
-        )
-        fallback = GeminiLLMProvider(
-            model=config.gemini.model,
-            timeout_seconds=config.gemini.timeout_seconds,
-            default_max_tokens=config.gemini.max_tokens,
-            default_temperature=config.gemini.temperature,
-        )
-        return FallbackLLMProvider(
-            primary=primary,
-            fallback=fallback,
-            cooldown_seconds=config.fallback_cooldown_seconds,
-            audit_logger=audit_logger,
-            metrics=metrics,
-        )
-    elif mode == "claude":
+    def _claude() -> ClaudeLLMProvider:
         return ClaudeLLMProvider(
             model=config.claude.model,
             timeout_seconds=config.claude.timeout_seconds,
             default_max_tokens=config.claude.max_tokens,
             default_temperature=config.claude.temperature,
         )
-    elif mode == "gemini":
+
+    def _gemini() -> GeminiLLMProvider:
         return GeminiLLMProvider(
             model=config.gemini.model,
             timeout_seconds=config.gemini.timeout_seconds,
             default_max_tokens=config.gemini.max_tokens,
             default_temperature=config.gemini.temperature,
         )
+
+    def _groq() -> GroqLLMProvider:
+        return GroqLLMProvider(
+            model=config.groq.model,
+            timeout_seconds=config.groq.timeout_seconds,
+            default_max_tokens=config.groq.max_tokens,
+            default_temperature=config.groq.temperature,
+        )
+
+    if mode == "fallback":
+        return FallbackLLMProvider(
+            primary=_claude(),
+            fallback=_gemini(),
+            cooldown_seconds=config.fallback_cooldown_seconds,
+            audit_logger=audit_logger,
+            metrics=metrics,
+        )
+    elif mode == "free_fallback":
+        return FallbackLLMProvider(
+            primary=_gemini(),
+            fallback=_groq(),
+            cooldown_seconds=config.fallback_cooldown_seconds,
+            audit_logger=audit_logger,
+            metrics=metrics,
+        )
+    elif mode == "claude":
+        return _claude()
+    elif mode == "gemini":
+        return _gemini()
+    elif mode == "groq":
+        return _groq()
     elif mode == "local":
         return LocalLLMProvider(**kwargs)
     else:

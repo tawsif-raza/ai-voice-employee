@@ -22,7 +22,10 @@ from llm_provider import (
     ClaudeLLMProvider,
     FallbackLLMProvider,
     GeminiLLMProvider,
+    GroqLLMProvider,
+    LLMProviderError,
     LLMQuotaExceededError,
+    _default_provider_mode,
     build_llm_provider,
 )
 
@@ -204,6 +207,116 @@ class TestLLMProvider(unittest.TestCase):
             self.assertIsInstance(provider, FallbackLLMProvider)
             self.assertIsInstance(provider.primary, ClaudeLLMProvider)
             self.assertIsInstance(provider.fallback, GeminiLLMProvider)
+
+    def test_factory_groq_mode(self):
+        with patch.dict("os.environ", {"LLM_PROVIDER": "groq", "GROQ_API_KEY": "k3"}):
+            provider = build_llm_provider()
+            self.assertIsInstance(provider, GroqLLMProvider)
+
+    def test_factory_free_fallback_mode(self):
+        """free_fallback = Gemini primary, Groq fallback -- both free-tier,
+        no Claude/paid dependency at all."""
+        with patch.dict("os.environ", {"LLM_PROVIDER": "free_fallback", "GEMINI_API_KEY": "k2", "GROQ_API_KEY": "k3"}):
+            provider = build_llm_provider()
+            self.assertIsInstance(provider, FallbackLLMProvider)
+            self.assertIsInstance(provider.primary, GeminiLLMProvider)
+            self.assertIsInstance(provider.fallback, GroqLLMProvider)
+
+    def test_default_provider_mode_prefers_paid_fallback_only_with_claude_key(self):
+        with patch.dict(
+            "os.environ", {"ANTHROPIC_API_KEY": "k1", "GEMINI_API_KEY": "k2"}, clear=True
+        ):
+            self.assertEqual(_default_provider_mode(), "fallback")
+
+    def test_default_provider_mode_prefers_free_fallback_without_claude_key(self):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "k2", "GROQ_API_KEY": "k3"}, clear=True):
+            self.assertEqual(_default_provider_mode(), "free_fallback")
+
+    def test_default_provider_mode_gemini_only(self):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "k2"}, clear=True):
+            self.assertEqual(_default_provider_mode(), "gemini")
+
+    def test_default_provider_mode_groq_only(self):
+        with patch.dict("os.environ", {"GROQ_API_KEY": "k3"}, clear=True):
+            self.assertEqual(_default_provider_mode(), "groq")
+
+    def test_default_provider_mode_no_keys_is_local(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(_default_provider_mode(), "local")
+
+    def test_groq_streams_and_stops_on_done(self):
+        captured_payload = {}
+
+        class _FakeResponse:
+            status_code = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_lines(self, decode_unicode=True):
+                return iter(
+                    [
+                        'data: {"choices": [{"delta": {"role": "assistant", "content": ""}}]}',
+                        'data: {"choices": [{"delta": {"content": "Hello"}}]}',
+                        'data: {"choices": [{"delta": {"content": " there"}}]}',
+                        'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}',
+                        "data: [DONE]",
+                        # A malformed/trailing line after [DONE] must be ignored, not crash.
+                        'data: {"choices": [{"delta": {"content": "should not appear"}}]}',
+                    ]
+                )
+
+        def _fake_post(url, headers=None, json=None, stream=None, timeout=None):
+            captured_payload.update(json)
+            self.assertEqual(headers["Authorization"], "Bearer test-groq-key")
+            return _FakeResponse()
+
+        provider = GroqLLMProvider(api_key="test-groq-key", model="qwen/qwen3.8-27b")
+        with patch("requests.post", side_effect=_fake_post):
+            items = list(
+                provider.generate_stream(
+                    [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "hi"}]
+                )
+            )
+        text_chunks = [x for x in items if isinstance(x, str)]
+        final = [x for x in items if isinstance(x, dict)][0]
+        self.assertEqual(text_chunks, ["Hello", " there"])
+        self.assertEqual(final["text"], "Hello there")
+        self.assertEqual(final["provider"], "groq")
+        # Messages are passed through as-is (OpenAI-compatible), no conversion needed.
+        self.assertEqual(
+            captured_payload["messages"],
+            [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "hi"}],
+        )
+
+    def test_groq_missing_api_key_raises_without_network_call(self):
+        provider = GroqLLMProvider(api_key="")
+        with patch("requests.post") as mock_post:
+            with self.assertRaises(LLMProviderError):
+                list(provider.generate_stream([{"role": "user", "content": "hi"}]))
+        mock_post.assert_not_called()
+
+    def test_groq_rate_limit_raises_quota_exceeded(self):
+        class _FakeResponse:
+            status_code = 429
+            text = '{"error": {"message": "rate limited"}}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def json(self):
+                return {"error": {"message": "rate limited"}}
+
+        provider = GroqLLMProvider(api_key="test-groq-key")
+        with patch("requests.post", return_value=_FakeResponse()):
+            with self.assertRaises(LLMQuotaExceededError):
+                list(provider.generate_stream([{"role": "user", "content": "hi"}]))
 
     def test_conversation_manager_with_llm_provider(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))

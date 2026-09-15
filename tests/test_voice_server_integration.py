@@ -154,6 +154,8 @@ class TestVoiceHealthEndpoint(unittest.TestCase):
                 "TWILIO_AUTH_TOKEN",
                 "ANTHROPIC_API_KEY",
                 "GEMINI_API_KEY",
+                "GROQ_API_KEY",
+                "LLM_PROVIDER",
                 "VOICE_MOCK_SERVICES",
             )
         }
@@ -175,6 +177,22 @@ class TestVoiceHealthEndpoint(unittest.TestCase):
         self.assertFalse(providers["twilio_signature_enforced"])
         self.assertFalse(providers["claude_configured"])
         self.assertFalse(providers["gemini_configured"])
+        self.assertFalse(providers["groq_configured"])
+        # No credentials at all -> the free, fully-offline local model, not
+        # a hardcoded display value (see llm_provider._default_provider_mode()).
+        self.assertEqual(providers["llm_provider"], "local")
+
+    def test_free_tier_credentials_resolve_to_free_fallback(self):
+        """Gemini + Groq (both free) with no Claude key must resolve to
+        free_fallback, never silently to the paid "fallback" mode."""
+        os.environ["GEMINI_API_KEY"] = "fake-gemini-key-for-test"
+        os.environ["GROQ_API_KEY"] = "fake-groq-key-for-test"
+        resp = self.client.get("/health/voice")
+        providers = resp.json()["providers"]
+        self.assertTrue(providers["gemini_configured"])
+        self.assertTrue(providers["groq_configured"])
+        self.assertFalse(providers["claude_configured"])
+        self.assertEqual(providers["llm_provider"], "free_fallback")
 
     def test_twilio_credentials_configured(self):
         os.environ["TWILIO_ACCOUNT_SID"] = "AC_fake_for_test"

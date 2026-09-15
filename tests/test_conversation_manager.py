@@ -39,6 +39,7 @@ from llm_provider import (  # noqa: E402
     ClaudeLLMProvider,
     FallbackLLMProvider,
     GeminiLLMProvider,
+    GroqLLMProvider,
     LocalLLMProvider,
 )
 
@@ -946,6 +947,13 @@ class TestLlmServiceIsSafeForConcurrentGeneration(unittest.TestCase):
 
     def test_gemini_provider_is_safe(self):
         self.assertTrue(_llm_service_is_safe_for_concurrent_generation(GeminiLLMProvider(api_key="test")))
+
+    def test_groq_provider_is_safe(self):
+        self.assertTrue(_llm_service_is_safe_for_concurrent_generation(GroqLLMProvider(api_key="test")))
+
+    def test_free_fallback_of_gemini_and_groq_is_safe(self):
+        fb = FallbackLLMProvider(primary=GeminiLLMProvider(api_key="test"), fallback=GroqLLMProvider(api_key="test"))
+        self.assertTrue(_llm_service_is_safe_for_concurrent_generation(fb))
 
     def test_local_provider_is_never_safe_despite_implementing_base_provider(self):
         local = LocalLLMProvider(llm_service=FakeLLMService())

@@ -500,6 +500,7 @@ class TestCredentialReadinessLogging(unittest.TestCase):
     _CRED_NAMES = (
         "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY",
+        "GROQ_API_KEY",
         "DEEPGRAM_API_KEY",
         "ELEVENLABS_API_KEY",
         "TWILIO_ACCOUNT_SID",
@@ -524,7 +525,7 @@ class TestCredentialReadinessLogging(unittest.TestCase):
         joined = " ".join(captured.output)
         self.assertIn("ANTHROPIC_API_KEY", joined)
         self.assertIn("TWILIO_AUTH_TOKEN", joined)
-        self.assertIn("6/6", joined)
+        self.assertIn(f"{len(self._CRED_NAMES)}/{len(self._CRED_NAMES)}", joined)
 
     def test_configured_credentials_are_not_leaked_by_value(self):
         fake_values = {name: f"OBVIOUSLY-FAKE-SECRET-{name}" for name in self._CRED_NAMES}
@@ -533,7 +534,7 @@ class TestCredentialReadinessLogging(unittest.TestCase):
         with self.assertLogs("ai_voice_agent.startup", level="INFO") as captured:
             server._log_credential_readiness()
         joined = " ".join(captured.output)
-        self.assertIn("all 6", joined)
+        self.assertIn(f"all {len(self._CRED_NAMES)}", joined)
         for value in fake_values.values():
             self.assertNotIn(value, joined)
 
@@ -547,7 +548,7 @@ class TestCredentialReadinessLogging(unittest.TestCase):
         joined = " ".join(captured.output)
         self.assertNotIn("ANTHROPIC_API_KEY (Claude", joined)
         self.assertIn("GEMINI_API_KEY", joined)
-        self.assertIn("5/6", joined)
+        self.assertIn(f"{len(self._CRED_NAMES) - 1}/{len(self._CRED_NAMES)}", joined)
 
 
 if __name__ == "__main__":
