@@ -84,6 +84,7 @@ from stt_service import DeepgramSTTService, MockSTTService  # noqa: E402
 from telephony_models import TwilioEventType, parse_twilio_frame  # noqa: E402
 from tracing import SpanAttributes, TracingConfig, init_tracing, shutdown_tracing  # noqa: E402  (Phase 14)
 from tts_service import ElevenLabsTTSService, MockTTSService  # noqa: E402
+from twilio_signature import is_validation_configured, validate_signature  # noqa: E402
 from voice_pipeline import VoiceCallManager  # noqa: E402
 
 configure_production_logging()
@@ -186,9 +187,44 @@ def resolve_identity(request: Request, authorization: Optional[str] = Header(def
         raise HTTPException(status_code=401, detail="Invalid or missing credentials.")
 
 
+def _log_credential_readiness() -> None:
+    """
+    Phase 1.4 (docs/phase1.4-external-integration-report.md Section 3):
+    tells the operator which external-integration credentials are missing
+    at a glance, without ever printing a value -- only presence booleans.
+    Deliberately a plain log line, not an exception: a missing credential
+    here is not a startup failure (e.g. local-model/mock-only deployments
+    need none of these), it's operator-facing information.
+    """
+    required = {
+        "ANTHROPIC_API_KEY": "Claude LLM provider",
+        "GEMINI_API_KEY": "Gemini LLM provider",
+        "DEEPGRAM_API_KEY": "Deepgram STT (voice pipeline)",
+        "ELEVENLABS_API_KEY": "ElevenLabs TTS (voice pipeline)",
+        "TWILIO_ACCOUNT_SID": "Twilio telephony",
+        "TWILIO_AUTH_TOKEN": "Twilio webhook signature validation",
+    }
+    missing = [f"{name} ({purpose})" for name, purpose in required.items() if not os.environ.get(name)]
+    if missing:
+        logging.getLogger("ai_voice_agent.startup").info(
+            "Credential readiness: %d/%d external credentials NOT configured -- %s. "
+            "This is informational only; each integration degrades to its own documented "
+            "fallback (mock services / local model / no signature enforcement) rather than "
+            "failing startup. See docs/phase1.4-external-integration-report.md.",
+            len(missing),
+            len(required),
+            ", ".join(missing),
+        )
+    else:
+        logging.getLogger("ai_voice_agent.startup").info(
+            "Credential readiness: all %d external credentials configured.", len(required)
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _conversation_manager, _database, _voice_call_manager, _tracer_provider
+    _log_credential_readiness()
     # Phase 14: initialize tracing early so auto-instrumentation covers startup.
     _tracer_provider = init_tracing(TracingConfig.from_env())
     # Phase 14: auto-instrument FastAPI (creates root spans for every HTTP request).
@@ -407,6 +443,8 @@ def voice_health() -> dict:
     elevenlabs_configured = bool(os.environ.get("ELEVENLABS_API_KEY"))
     claude_configured = bool(os.environ.get("ANTHROPIC_API_KEY"))
     gemini_configured = bool(os.environ.get("GEMINI_API_KEY"))
+    twilio_account_configured = bool(os.environ.get("TWILIO_ACCOUNT_SID"))
+    twilio_signature_enforced = is_validation_configured(os.environ.get("TWILIO_AUTH_TOKEN", ""))
     mock_mode = os.environ.get("VOICE_MOCK_SERVICES", "false").strip().lower() == "true"
     active_calls = len(_voice_call_manager._active_calls) if _voice_call_manager else 0
 
@@ -421,6 +459,8 @@ def voice_health() -> dict:
             "claude_configured": claude_configured,
             "gemini_configured": gemini_configured,
             "llm_provider": os.environ.get("LLM_PROVIDER", "fallback"),
+            "twilio_account_configured": twilio_account_configured,
+            "twilio_signature_enforced": twilio_signature_enforced,
         },
     }
 
@@ -672,7 +712,37 @@ async def twiml_inbound_call(request: Request):
     media stream over WebSocket to /ws/call.
     Dynamically respects TWILIO_MEDIA_STREAM_URL / VOICE_PUBLIC_URL environment variables,
     reverse proxy headers (X-Forwarded-Host, X-Forwarded-Proto), or direct Host headers.
+
+    Phase 1.4 (docs/phase1.4-external-integration-report.md Section 2/3):
+    validates the X-Twilio-Signature header whenever TWILIO_AUTH_TOKEN is
+    configured -- matching this codebase's "presence of real config enables
+    the real check" convention (see is_validation_configured()). A dev/mock
+    deployment with no TWILIO_AUTH_TOKEN set is never blocked by a check it
+    has no way to satisfy.
     """
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    if is_validation_configured(auth_token):
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", request.url.netloc)
+        full_url = f"{proto}://{host}{request.url.path}"
+        if request.url.query:
+            full_url += f"?{request.url.query}"
+        if request.method == "POST":
+            form = await request.form()
+            signed_params = {k: str(v) for k, v in form.items()}
+        else:
+            signed_params = {}
+        received_signature = request.headers.get("x-twilio-signature", "")
+        if not validate_signature(auth_token, full_url, signed_params, received_signature):
+            _error_logger.warning("Rejected /twiml/inbound-call request: missing or invalid X-Twilio-Signature.")
+            _audit_logger.record(
+                EventType.AUTH_FAILURE,
+                outcome="denied",
+                actor="twilio_webhook",
+                reason="Invalid or missing X-Twilio-Signature on /twiml/inbound-call",
+            )
+            raise HTTPException(status_code=403, detail="Invalid signature.")
+
     public_stream_url = os.environ.get("TWILIO_MEDIA_STREAM_URL") or os.environ.get("VOICE_PUBLIC_URL")
     if public_stream_url:
         stream_url = public_stream_url.strip()
@@ -714,6 +784,34 @@ async def websocket_call(websocket: WebSocket):
     if _voice_call_manager is None:
         await websocket.close(code=1013)  # Try again later / Service Unavailable
         return
+
+    # Phase 1.4: best-effort X-Twilio-Signature check on the WS upgrade
+    # request, mirroring /twiml/inbound-call's enforcement. Twilio signs
+    # the Media Streams WebSocket upgrade the same way it signs a normal
+    # webhook, but with no POST body -- there is no way to verify that
+    # detail against a real Twilio connection without live traffic (see
+    # docs/phase1.4-external-integration-report.md's Twilio section), so
+    # this is documented as best-effort, not a guaranteed-correct
+    # implementation of an undocumented-here protocol detail.
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    if is_validation_configured(auth_token):
+        proto = "https" if websocket.url.scheme == "wss" else "http"
+        proto = websocket.headers.get("x-forwarded-proto") or proto
+        host = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", websocket.url.netloc)
+        full_url = f"{proto}://{host}{websocket.url.path}"
+        if websocket.url.query:
+            full_url += f"?{websocket.url.query}"
+        received_signature = websocket.headers.get("x-twilio-signature", "")
+        if not validate_signature(auth_token, full_url, {}, received_signature):
+            _error_logger.warning("Rejected /ws/call connection: missing or invalid X-Twilio-Signature.")
+            _audit_logger.record(
+                EventType.AUTH_FAILURE,
+                outcome="denied",
+                actor="twilio_webhook",
+                reason="Invalid or missing X-Twilio-Signature on /ws/call",
+            )
+            await websocket.close(code=1008)  # Policy Violation
+            return
 
     await websocket.accept()
 

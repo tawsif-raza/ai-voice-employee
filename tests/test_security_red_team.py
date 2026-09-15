@@ -465,6 +465,41 @@ class TestConfigurationTamperingFailsSafe(unittest.TestCase):
         config = load_reliability_config(config_path="/nonexistent/path/reliability.yaml")
         self.assertEqual(config.max_concurrent_generations, 1)
 
+    def test_missing_reliability_yaml_stt_reconnect_uses_builtin_defaults(self):
+        """Phase 1.2 Test 9: stt.max_reconnect_attempts/reconnect_backoff_seconds
+        are now configurable (voice_pipeline.py), but must fall back to the
+        exact values that used to be hardcoded when the file is missing."""
+        config = load_reliability_config(config_path="/nonexistent/path/reliability.yaml")
+        self.assertEqual(config.stt.max_attempts, 3)
+        self.assertEqual(config.stt.backoff_seconds, 1.0)
+
+    def test_malformed_reliability_yaml_stt_reconnect_falls_back_to_safe_defaults(self):
+        import tempfile
+
+        path = Path(tempfile.gettempdir()) / "test_malformed_reliability_stt.yaml"
+        path.write_text("not: [valid, yaml, structure: {{{", encoding="utf-8")
+        try:
+            config = load_reliability_config(config_path=str(path))
+            self.assertEqual(config.stt.max_attempts, 3)
+            self.assertEqual(config.stt.backoff_seconds, 1.0)
+        finally:
+            path.unlink()
+
+    def test_partial_reliability_yaml_overrides_only_stt_max_attempts(self):
+        """A deployment can override just one stt sub-key without needing to
+        respecify the other (mirrors the existing llm/rag/tools partial-override
+        contract already relied on elsewhere in this file)."""
+        import tempfile
+
+        path = Path(tempfile.gettempdir()) / "test_partial_reliability_stt.yaml"
+        path.write_text("reliability:\n  stt:\n    max_reconnect_attempts: 5\n", encoding="utf-8")
+        try:
+            config = load_reliability_config(config_path=str(path))
+            self.assertEqual(config.stt.max_attempts, 5)
+            self.assertEqual(config.stt.backoff_seconds, 1.0)  # untouched key keeps its default
+        finally:
+            path.unlink()
+
 
 # ── Idempotency Key Reuse Across Different Params (plan.md Step 11.13) ──────
 

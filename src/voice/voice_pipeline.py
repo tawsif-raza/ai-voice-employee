@@ -29,6 +29,7 @@ import logging
 import time
 from typing import Any, AsyncIterator, Callable, Optional
 
+from reliability_config import load_reliability_config
 from stt_service import BaseSTTService, STTEventType
 from telephony_models import (
     CallSession,
@@ -43,6 +44,20 @@ from tts_service import BaseTTSService
 from voice_logging import voice_logger
 
 logger = logging.getLogger("ai_voice_agent.voice.pipeline")
+
+# Stability fix (Phase 16.2): bounds process_stt_events()'s reconnect
+# loop below -- a fixed, small ceiling with a fixed backoff, checked
+# against self._is_active on every iteration, so a permanently-broken
+# STT dependency gives up deterministically instead of looping forever,
+# and a call that ends normally (handle_stop() -> _is_active=False)
+# is never mistaken for a connection to reconnect. Configurable via
+# configs/reliability.yaml's `stt` section (Phase 1.2 Test 9) -- a
+# missing/malformed file falls back to these exact values (see
+# load_reliability_config()'s fail-safe-not-fail-closed contract), so
+# this is not a behavior change, just an exposed knob.
+_stt_reliability = load_reliability_config().stt
+_MAX_STT_RECONNECT_ATTEMPTS = _stt_reliability.max_attempts
+_STT_RECONNECT_BACKOFF_SECONDS = _stt_reliability.backoff_seconds
 
 
 class VoiceCallHandler:
@@ -175,58 +190,127 @@ class VoiceCallHandler:
     async def process_stt_events(self) -> None:
         """
         Asynchronously process incoming STT events (VAD, partials, finals).
+
+        Bounded reconnect (Phase 16.2 stability fix): before this fix,
+        once the STT stream ended for any reason other than this call's
+        own handle_stop() (e.g. the Deepgram connection dropping), this
+        loop simply returned -- silently "deafening" the call for its
+        remaining duration with no attempt to recover and no signal to
+        the caller. Now, an unexpected end (an ERROR event, an
+        exception, or the stream just ending) triggers up to
+        _MAX_STT_RECONNECT_ATTEMPTS reconnect attempts with a fixed
+        backoff, all within this SAME task/coroutine -- never spawning
+        an additional task per attempt, so there is no risk of task
+        explosion regardless of how many times the stream drops.
+        self._is_active is checked before every attempt, so a call that
+        ends normally (handle_stop() already ran) is never mistaken for
+        one that needs reconnecting, and cancellation (asyncio
+        CancelledError) always exits immediately without ever
+        attempting to reconnect.
         """
-        try:
-            async for event in self.stt_service.receive_events():
-                if not self._is_active:
-                    break
+        reconnect_attempts = 0
+        while self._is_active:
+            try:
+                async for event in self.stt_service.receive_events():
+                    if not self._is_active:
+                        return
 
-                # 1. Voice Activity Detected -> Instant Barge-In!
-                if event.event_type == STTEventType.SPEECH_STARTED:
-                    await self.trigger_barge_in()
+                    # 1. Voice Activity Detected -> Instant Barge-In!
+                    if event.event_type == STTEventType.SPEECH_STARTED:
+                        await self.trigger_barge_in()
 
-                # 2. Interim transcript: Strictly observational (NEVER execute tools)
-                elif event.event_type == STTEventType.INTERIM_TRANSCRIPT:
-                    if self.metrics:
-                        self.metrics.increment("voice_stt_interim_count")
-                    if self.latency_tracker:
-                        self.latency_tracker.record("stt_partial_latency", 15.0)
-                    # Log without PII for debugging
-                    logger.debug(
-                        "Interim transcript for call %s: %s words", self.session.call_sid, len(event.text.split())
-                    )
+                    # 2. Interim transcript: Strictly observational (NEVER execute tools)
+                    elif event.event_type == STTEventType.INTERIM_TRANSCRIPT:
+                        if self.metrics:
+                            self.metrics.increment("voice_stt_interim_count")
+                        if self.latency_tracker:
+                            self.latency_tracker.record("stt_partial_latency", 15.0)
+                        # Log without PII for debugging
+                        logger.debug(
+                            "Interim transcript for call %s: %s words",
+                            self.session.call_sid,
+                            len(event.text.split()),
+                        )
 
-                # 3. Finalized speech turn: Drives authoritative ConversationManager
-                elif event.event_type == STTEventType.FINAL_TRANSCRIPT:
-                    transcript = event.text.strip()
-                    if not transcript:
-                        continue
+                    # 3. Finalized speech turn: Drives authoritative ConversationManager
+                    elif event.event_type == STTEventType.FINAL_TRANSCRIPT:
+                        transcript = event.text.strip()
+                        if not transcript:
+                            continue
 
-                    if self.metrics:
-                        self.metrics.increment("voice_stt_final_count")
-                    if self.latency_tracker:
-                        self.latency_tracker.record("stt_final_latency", 25.0)
+                        if self.metrics:
+                            self.metrics.increment("voice_stt_final_count")
+                        if self.latency_tracker:
+                            self.latency_tracker.record("stt_final_latency", 25.0)
 
-                    # Cancel any prior lingering turn and reset cancellation token
-                    self._turn_cancellation_event.clear()
-                    turn_id = self.session.next_turn()
+                        # Cancel any prior lingering turn and reset cancellation token
+                        self._turn_cancellation_event.clear()
+                        turn_id = self.session.next_turn()
 
-                    voice_logger.log_event(
-                        "TURN_STARTED",
-                        call_sid=self.session.call_sid,
-                        stream_sid=self.session.stream_sid,
-                        session_id=self.session.session_id,
-                        turn_id=turn_id,
-                        caller_id=self.session.caller_id,
-                    )
+                        voice_logger.log_event(
+                            "TURN_STARTED",
+                            call_sid=self.session.call_sid,
+                            stream_sid=self.session.stream_sid,
+                            session_id=self.session.session_id,
+                            turn_id=turn_id,
+                            caller_id=self.session.caller_id,
+                        )
 
-                    # Launch turn execution
-                    self._active_turn_task = asyncio.create_task(self._execute_turn(transcript, turn_id))
+                        # Launch turn execution
+                        self._active_turn_task = asyncio.create_task(self._execute_turn(transcript, turn_id))
 
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            logger.error("Error in STT event processing loop: %s", exc)
+                    # 4. STT-reported error: log and fall through to the
+                    # reconnect logic below rather than continuing to
+                    # iterate a stream that has already reported itself
+                    # broken.
+                    elif event.event_type == STTEventType.ERROR:
+                        logger.warning(
+                            "STT stream reported an error for call %s: %s", self.session.call_sid, event.text
+                        )
+                        break
+
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.error("Error in STT event processing loop for call %s: %s", self.session.call_sid, exc)
+
+            if not self._is_active:
+                return  # call ended normally (handle_stop already ran) -- never reconnect
+
+            reconnect_attempts += 1
+            if reconnect_attempts > _MAX_STT_RECONNECT_ATTEMPTS:
+                logger.error(
+                    "STT stream for call %s failed to reconnect after %s attempts -- giving up.",
+                    self.session.call_sid,
+                    _MAX_STT_RECONNECT_ATTEMPTS,
+                )
+                if self.metrics:
+                    self.metrics.increment("voice_stt_reconnect_exhausted_total")
+                return
+
+            logger.warning(
+                "STT stream dropped for call %s -- reconnect attempt %s/%s in %ss.",
+                self.session.call_sid,
+                reconnect_attempts,
+                _MAX_STT_RECONNECT_ATTEMPTS,
+                _STT_RECONNECT_BACKOFF_SECONDS,
+            )
+            if self.metrics:
+                self.metrics.increment("voice_stt_reconnect_attempts_total")
+            await asyncio.sleep(_STT_RECONNECT_BACKOFF_SECONDS)
+
+            try:
+                await self.stt_service.close()
+            except Exception:
+                pass
+            try:
+                await self.stt_service.connect()
+            except Exception as exc:
+                logger.error(
+                    "STT reconnect attempt %s failed for call %s: %s", reconnect_attempts, self.session.call_sid, exc
+                )
+                # Loop back to the top: self._is_active and the attempt
+                # count are checked again before trying anything further.
 
     async def _execute_turn(self, transcript: str, turn_id: int) -> None:
         """
@@ -523,6 +607,30 @@ class VoiceCallManager:
             metrics=self.metrics,
             latency_tracker=latency_tracker,
         )
+
+        previous = self._active_calls.get(stream_sid)
+        if previous is not None:
+            # Stability fix (Phase 16.3): a duplicate/replayed START
+            # frame for a stream_sid that already had a handler used to
+            # silently overwrite it here, leaking the previous
+            # handler's STT connection and any in-flight turn task --
+            # neither was ever closed/cancelled. register_call() is
+            # sync (server.py's websocket_call() calls it without
+            # awaiting) while handle_stop() is async, so the cleanup
+            # runs as its own short-lived task -- exactly one per
+            # duplicate START, never a retry loop, so repeated
+            # duplicates cannot accumulate or explode: each spawns
+            # exactly one self-terminating cleanup task and this method
+            # returns immediately either way.
+            logger.warning(
+                "Duplicate START for stream_sid=%s (new call_sid=%s) -- cleaning up the previous "
+                "handler (call_sid=%s) before registering the new one.",
+                stream_sid,
+                call_sid,
+                previous.session.call_sid,
+            )
+            asyncio.create_task(previous.handle_stop())
+
         self._active_calls[stream_sid] = handler
         if self.metrics:
             self.metrics.increment("voice_calls_total")

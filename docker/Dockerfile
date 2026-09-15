@@ -33,3 +33,4 @@ EXPOSE 8000
 
 # Overridden per-service by docker-compose.yml (trainer vs. api).
 CMD ["scripts/run_pipeline.sh", "--serve"]
+

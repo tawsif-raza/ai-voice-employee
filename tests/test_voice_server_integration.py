@@ -8,6 +8,7 @@ Tests:
 
 import base64
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -25,6 +26,7 @@ import server
 from conversation_manager import ConversationManager
 from fastapi.testclient import TestClient
 from handoff_detector import HandoffDetector
+from twilio_signature import compute_signature
 from voice_pipeline import VoiceCallManager
 
 CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "clinical_triggers.yaml"
@@ -130,6 +132,128 @@ class TestVoiceServerIntegration(unittest.TestCase):
 
             # After disconnect, handler is cleanly unregistered
             self.assertIsNone(server._voice_call_manager.get_handler("MZ_TEST_1"))
+
+
+class TestVoiceHealthEndpoint(unittest.TestCase):
+    """
+    Phase 1.4: /health/voice previously had no dedicated test coverage at
+    all. Covers both the pre-existing provider fields and the new
+    twilio_account_configured / twilio_signature_enforced fields added
+    alongside the signature-enforcement work above.
+    """
+
+    def setUp(self):
+        self.cm = _build_test_cm()
+        server._conversation_manager = self.cm
+        server._voice_call_manager = VoiceCallManager(conversation_manager=self.cm)
+        self.client = TestClient(server.app)
+        self._backup = {
+            k: os.environ.get(k)
+            for k in (
+                "TWILIO_ACCOUNT_SID",
+                "TWILIO_AUTH_TOKEN",
+                "ANTHROPIC_API_KEY",
+                "GEMINI_API_KEY",
+                "VOICE_MOCK_SERVICES",
+            )
+        }
+        for k in self._backup:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_no_credentials_configured(self):
+        resp = self.client.get("/health/voice")
+        self.assertEqual(resp.status_code, 200)
+        providers = resp.json()["providers"]
+        self.assertFalse(providers["twilio_account_configured"])
+        self.assertFalse(providers["twilio_signature_enforced"])
+        self.assertFalse(providers["claude_configured"])
+        self.assertFalse(providers["gemini_configured"])
+
+    def test_twilio_credentials_configured(self):
+        os.environ["TWILIO_ACCOUNT_SID"] = "AC_fake_for_test"
+        os.environ["TWILIO_AUTH_TOKEN"] = "fake_token_for_test"
+        resp = self.client.get("/health/voice")
+        providers = resp.json()["providers"]
+        self.assertTrue(providers["twilio_account_configured"])
+        self.assertTrue(providers["twilio_signature_enforced"])
+        # Never echoes the actual configured value anywhere in the body.
+        self.assertNotIn("fake_token_for_test", resp.text)
+
+    def test_active_call_count_reflects_voice_manager(self):
+        resp = self.client.get("/health/voice")
+        self.assertEqual(resp.json()["active_call_count"], 0)
+
+
+class TestTwilioWebhookSignatureValidation(unittest.TestCase):
+    """
+    Phase 1.4 (docs/phase1.4-external-integration-report.md Section 2/3):
+    /twiml/inbound-call must enforce X-Twilio-Signature whenever
+    TWILIO_AUTH_TOKEN is configured, and must never block a request when
+    it isn't (the existing tests above, run with no TWILIO_AUTH_TOKEN set,
+    already cover that unconfigured case passing through untouched).
+    """
+
+    def setUp(self):
+        self.cm = _build_test_cm()
+        server._conversation_manager = self.cm
+        server._voice_call_manager = VoiceCallManager(conversation_manager=self.cm)
+        self.client = TestClient(server.app)
+        self._prior_token = os.environ.get("TWILIO_AUTH_TOKEN")
+        os.environ["TWILIO_AUTH_TOKEN"] = "test-auth-token-not-real"
+
+    def tearDown(self):
+        if self._prior_token is None:
+            os.environ.pop("TWILIO_AUTH_TOKEN", None)
+        else:
+            os.environ["TWILIO_AUTH_TOKEN"] = self._prior_token
+
+    def test_valid_signature_is_accepted(self):
+        params = {"CallSid": "CA123", "From": "+15551234567"}
+        url = "http://api.testvoice.com/twiml/inbound-call"
+        sig = compute_signature("test-auth-token-not-real", url, params)
+        resp = self.client.post(
+            "/twiml/inbound-call",
+            data=params,
+            headers={"Host": "api.testvoice.com", "X-Twilio-Signature": sig},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_missing_signature_is_rejected(self):
+        resp = self.client.post("/twiml/inbound-call", data={"CallSid": "CA123"}, headers={"Host": "api.testvoice.com"})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_wrong_signature_is_rejected(self):
+        resp = self.client.post(
+            "/twiml/inbound-call",
+            data={"CallSid": "CA123"},
+            headers={"Host": "api.testvoice.com", "X-Twilio-Signature": "not-the-real-signature"},
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_tampered_body_is_rejected(self):
+        """Signature computed for one CallSid, request sent with a different one -- must not validate."""
+        sig = compute_signature(
+            "test-auth-token-not-real", "http://api.testvoice.com/twiml/inbound-call", {"CallSid": "CA_ORIGINAL"}
+        )
+        resp = self.client.post(
+            "/twiml/inbound-call",
+            data={"CallSid": "CA_TAMPERED"},
+            headers={"Host": "api.testvoice.com", "X-Twilio-Signature": sig},
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_no_token_configured_skips_validation(self):
+        """Restores the existing (pre-Phase-1.4) unconfigured behavior -- covered again here explicitly."""
+        os.environ.pop("TWILIO_AUTH_TOKEN", None)
+        resp = self.client.post("/twiml/inbound-call", data={"CallSid": "CA123"}, headers={"Host": "api.testvoice.com"})
+        self.assertEqual(resp.status_code, 200)
 
 
 if __name__ == "__main__":

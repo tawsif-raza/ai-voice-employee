@@ -48,6 +48,9 @@ _COUNTER_NAMES = frozenset(
         "voice_stt_interim_count",
         "voice_stt_final_count",
         "voice_tts_synthesis_errors_total",
+        # Phase 16.2 -- STT reconnect (src/voice/voice_pipeline.py).
+        "voice_stt_reconnect_attempts_total",
+        "voice_stt_reconnect_exhausted_total",
         # LLM provider routing / failover.
         "llm_fallback_cooldown_triggered_total",
         "llm_fallback_used_total",
@@ -131,13 +134,27 @@ class MetricsRegistry:
         self.observe(histogram_name, value_ms)
 
     def get_counter(self, counter_name: str) -> int:
+        """
+        Stability fix (Phase 16.4): previously used dict.get(name, 0),
+        silently returning 0 for any unregistered/misspelled counter
+        name -- indistinguishable from "this real counter is legitimately
+        zero." That was an interface/implementation mismatch with
+        increment(), which has always raised ValueError for the exact
+        same condition (see below) -- a typo on the read side could mask
+        as "metric is zero" forever instead of surfacing as a bug. Now
+        raises for the same reason increment() does, closing that gap.
+        """
+        if counter_name not in _COUNTER_NAMES:
+            raise ValueError(f"Unknown counter: '{counter_name}' — not in the fixed metric set")
         with self._lock:
-            return self._counters.get(counter_name, 0)
+            return self._counters[counter_name]
 
     def get_histogram(self, histogram_name: str) -> dict:
+        """See get_counter()'s docstring -- same fix, same rationale."""
+        if histogram_name not in _HISTOGRAM_NAMES:
+            raise ValueError(f"Unknown histogram: '{histogram_name}' — not in the fixed metric set")
         with self._lock:
-            histogram = self._histograms.get(histogram_name)
-            return histogram.to_dict() if histogram else {"count": 0, "avg": 0.0, "min": 0.0, "max": 0.0}
+            return self._histograms[histogram_name].to_dict()
 
     def snapshot(self) -> dict:
         """A safe, aggregate-only view — no per-request/per-user data, suitable for a metrics endpoint or periodic export."""

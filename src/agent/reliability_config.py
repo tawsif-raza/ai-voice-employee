@@ -20,6 +20,7 @@ _BUILTIN_DEFAULTS = {
     "llm": {"timeout_seconds": 60, "max_retries": 1, "base_delay_seconds": 0.5, "max_delay_seconds": 4.0},
     "rag": {"timeout_seconds": 5, "max_retries": 2, "base_delay_seconds": 0.2, "max_delay_seconds": 2.0},
     "tools": {"max_retries": 1, "base_delay_seconds": 0.2, "max_delay_seconds": 2.0},
+    "stt": {"max_reconnect_attempts": 3, "reconnect_backoff_seconds": 1.0},
     "circuit_breaker": {
         "llm": {"failure_threshold": 5, "recovery_timeout_seconds": 30},
         "rag": {"failure_threshold": 5, "recovery_timeout_seconds": 30},
@@ -49,11 +50,18 @@ class RequestLimits:
 
 
 @dataclass(frozen=True)
+class SttReconnectConfig:
+    max_attempts: int
+    backoff_seconds: float
+
+
+@dataclass(frozen=True)
 class ReliabilityConfig:
     llm: DependencyReliabilityConfig
     rag: DependencyReliabilityConfig
     tools: DependencyReliabilityConfig
     request_limits: RequestLimits
+    stt: SttReconnectConfig
     max_concurrent_generations: int
     graceful_shutdown_timeout_seconds: float
 
@@ -101,6 +109,7 @@ def load_reliability_config(config_path: Optional[str] = None) -> ReliabilityCon
         )
 
     limits = data["request_limits"]
+    stt = data["stt"]
     return ReliabilityConfig(
         llm=_dep("llm"),
         rag=_dep("rag"),
@@ -109,6 +118,10 @@ def load_reliability_config(config_path: Optional[str] = None) -> ReliabilityCon
             max_message_length=int(limits.get("max_message_length", 4000)),
             max_history_turns=int(limits.get("max_history_turns", 50)),
             max_history_turn_length=int(limits.get("max_history_turn_length", 4000)),
+        ),
+        stt=SttReconnectConfig(
+            max_attempts=int(stt.get("max_reconnect_attempts", 3)),
+            backoff_seconds=float(stt.get("reconnect_backoff_seconds", 1.0)),
         ),
         max_concurrent_generations=int(data.get("max_concurrent_generations", 1)),
         graceful_shutdown_timeout_seconds=float(data.get("graceful_shutdown_timeout_seconds", 30)),

@@ -234,9 +234,11 @@ def test_2_heavy_generation() -> None:
         f"submit={submit_ms:.1f}ms (202), concurrent /health={health_ms:.1f}ms (200), "
         f"job resolved={final['status']}, mem {before['rss_mb']}->{after['rss_mb']}MB",
         "n/a (no failure)",
-        "job execution still serializes behind the default generation semaphore (size 1) "
-        "when the app is built directly rather than via build_conversation_manager()'s "
-        "remote-provider-aware default -- see PHASE_15/Phase-15.1 reports.",
+        "expected, not a defect (Phase 16.1 fix): concurrency auto-detection is now a "
+        "property of the injected LLM service's type, not the code path that built it -- "
+        "this harness injects a plain fake (not a ClaudeLLMProvider/GeminiLLMProvider), so "
+        "it correctly stays conservative at 1. A real remote provider gets raised concurrency "
+        "automatically, verified separately in TestGenerationSemaphoreConcurrencyGuarantees.",
     )
 
 
@@ -278,7 +280,8 @@ def test_3_concurrent_heavy_generations() -> None:
         f"mem {before['rss_mb']}->{after['rss_mb']}MB",
         "n/a (no failure)",
         "throughput is bounded by the generation semaphore, not by request handling -- "
-        "see test 2's remaining risk note.",
+        "see test 2's note: this harness's fake LLM service correctly stays at concurrency=1 "
+        "by type-based auto-detection (Phase 16.1), which is why this measures as serialized.",
     )
 
 

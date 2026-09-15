@@ -18,6 +18,8 @@ Run with:
 
 import os
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -25,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from conversation_manager import (  # noqa: E402
     _REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS,
     ConversationManager,
+    _llm_service_is_safe_for_concurrent_generation,
     _resolve_max_concurrent_generations,
     build_conversation_manager,
 )
@@ -32,6 +35,12 @@ from conversation_manager import (  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "inference"))
 from handoff_detector import HandoffDetector  # noqa: E402
 from intent_engine import IntentEngine, IntentResult, Route, RoutingDecision  # noqa: E402
+from llm_provider import (  # noqa: E402
+    ClaudeLLMProvider,
+    FallbackLLMProvider,
+    GeminiLLMProvider,
+    LocalLLMProvider,
+)
 
 CLINICAL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "clinical_triggers.yaml"
 HANDOFF_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "handoff_phrases.yaml"
@@ -919,36 +928,76 @@ class TestSessionAndMemoryIntegration(unittest.TestCase):
         self.assertEqual(memory_system_messages, [])
 
 
+class TestLlmServiceIsSafeForConcurrentGeneration(unittest.TestCase):
+    """
+    Stability fix (Phase 16.1, closing the Phase 15.1 gap): the decision
+    is now based on llm_service's actual TYPE, not on which code path
+    constructed it -- see conversation_manager.py's
+    _llm_service_is_safe_for_concurrent_generation() docstring. The
+    critical case: LocalLLMProvider ALSO implements BaseLLMProvider
+    while wrapping the exact torch-based model this check exists to
+    protect -- a naive `isinstance(x, BaseLLMProvider)` would have
+    reintroduced the original hazard for anyone who reaches it via
+    build_llm_provider(mode="local").
+    """
+
+    def test_claude_provider_is_safe(self):
+        self.assertTrue(_llm_service_is_safe_for_concurrent_generation(ClaudeLLMProvider(api_key="test")))
+
+    def test_gemini_provider_is_safe(self):
+        self.assertTrue(_llm_service_is_safe_for_concurrent_generation(GeminiLLMProvider(api_key="test")))
+
+    def test_local_provider_is_never_safe_despite_implementing_base_provider(self):
+        local = LocalLLMProvider(llm_service=FakeLLMService())
+        self.assertFalse(_llm_service_is_safe_for_concurrent_generation(local))
+
+    def test_fallback_of_two_safe_providers_is_safe(self):
+        fb = FallbackLLMProvider(primary=ClaudeLLMProvider(api_key="test"), fallback=GeminiLLMProvider(api_key="test"))
+        self.assertTrue(_llm_service_is_safe_for_concurrent_generation(fb))
+
+    def test_fallback_wrapping_a_local_provider_is_not_safe(self):
+        unsafe_fallback = FallbackLLMProvider(
+            primary=ClaudeLLMProvider(api_key="test"),
+            fallback=LocalLLMProvider(llm_service=FakeLLMService()),
+        )
+        self.assertFalse(_llm_service_is_safe_for_concurrent_generation(unsafe_fallback))
+
+    def test_plain_local_llm_service_is_not_safe(self):
+        self.assertFalse(_llm_service_is_safe_for_concurrent_generation(FakeLLMService()))
+
+    def test_arbitrary_unknown_object_is_not_safe(self):
+        self.assertFalse(_llm_service_is_safe_for_concurrent_generation(object()))
+
+
 class TestResolveMaxConcurrentGenerations(unittest.TestCase):
     """
-    Stability fix (Phase 15.1): max_concurrent_generations=1 exists to
-    serialize calls against the single LOCAL model instance -- it must
-    not also bottleneck a remote HTTP-based provider (Claude/Gemini/
-    fallback), which has no such hazard. See
-    conversation_manager.py's _resolve_max_concurrent_generations() and
-    the constant above it for the full rationale.
+    Pure-function-level tests for _resolve_max_concurrent_generations().
+    configured_value=None means "auto-detect from llm_service's type";
+    any explicit int is always respected exactly, for either provider
+    type.
     """
 
-    def test_local_model_keeps_configured_value_of_one(self):
-        # using_local_or_injected_llm=True must never be overridden --
-        # this is the exact case the semaphore was designed to protect.
-        self.assertEqual(_resolve_max_concurrent_generations(1, using_local_or_injected_llm=True), 1)
+    def test_local_service_auto_detects_to_one(self):
+        self.assertEqual(_resolve_max_concurrent_generations(None, FakeLLMService()), 1)
 
-    def test_remote_provider_at_unconfigured_default_is_raised(self):
-        result = _resolve_max_concurrent_generations(1, using_local_or_injected_llm=False)
+    def test_safe_remote_provider_auto_detects_to_raised_default(self):
+        result = _resolve_max_concurrent_generations(None, ClaudeLLMProvider(api_key="test"))
         self.assertEqual(result, _REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS)
         self.assertGreater(result, 1, "the whole point of the fix: more than one concurrent generation allowed")
 
-    def test_remote_provider_with_explicit_operator_override_is_respected_unchanged(self):
-        # An operator who has deliberately configured something other
-        # than the unconfigured default (1) -- e.g. already bumped it to
-        # 3, or deliberately pinned it to 1 for a reason of their own --
-        # must see that exact value preserved, for either provider type.
-        self.assertEqual(_resolve_max_concurrent_generations(3, using_local_or_injected_llm=False), 3)
-        self.assertEqual(_resolve_max_concurrent_generations(1, using_local_or_injected_llm=False) != 1, True)
+    def test_local_provider_auto_detects_to_one_even_though_it_is_a_base_provider(self):
+        local = LocalLLMProvider(llm_service=FakeLLMService())
+        self.assertEqual(_resolve_max_concurrent_generations(None, local), 1)
 
-    def test_local_model_with_explicit_operator_override_is_respected_unchanged(self):
-        self.assertEqual(_resolve_max_concurrent_generations(5, using_local_or_injected_llm=True), 5)
+    def test_explicit_value_overrides_auto_detection_for_remote_provider(self):
+        # An operator who has deliberately configured a value -- e.g.
+        # bumped it to 3, or deliberately pinned it to 1 -- must see
+        # that exact value preserved, for either provider type.
+        self.assertEqual(_resolve_max_concurrent_generations(3, ClaudeLLMProvider(api_key="test")), 3)
+        self.assertEqual(_resolve_max_concurrent_generations(1, ClaudeLLMProvider(api_key="test")), 1)
+
+    def test_explicit_value_overrides_auto_detection_for_local_service(self):
+        self.assertEqual(_resolve_max_concurrent_generations(5, FakeLLMService()), 5)
 
 
 class TestGenerationSemaphoreSizeEndToEnd(unittest.TestCase):
@@ -1035,11 +1084,12 @@ class TestBuildConversationManagerConcurrencyWiring(unittest.TestCase):
         )
         self.assertEqual(self._drain_semaphore(cm), _REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS)
 
-    def test_caller_injected_provider_is_never_overridden_even_under_remote_env(self):
-        # Even with LLM_PROVIDER=fallback set, an explicitly caller-
-        # injected provider must keep the conservative default -- we
-        # cannot assume an arbitrary injected object is thread-safe for
-        # concurrent use, so this path is deliberately never raised.
+    def test_caller_injected_object_of_unknown_type_keeps_conservative_default(self):
+        # An arbitrary caller-injected object of unknown type (not a
+        # verified-safe BaseLLMProvider subclass) always keeps the
+        # conservative default -- we cannot assume an arbitrary object
+        # is thread-safe for concurrent use just because it was injected
+        # under a "remote" environment setting.
         os.environ["LLM_PROVIDER"] = "fallback"
 
         class _FakeProvider:
@@ -1058,6 +1108,235 @@ class TestBuildConversationManagerConcurrencyWiring(unittest.TestCase):
             reliability_enabled=True,
         )
         self.assertEqual(self._drain_semaphore(cm), 1)
+
+    def test_caller_injected_real_safe_provider_gets_raised_concurrency(self):
+        # This is the exact gap Phase 15.1 left open, now closed: a
+        # REAL, verified-safe provider injected directly (bypassing
+        # build_conversation_manager()'s own env-var-driven branch
+        # entirely) must still get the raised concurrency bound --
+        # safety is a property of the injected object's type, not of
+        # which code path constructed it.
+        cm = build_conversation_manager(
+            llm_provider=ClaudeLLMProvider(api_key="test-key-not-a-real-credential"),
+            rag_enabled=False,
+            tool_orchestrator_enabled=False,
+            session_enabled=False,
+            memory_enabled=False,
+            observability_enabled=False,
+            persistence_enabled=False,
+            reliability_enabled=True,
+        )
+        self.assertEqual(self._drain_semaphore(cm), _REMOTE_PROVIDER_DEFAULT_MAX_CONCURRENT_GENERATIONS)
+
+
+class _CountingBlockingLLMService:
+    """
+    Tracks concurrently-executing generate_stream() calls precisely: on
+    entry, increments a shared counter (recording the running max) and
+    blocks on `release_event`; on release, decrements. Used to PROVE
+    bounded concurrency directly, not infer it from timing alone.
+    """
+
+    def __init__(self, release_event: threading.Event, response_text: str = "Done.", block_seconds=None):
+        self.release_event = release_event
+        self.block_seconds = block_seconds
+        self.response_text = response_text
+        self._lock = threading.Lock()
+        self.current_concurrent = 0
+        self.max_concurrent_observed = 0
+        self.call_count = 0
+
+    def generate_stream(self, messages, **kwargs):
+        with self._lock:
+            self.call_count += 1
+            self.current_concurrent += 1
+            self.max_concurrent_observed = max(self.max_concurrent_observed, self.current_concurrent)
+        try:
+            if self.block_seconds is not None:
+                time.sleep(self.block_seconds)
+            else:
+                self.release_event.wait(timeout=10.0)
+            for word in self.response_text.split(" "):
+                yield word + " "
+            yield {"text": self.response_text, "latency_ms": 1.0}
+        finally:
+            with self._lock:
+                self.current_concurrent -= 1
+
+
+class _FailNTimesLLMService:
+    """Raises on the first N calls, succeeds afterward."""
+
+    def __init__(self, fail_times: int, response_text: str = "Recovered."):
+        self.fail_times = fail_times
+        self.response_text = response_text
+        self.call_count = 0
+
+    def generate_stream(self, messages, **kwargs):
+        self.call_count += 1
+        if self.call_count <= self.fail_times:
+            raise RuntimeError("simulated transient LLM failure")
+        for word in self.response_text.split(" "):
+            yield word + " "
+        yield {"text": self.response_text, "latency_ms": 1.0}
+
+
+class _UnexpectedWorkerFailure(BaseException):
+    """
+    Deliberately NOT an Exception subclass: models a genuinely
+    unexpected failure in the worker/task machinery that escapes
+    ConversationManager's own `except Exception:` retry/fallback
+    handling entirely (which only catches ordinary Exception subclasses,
+    by design -- see handle_turn()'s LLM generation retry loop). Used to
+    prove the semaphore's `with` block releases correctly even when
+    something this unusual propagates through it, matching Python's
+    unconditional with-statement __exit__ guarantee.
+    """
+
+
+class _RaisesUnexpectedFailureLLMService:
+    def generate_stream(self, messages, **kwargs):
+        raise _UnexpectedWorkerFailure("simulated unexpected worker/task failure")
+        yield  # pragma: no cover -- unreachable, keeps this a generator function
+
+
+def _run_turn_to_completion(cm: ConversationManager, message: str = "Hello") -> dict:
+    result = None
+    for item in cm.handle_turn(message):
+        if not isinstance(item, str):
+            result = item
+    return result
+
+
+class TestGenerationSemaphoreConcurrencyGuarantees(unittest.TestCase):
+    """
+    Instruction B verification: proves, with real concurrent execution
+    (not just semaphore-object introspection), that the fixed semaphore
+    (1) actually bounds concurrency, (2) makes excess jobs wait rather
+    than run simultaneously, (3) releases on a failed job, (4) releases
+    on cancellation, and (5) releases on a worker/task exception that
+    escapes ConversationManager's own internal handling entirely.
+    """
+
+    def test_concurrency_is_bounded_and_excess_jobs_wait(self):
+        n_concurrent = 2
+        n_jobs = 5
+        delay_seconds = 0.2
+        release_event = threading.Event()
+        release_event.set()  # each call just sleeps block_seconds, no manual gating needed
+        llm = _CountingBlockingLLMService(release_event, block_seconds=delay_seconds)
+        cm = ConversationManager(
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            max_concurrent_generations=n_concurrent,
+        )
+
+        threads = [threading.Thread(target=_run_turn_to_completion, args=(cm, f"msg {i}")) for i in range(n_jobs)]
+        t0 = time.perf_counter()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        wall_seconds = time.perf_counter() - t0
+
+        self.assertEqual(llm.call_count, n_jobs)
+        self.assertLessEqual(
+            llm.max_concurrent_observed,
+            n_concurrent,
+            "concurrency must never exceed the configured bound -- this is the actual mechanism, "
+            "not an inference from timing",
+        )
+        expected_min_seconds = (n_jobs / n_concurrent) * delay_seconds * 0.8  # 20% tolerance for scheduling jitter
+        self.assertGreaterEqual(
+            wall_seconds,
+            expected_min_seconds,
+            f"{n_jobs} jobs at concurrency {n_concurrent} must take roughly "
+            f"{n_jobs / n_concurrent:.1f}x one job's duration, not run unbounded in parallel -- "
+            f"excess jobs must wait, not execute simultaneously",
+        )
+
+    def test_failed_job_releases_the_semaphore(self):
+        llm = _FailNTimesLLMService(fail_times=1)
+        cm = ConversationManager(
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            max_concurrent_generations=1,
+        )
+        first = _run_turn_to_completion(cm)
+        self.assertEqual(first["response"], ConversationManager.LLM_FAILURE_RESPONSE)
+
+        # If the semaphore weren't released, this second call would hang
+        # forever -- bounded by running it in a thread with a timeout.
+        second_result = {}
+        t = threading.Thread(target=lambda: second_result.update(_run_turn_to_completion(cm) or {}))
+        t.start()
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "semaphore was left locked after a failed job -- second call never completed")
+        self.assertEqual(second_result.get("response"), "Recovered.")
+
+    def test_cancellation_releases_the_semaphore(self):
+        release_event = threading.Event()
+        llm = _CountingBlockingLLMService(release_event)
+        cm = ConversationManager(
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            max_concurrent_generations=1,
+        )
+
+        gen = cm.handle_turn("Hello")
+        first_chunk = next(gen)  # enters the semaphore-held section, blocks inside generate_stream()
+        self.assertIsInstance(first_chunk, str)
+        self.assertEqual(llm.current_concurrent, 1, "must be inside the semaphore-held LLM call at this point")
+
+        gen.close()  # simulates cancellation: raises GeneratorExit at the current yield point
+
+        # A fresh call must be able to acquire the semaphore immediately --
+        # bounded by a timeout in case cancellation left it locked.
+        llm2 = _CountingBlockingLLMService(release_event, response_text="After cancellation.")
+        release_event.set()
+        cm2 = ConversationManager(
+            llm_service=llm2,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+        )
+        # Prove it against the SAME semaphore object, not a fresh one:
+        cm2._generation_semaphore = cm._generation_semaphore
+        result = {}
+        t = threading.Thread(target=lambda: result.update(_run_turn_to_completion(cm2) or {}))
+        t.start()
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "cancellation left the semaphore permanently locked")
+        self.assertEqual(result.get("response"), "After cancellation.")
+
+    def test_worker_task_exception_does_not_leave_semaphore_permanently_locked(self):
+        llm = _RaisesUnexpectedFailureLLMService()
+        cm = ConversationManager(
+            llm_service=llm,
+            retriever=FakeRetriever(),
+            clinical_guard=_real_clinical_guard(),
+            handoff_detector=_real_handoff_detector(),
+            max_concurrent_generations=1,
+        )
+
+        with self.assertRaises(_UnexpectedWorkerFailure):
+            _run_turn_to_completion(cm, "Hello")
+
+        # The semaphore must still be released -- a subsequent call on
+        # the SAME manager must not hang.
+        cm.llm_service = FakeLLMService(response_text="Still works.")
+        result = {}
+        t = threading.Thread(target=lambda: result.update(_run_turn_to_completion(cm) or {}))
+        t.start()
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "an unexpected worker exception left the semaphore permanently locked")
+        self.assertEqual(result.get("response"), "Still works.")
 
 
 if __name__ == "__main__":

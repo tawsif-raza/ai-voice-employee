@@ -44,6 +44,16 @@ reliability:
     base_delay_seconds: 0.2
     max_delay_seconds: 2.0
 
+  # Bounds src/voice/voice_pipeline.py's STT reconnect loop (Phase 16.2;
+  # Phase 1.2 Test 9): a real STT connection drop is a transport-level
+  # failure, not a per-call retry like llm/rag/tools above, so it has no
+  # timeout_seconds or circuit breaker of its own -- just a bounded
+  # attempt count and a fixed backoff, matching the values already
+  # verified in tests/test_voice_pipeline.py's TestSTTReconnect.
+  stt:
+    max_reconnect_attempts: 3
+    reconnect_backoff_seconds: 1.0
+
   circuit_breaker:
     llm:
       failure_threshold: 5

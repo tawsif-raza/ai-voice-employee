@@ -489,5 +489,66 @@ class TestGenerateEndpoint(unittest.TestCase):
         self.assertEqual(resp.status_code, 503)
 
 
+class TestCredentialReadinessLogging(unittest.TestCase):
+    """
+    Phase 1.4 (docs/phase1.4-external-integration-report.md Section 3):
+    _log_credential_readiness() must report WHICH credentials are missing,
+    and must NEVER print a credential's value -- these tests use obviously
+    fake values precisely so a leak would be caught by string search below.
+    """
+
+    _CRED_NAMES = (
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "DEEPGRAM_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+    )
+
+    def setUp(self):
+        self._backup = {name: os.environ.get(name) for name in self._CRED_NAMES}
+
+    def tearDown(self):
+        for name, value in self._backup.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def test_missing_credentials_are_named_without_leaking_values(self):
+        for name in self._CRED_NAMES:
+            os.environ.pop(name, None)
+        with self.assertLogs("ai_voice_agent.startup", level="INFO") as captured:
+            server._log_credential_readiness()
+        joined = " ".join(captured.output)
+        self.assertIn("ANTHROPIC_API_KEY", joined)
+        self.assertIn("TWILIO_AUTH_TOKEN", joined)
+        self.assertIn("6/6", joined)
+
+    def test_configured_credentials_are_not_leaked_by_value(self):
+        fake_values = {name: f"OBVIOUSLY-FAKE-SECRET-{name}" for name in self._CRED_NAMES}
+        for name, value in fake_values.items():
+            os.environ[name] = value
+        with self.assertLogs("ai_voice_agent.startup", level="INFO") as captured:
+            server._log_credential_readiness()
+        joined = " ".join(captured.output)
+        self.assertIn("all 6", joined)
+        for value in fake_values.values():
+            self.assertNotIn(value, joined)
+
+    def test_partial_configuration_reports_only_the_missing_ones(self):
+        os.environ["ANTHROPIC_API_KEY"] = "OBVIOUSLY-FAKE-SECRET-ANTHROPIC"
+        for name in self._CRED_NAMES:
+            if name != "ANTHROPIC_API_KEY":
+                os.environ.pop(name, None)
+        with self.assertLogs("ai_voice_agent.startup", level="INFO") as captured:
+            server._log_credential_readiness()
+        joined = " ".join(captured.output)
+        self.assertNotIn("ANTHROPIC_API_KEY (Claude", joined)
+        self.assertIn("GEMINI_API_KEY", joined)
+        self.assertIn("5/6", joined)
+
+
 if __name__ == "__main__":
     unittest.main()
