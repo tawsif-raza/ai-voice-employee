@@ -812,6 +812,26 @@ Deliver:
 
 docs/PHASE_25_DISASTER_RECOVERY_REPORT.md
 
+Status: COMPLETE (2026-09-16). See docs/PHASE_25_DISASTER_RECOVERY_REPORT.md.
+User-approved destructive testing against the confirmed-disposable local
+docker-postgres-1 container only (verified identity/profile/credentials
+before any destructive action; no production/staging/shared DB touched).
+18 scenarios executed across database outage, application/container
+restart, provider outage (LOCAL/SIMULATED), and persistence/idempotency
+recovery -- all 18 PASS with real measured evidence (detection 2.64s,
+failure duration 9.33s, readiness recovery 0.51s, request recovery
+80.2ms; idempotency guarantee confirmed to survive a real outage+restart
+via the persisted idempotency_records table). 1 scenario NOT RUN
+(WebSocket/Twilio resource cleanup -- same disclosed Phase 21 gap,
+blocked on live Twilio). Zero application defects found; 3 test-harness
+bugs found and fixed in the script itself (documented with the evidence
+that distinguishes them from real defects). No tests added to tests/
+(infrastructure-behavior script, matching Phase 16/21 precedent).
+Baseline preserved: pytest tests/ -q = 924 passed, 0 failed (unchanged
+from Phase 24). Next: Phase 26 (Production Deployment) requires real
+production infrastructure/secrets/DNS this repository cannot provision
+autonomously -- reporting as a blocker rather than continuing.
+
 
 # PHASE 26 — PRODUCTION DEPLOYMENT
 
