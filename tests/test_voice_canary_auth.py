@@ -10,6 +10,7 @@ for p in (_VOICE_DIR, _AGENT_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from identity import Permission
 from telephony_models import CallSession
 from voice_pipeline import VoiceCallHandler
 
@@ -149,6 +150,43 @@ async def test_session_takeover_isolation(session_manager, mock_stt, mock_tts):
 
     assert session_manager.get_session("sess_b").metadata.get("authenticated_caller") is not True
     assert "For your security, could you please tell me your 4-digit PIN?" in sess_b.conversation_history[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_authenticated_caller_auth_context_has_usable_permissions(session_manager, mock_stt, mock_tts):
+    """
+    Phase 20 finding (same root cause as PHASE_18's F-04): VoiceCallHandler
+    ._execute_turn() builds its own AuthContext every turn from
+    session.metadata["authenticated_caller"]. It used to set
+    roles=["caller"] with no `permissions` -- a role with no entry in
+    identity.py's ROLE_PERMISSIONS table and a context that can never
+    pass any real AuthContext.has_permission() check, silently making
+    every turn AFTER a "successful" PIN authentication just as
+    unauthorized as before it. This asserts the real AuthContext object
+    (not just the session metadata flag the other tests here check)
+    actually carries a usable Role.USER permission set once authenticated,
+    and none before.
+    """
+    from identity import Role, permissions_for_roles
+
+    cm = MockConversationManager(session_manager, None)
+    session = CallSession("call_5", "stream_5", "sess_5", "user_5", "+15551234")
+    handler = VoiceCallHandler(session, AsyncMock(), cm, mock_stt, mock_tts)
+
+    await handler._execute_turn("I want to book an appointment", 1)
+    assert cm.last_auth is not None
+    assert cm.last_auth.authenticated is False
+    assert cm.last_auth.permissions == ()
+
+    await handler._execute_turn("My PIN is 1234", 2)
+    # The turn that carries the PIN itself is auth'd against the
+    # pre-PIN-entry session state, so re-run one more turn to observe
+    # the AuthContext built AFTER authentication succeeded.
+    await handler._execute_turn("Can you check my order status for order_1001?", 3)
+
+    assert cm.last_auth.authenticated is True
+    assert cm.last_auth.has_permission(Permission.BOOK_APPOINTMENT.value)
+    assert cm.last_auth.permissions == permissions_for_roles((Role.USER,))
 
 
 @pytest.mark.asyncio

@@ -203,6 +203,68 @@ class TestVoiceCanaryBargeIn(unittest.IsolatedAsyncioTestCase):
         stt_task.cancel()
         await handler.handle_stop()
 
+    async def test_pending_authentication_invalidated_on_barge_in(self):
+        """
+        Phase 20 fix: AWAITING_AUTHENTICATION (the telephony PIN step) must
+        be cleared on barge-in exactly like AWAITING_CONFIRMATION above --
+        previously it was left stuck, so a barged-in unrelated utterance
+        could be mis-parsed as a PIN attempt on the stale pending action.
+        """
+        outbound = []
+
+        async def mock_send(msg):
+            outbound.append(msg)
+
+        sm = SessionManager()
+        sess_state = sm.create_session(session_id="caller_barge_auth", user_id="telephony_caller")
+        sm.update_session(
+            sess_state.session_id,
+            workflow_state="AWAITING_AUTHENTICATION",
+            pending_action="ORDER_LOOKUP",
+            pending_parameters={"order_id": "order_1001"},
+        )
+
+        cm = ConversationManager(
+            llm_service=LongSpeechLLMService(),
+            clinical_guard=HandoffDetector(config_path=CLINICAL_CONFIG),
+            handoff_detector=HandoffDetector(config_path=HANDOFF_CONFIG),
+            session_manager=sm,
+        )
+
+        stt = MockSTTService()
+        tts = MockTTSService(frame_count_per_word=10)
+        session = CallSession(
+            call_sid="CA_AUTH",
+            stream_sid="MZ_AUTH",
+            session_id=sess_state.session_id,
+        )
+
+        handler = VoiceCallHandler(
+            session=session,
+            send_to_twilio_fn=mock_send,
+            conversation_manager=cm,
+            stt_service=stt,
+            tts_service=tts,
+        )
+
+        await stt.connect()
+        stt_task = asyncio.create_task(handler.process_stt_events())
+        await stt.push_event(STTEvent(STTEventType.FINAL_TRANSCRIPT, text="Never mind, actually"))
+        await asyncio.sleep(0.01)
+
+        # Trigger barge-in
+        await stt.push_event(STTEvent(STTEventType.SPEECH_STARTED))
+        await asyncio.sleep(0.01)
+
+        # Pending authentication must be invalidated so a subsequent
+        # unrelated utterance is not mis-parsed as a PIN attempt.
+        updated_state = sm.get_session(sess_state.session_id)
+        self.assertIsNone(updated_state.workflow_state)
+        self.assertIsNone(updated_state.pending_action)
+
+        stt_task.cancel()
+        await handler.handle_stop()
+
 
 if __name__ == "__main__":
     unittest.main()

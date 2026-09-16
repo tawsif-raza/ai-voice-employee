@@ -144,13 +144,17 @@ class VoiceCallHandler:
         if self._active_turn_task and not self._active_turn_task.done():
             self._active_turn_task.cancel()
 
-        # Invalidate any pending action awaiting confirmation so interrupted turn
-        # does not cause stale action execution on subsequent input
+        # Invalidate any pending action awaiting confirmation OR
+        # authentication so an interrupted turn does not cause stale
+        # action execution, or a barged-in unrelated utterance being
+        # mis-parsed as a 4-digit PIN attempt, on subsequent input.
+        # Phase 20 fix: this previously only cleared AWAITING_CONFIRMATION
+        # -- AWAITING_AUTHENTICATION was left stuck across a barge-in.
         sm = getattr(self.conversation_manager, "session_manager", None)
         if sm and self.session.session_id:
             try:
                 sess_state = sm.get_session(self.session.session_id)
-                if sess_state and sess_state.workflow_state == "AWAITING_CONFIRMATION":
+                if sess_state and sess_state.workflow_state in ("AWAITING_CONFIRMATION", "AWAITING_AUTHENTICATION"):
                     sm.update_session(
                         self.session.session_id,
                         workflow_state=None,
@@ -325,12 +329,44 @@ class VoiceCallHandler:
             auth = None
             try:
                 from action_models import AuthContext
+                from identity import Role, permissions_for_roles
 
-                is_authenticated = self.session.metadata.get("authenticated_caller") is True
+                # Phase 20 fixes (both found reviewing this same telephony
+                # auth path; same root cause class as PHASE_18's F-04):
+                #
+                # 1. This used to read self.session.metadata (the local
+                #    CallSession object, set once from Twilio's start
+                #    frame custom_parameters at connection time -- see
+                #    on_start() above -- and never updated again). The
+                #    real "authenticated_caller" flag is written by
+                #    ConversationManager._execute_pending_authentication()
+                #    onto the SessionManager-persisted Session, a
+                #    different object. Reading the wrong one meant this
+                #    check was always False for a real caller, making the
+                #    entire PIN-authentication feature silently
+                #    non-functional end-to-end regardless of what PIN was
+                #    spoken or whether it matched.
+                # 2. roles=["caller"] has no entry in identity.py's
+                #    ROLE_PERMISSIONS table, and `permissions` was never
+                #    set either -- AuthContext.has_permission() never
+                #    derives permissions from roles, so even a correctly-
+                #    detected authenticated turn would still fail every
+                #    real permission check. Grant the same least-privilege
+                #    Role.USER set an ordinary authenticated user gets,
+                #    matching ConversationManager's own
+                #    _execute_pending_authentication() fix.
+                is_authenticated = False
+                _sm = getattr(self.conversation_manager, "session_manager", None)
+                if _sm is not None and self.session.session_id:
+                    _persisted = _sm.get_session(self.session.session_id)
+                    if _persisted is not None:
+                        is_authenticated = _persisted.metadata.get("authenticated_caller") is True
                 auth = AuthContext(
                     user_id=self.session.user_id or "telephony_caller",
                     authenticated=is_authenticated,
-                    roles=["caller"] if is_authenticated else [],
+                    roles=(Role.USER.value,) if is_authenticated else (),
+                    permissions=permissions_for_roles((Role.USER,)) if is_authenticated else (),
+                    authentication_method="telephony_pin" if is_authenticated else "none",
                 )
             except Exception:
                 pass

@@ -527,6 +527,21 @@ Real callers can complete representative workflows without major conversational 
 
 # PHASE 20 — VOICE WORKFLOW COMPLETENESS
 
+Status: COMPLETE (2026-09-16). See PHASE_20_VOICE_WORKFLOW_REPORT.md.
+All 4 registered tools (BOOK_APPOINTMENT, CANCEL_APPOINTMENT,
+RESCHEDULE_APPOINTMENT, ORDER_LOOKUP) were already voice-reachable via
+the shared ConversationManager.handle_turn() path; no missing voice
+adapter existed. Found and fixed 3 further defects in the shared
+telephony-authentication plumbing all 4 depend on: F-05 (HIGH, voice
+pipeline read caller-authenticated state from the wrong object, making
+the whole PIN feature non-functional end-to-end regardless of Phase
+18's F-04 fix), F-06 (MEDIUM, same non-functional-permissions bug as
+F-04, in voice_pipeline.py's own AuthContext construction), F-07 (LOW,
+AWAITING_AUTHENTICATION not cleared on barge-in). 2 new regression
+tests. No unresolved P0/P1. Full suite: 914 passed, 0 failed. Next
+eligible: Phase 21 (Phase 19 requires the same live PSTN/Twilio access
+Phase 17 is blocked on).
+
 Objective:
 
 Ensure every critical business workflow can be completed through the voice channel.
