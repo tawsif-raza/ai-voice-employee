@@ -73,6 +73,10 @@ class EventType(str, Enum):
     CIRCUIT_CLOSED = "CIRCUIT_CLOSED"
     IDEMPOTENCY_DUPLICATE = "IDEMPOTENCY_DUPLICATE"
     GRACEFUL_SHUTDOWN = "GRACEFUL_SHUTDOWN"
+    # Data lifecycle (Phase 24) — an operator-invoked purge of already-
+    # expired records (never a live business decision, and never fired
+    # for anything still within its own TTL).
+    DATA_PURGED = "DATA_PURGED"
 
 
 class Severity(str, Enum):

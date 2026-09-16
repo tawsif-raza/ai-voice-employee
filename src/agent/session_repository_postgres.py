@@ -29,6 +29,7 @@ from typing import Optional
 from db import ConcurrentModificationError, Database
 from db_models import SessionRow
 from session_models import SessionState, SessionStatus
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -141,6 +142,22 @@ class PostgresSessionRepository:
             row = db_session.get(SessionRow, session_id)
             if row is not None:
                 db_session.delete(row)
+
+    def delete_expired_before(self, cutoff: datetime) -> int:
+        """
+        Phase 24 (data lifecycle): bulk-deletes every session row whose
+        own `expires_at` is before `cutoff` -- the same "already expired
+        by the application's own existing TTL logic" scope as the
+        in-memory SessionRepository's identical method (session_manager.py),
+        never a new retention policy decision. A single SQL DELETE
+        (not row-by-row) -- this is meant to run against however many
+        stale rows have accumulated, per docs/DATABASE.md's disclosed
+        "no scheduled background cleanup daemon" gap. Returns the count
+        deleted.
+        """
+        with self._database.session_scope() as db_session:
+            result = db_session.execute(sa_delete(SessionRow).where(SessionRow.expires_at < cutoff))
+            return result.rowcount or 0
 
     def try_consume_pending_confirmation(
         self,

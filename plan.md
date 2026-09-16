@@ -724,6 +724,26 @@ Reliability + Quality + Latency + Cost.
 
 # PHASE 24 — DATA AND PRIVACY HARDENING
 
+Status: COMPLETE (2026-09-16). See PHASE_24_DATA_PRIVACY_REPORT.md.
+Full data-lifecycle audit table (transcripts/audio/sessions/memory/audit/
+logs/caches/temp-files/traces/provider payloads). Real gap found and
+fixed: session rows in Postgres accumulated indefinitely after expiry
+(status-flag-only, never deleted) -- added delete_expired_before() to
+both in-memory and Postgres SessionRepository, SessionManager
+.purge_expired_sessions() (emits new DATA_PURGED audit event), and
+scripts/purge_expired_sessions.py (dry-run by default). Second gap found
+and DELIBERATELY NOT auto-fixed: memory records have the same
+indefinite-growth characteristic, but MemoryRepositoryPostgres has a
+pre-existing, deliberate "no unscoped/cross-user query" security
+constraint a bulk-delete would violate -- documented as an open
+architecture decision, not overridden. Third gap found and DELIBERATELY
+NOT fixed: audit events are append-only with no retention at all --
+retention period is a compliance/legal decision, explicitly out of
+engineering scope per Rule 5. 7 new tests. Full suite: 924 passed, 0
+failed. No unresolved P0/P1. Recommending a user check-in before Phase
+25 (Disaster Recovery) given its destructive-testing scope, rather than
+continuing automatically -- see plan.md's own stop conditions.
+
 Objective:
 
 Review the complete lifecycle of user data.

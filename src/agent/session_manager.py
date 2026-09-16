@@ -82,6 +82,23 @@ class SessionRepository:
             self._sessions.pop(session_id, None)
             self._versions.pop(session_id, None)
 
+    def delete_expired_before(self, cutoff: datetime) -> int:
+        """
+        Phase 24 (data lifecycle): deletes every session whose own
+        `expires_at` is before `cutoff` -- i.e. sessions the application's
+        own existing TTL logic already considers expired (`is_expired()`),
+        never a new retention decision. `_expire()` already marks these
+        `EXPIRED` on access, but never removed the row (docs/DATABASE.md
+        §"Storage Hygiene" already disclosed this). Returns the count
+        deleted, for a caller to log/report -- never silent.
+        """
+        with self._lock:
+            expired_ids = [sid for sid, s in self._sessions.items() if s.expires_at < cutoff]
+            for sid in expired_ids:
+                self._sessions.pop(sid, None)
+                self._versions.pop(sid, None)
+            return len(expired_ids)
+
 
 _UPDATABLE_FIELDS = {
     "current_intent",
@@ -344,3 +361,30 @@ class SessionManager:
     def delete_session(self, session_id) -> None:
         with self._lock:
             self._repository.delete(session_id)
+
+    def purge_expired_sessions(self, before: Optional[datetime] = None) -> int:
+        """
+        Phase 24 (data lifecycle): operator-invoked bulk deletion of
+        sessions already expired by their own `expires_at` (never a new
+        retention decision -- see SessionRepository.delete_expired_before()'s
+        docstring). `before` defaults to now; a caller may pass an
+        earlier cutoff to purge only sessions expired for at least that
+        long. Never called automatically anywhere in this codebase (no
+        background scheduler exists) -- see scripts/purge_expired_sessions.py
+        for the operator-facing entry point. Emits one DATA_PURGED audit
+        event summarizing the count, so a purge run is itself part of the
+        audit trail like every other real decision this class makes.
+        """
+        cutoff = before or datetime.now(timezone.utc)
+        with self._lock:
+            count = self._repository.delete_expired_before(cutoff)
+        if self._audit_logger is not None and count > 0:
+            from observability_models import EventType
+
+            self._audit_logger.record(
+                EventType.DATA_PURGED,
+                outcome="success",
+                resource="session",
+                metadata={"count": count, "cutoff": cutoff.isoformat()},
+            )
+        return count

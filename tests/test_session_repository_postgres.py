@@ -102,6 +102,35 @@ class TestRepositoryRoundTrip(unittest.TestCase):
     def test_delete_missing_session_does_not_raise(self):
         self.repo.delete("never-existed")  # no exception
 
+    def test_delete_expired_before_deletes_only_rows_past_cutoff(self):
+        """Phase 24 (data lifecycle) -- bulk purge of already-expired session rows."""
+        now = datetime.now(timezone.utc)
+        self.repo.save(
+            SessionState(session_id="expired-1", created_at=now, updated_at=now, expires_at=now - timedelta(minutes=5))
+        )
+        self.repo.save(
+            SessionState(session_id="expired-2", created_at=now, updated_at=now, expires_at=now - timedelta(seconds=1))
+        )
+        self.repo.save(
+            SessionState(session_id="still-active", created_at=now, updated_at=now, expires_at=now + timedelta(hours=1))
+        )
+
+        count = self.repo.delete_expired_before(now)
+
+        self.assertEqual(count, 2)
+        self.assertIsNone(self.repo.get("expired-1"))
+        self.assertIsNone(self.repo.get("expired-2"))
+        self.assertIsNotNone(self.repo.get("still-active"))
+
+    def test_delete_expired_before_with_nothing_expired_deletes_nothing(self):
+        now = datetime.now(timezone.utc)
+        self.repo.save(
+            SessionState(session_id="s4", created_at=now, updated_at=now, expires_at=now + timedelta(hours=1))
+        )
+        count = self.repo.delete_expired_before(now)
+        self.assertEqual(count, 0)
+        self.assertIsNotNone(self.repo.get("s4"))
+
 
 class TestSessionManagerOwnership(unittest.TestCase):
     """User A -> User B session -> DENY (plan.md Step 12.5's explicit required test), exercised through SessionManager, not just the repository, since ownership is SessionManager's responsibility (not SQL's)."""

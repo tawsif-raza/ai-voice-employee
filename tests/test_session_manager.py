@@ -143,6 +143,62 @@ class TestExpiration(unittest.TestCase):
         self.assertIsNone(manager.get_session("s1"))
 
 
+class TestPurgeExpiredSessions(unittest.TestCase):
+    """Phase 24 (data lifecycle): operator-invoked bulk deletion of already-expired sessions."""
+
+    def test_purge_deletes_only_expired_sessions(self):
+        manager = SessionManager(ttl=timedelta(milliseconds=50))
+        manager.create_session(session_id="expired-1")
+        manager.create_session(session_id="expired-2")
+        time.sleep(0.1)
+        # Share the same repository so both managers see the same rows.
+        long_lived = SessionManager(repository=manager._repository)
+        long_lived.create_session(session_id="still-active")
+
+        count = manager.purge_expired_sessions()
+
+        self.assertEqual(count, 2)
+        self.assertIsNone(manager._repository.get("expired-1"))
+        self.assertIsNone(manager._repository.get("expired-2"))
+        self.assertIsNotNone(manager._repository.get("still-active"))
+
+    def test_purge_never_deletes_a_session_not_yet_expired(self):
+        manager = SessionManager()
+        manager.create_session(session_id="s1")
+        count = manager.purge_expired_sessions()
+        self.assertEqual(count, 0)
+        self.assertIsNotNone(manager._repository.get("s1"))
+
+    def test_purge_emits_one_data_purged_audit_event_with_the_real_count(self):
+        from audit import AuditLogger
+        from observability_models import EventType
+
+        audit_logger = AuditLogger()
+        manager = SessionManager(ttl=timedelta(milliseconds=50), audit_logger=audit_logger)
+        manager.create_session(session_id="s1")
+        manager.create_session(session_id="s2")
+        time.sleep(0.1)
+
+        manager.purge_expired_sessions()
+
+        events = audit_logger._repository.list_events(event_type=EventType.DATA_PURGED)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].metadata["count"], 2)
+        self.assertEqual(events[0].resource, "session")
+
+    def test_purge_emits_no_audit_event_when_nothing_was_deleted(self):
+        from audit import AuditLogger
+        from observability_models import EventType
+
+        audit_logger = AuditLogger()
+        manager = SessionManager(audit_logger=audit_logger)
+        manager.create_session(session_id="s1")
+
+        manager.purge_expired_sessions()
+
+        self.assertEqual(audit_logger._repository.list_events(event_type=EventType.DATA_PURGED), [])
+
+
 class TestUnauthorizedAccess(unittest.TestCase):
     def test_cross_user_session_access_denied(self):
         manager = SessionManager()

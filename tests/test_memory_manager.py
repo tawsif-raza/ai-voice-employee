@@ -273,5 +273,62 @@ class TestControlledContextRetrieval(unittest.TestCase):
             self.assertFalse(hasattr(manager, forbidden), f"MemoryManager must not expose {forbidden}()")
 
 
+class TestPurgeExpiredMemory(unittest.TestCase):
+    """
+    Phase 24 (data lifecycle): in-memory-only bulk deletion of already-
+    expired memory records. See MemoryRepository.delete_expired_before()'s
+    docstring for why this is NOT mirrored onto the Postgres-backed
+    repository (a deliberate, pre-existing "no unscoped query" security
+    boundary this method's DB-level equivalent would cross).
+    """
+
+    def test_purge_deletes_only_expired_records_with_expires_at_set(self):
+        manager = _manager()
+        now = datetime.now(timezone.utc)
+        expired = MemoryRecord(
+            id="mem_expired",
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="k1",
+            value="v1",
+            source="s",
+            created_at=now,
+            updated_at=now,
+            expires_at=now - timedelta(seconds=1),
+        )
+        not_yet_expired = MemoryRecord(
+            id="mem_future",
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="k2",
+            value="v2",
+            source="s",
+            created_at=now,
+            updated_at=now,
+            expires_at=now + timedelta(days=1),
+        )
+        never_expires = MemoryRecord(
+            id="mem_forever",
+            user_id="user-1",
+            category=MemoryCategory.PREFERENCE,
+            key="k3",
+            value="v3",
+            source="s",
+            created_at=now,
+            updated_at=now,
+            expires_at=None,
+        )
+        manager._repository.save(expired)
+        manager._repository.save(not_yet_expired)
+        manager._repository.save(never_expires)
+
+        count = manager._repository.delete_expired_before(now)
+
+        self.assertEqual(count, 1)
+        self.assertIsNone(manager._repository.get("mem_expired"))
+        self.assertIsNotNone(manager._repository.get("mem_future"))
+        self.assertIsNotNone(manager._repository.get("mem_forever"))
+
+
 if __name__ == "__main__":
     unittest.main()

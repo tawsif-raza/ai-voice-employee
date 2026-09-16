@@ -95,6 +95,37 @@ class MemoryRepository:
             self._records.pop(memory_id, None)
             self._versions.pop(memory_id, None)
 
+    def delete_expired_before(self, cutoff) -> int:
+        """
+        Phase 24 (data lifecycle): deletes every memory record whose own
+        `expires_at` is set and before `cutoff` -- i.e. records the
+        application's own existing TTL logic already considers expired
+        (`is_expired()`), never a new retention decision. A record with
+        `expires_at=None` (this repository's own default -- "no
+        expiration was ever set for this fact") is never deleted here;
+        that is a distinct, intentional "keep indefinitely" state, not an
+        oversight this method should silently override. Returns the
+        count deleted.
+
+        Deliberately in-memory only, not mirrored onto
+        MemoryRepositoryPostgres: that class's own docstring states a
+        prior, explicit security decision ("No raw/unscoped query method
+        exists here... never a list_all()/query()-shaped method") this
+        method's DB-level equivalent would cross -- a bulk, cross-user
+        delete is exactly the shape that decision excludes. Left as a
+        documented, undecided finding (PHASE_24 report) rather than
+        silently overridden; this in-memory version remains useful for
+        the dev/test persistence mode, where no such cross-user-query
+        boundary exists to cross (a private, in-process dict, never
+        exposed as a query API to any caller).
+        """
+        with self._lock:
+            expired_ids = [mid for mid, r in self._records.items() if r.expires_at is not None and r.expires_at < cutoff]
+            for mid in expired_ids:
+                self._records.pop(mid, None)
+                self._versions.pop(mid, None)
+            return len(expired_ids)
+
     def list_for_user(self, user_id: str) -> list[MemoryRecord]:
         with self._lock:
             res = []
