@@ -537,5 +537,81 @@ class TestIdempotencyKeyReuseIsSafeByDefault(unittest.TestCase):
         self.assertEqual(result2.status, "duplicate")  # blocked, not silently executed against different params
 
 
+# ── Phase 18 — Production Security Gate: telephony caller-PIN finding ───────
+#
+# F-04 (HIGH): ConversationManager's AWAITING_AUTHENTICATION step (reached
+# when an unauthenticated telephony caller attempts a permission-gated tool
+# action, e.g. ORDER_LOOKUP) compared the caller's spoken PIN against a
+# hardcoded literal ("1234") and granted a real, authenticated `AuthContext`
+# to anyone who spoke it -- not real per-caller identity verification, and
+# entirely undocumented as a limitation anywhere. Fixed by making the
+# accepted PIN an explicit, operator-configured value (`caller_pin`,
+# ConversationManager constructor / TELEPHONY_MOCK_PIN env var) that
+# defaults to None, in which case every AWAITING_AUTHENTICATION attempt now
+# fails closed to human handoff instead of silently trusting any input.
+class TestCallerPinFailsClosedByDefault(unittest.TestCase):
+    def _pending_auth_manager(self, caller_pin=None):
+        registry = build_default_tool_registry()
+        session_manager = SessionManager()
+        tool_orchestrator = ToolOrchestrator(registry, PolicyEngine())
+        manager = ConversationManager(
+            llm_service=FakeLLMService(),
+            clinical_guard=HandoffDetector(config_path=CLINICAL_CONFIG_PATH),
+            handoff_detector=HandoffDetector(config_path=HANDOFF_CONFIG_PATH),
+            tool_orchestrator=tool_orchestrator,
+            session_manager=session_manager,
+            caller_pin=caller_pin,
+        )
+        session_manager.create_session(session_id="s1", user_id=None)
+        session_manager.update_session(
+            "s1",
+            workflow_state="AWAITING_AUTHENTICATION",
+            pending_action="ORDER_LOOKUP",
+            pending_parameters={"order_id": "order_1001"},
+        )
+        return manager, session_manager
+
+    def test_no_caller_pin_configured_rejects_the_old_hardcoded_literal(self):
+        """
+        The exact value ("1234") this code used to accept unconditionally
+        must no longer authenticate anyone when no caller_pin is configured
+        -- the safe default for any real deployment.
+        """
+        manager, session_manager = self._pending_auth_manager(caller_pin=None)
+        final = None
+        for item in manager.handle_turn("It's 1234", session_id="s1"):
+            if not isinstance(item, str):
+                final = item
+        self.assertTrue(final["is_handoff"])
+        session_after = session_manager.get_session("s1", user_id=None)
+        self.assertIsNone(session_after.pending_action)
+        self.assertIsNone(session_after.workflow_state)
+
+    def test_no_caller_pin_configured_fails_closed_regardless_of_what_is_spoken(self):
+        manager, session_manager = self._pending_auth_manager(caller_pin=None)
+        final = None
+        for item in manager.handle_turn("It's 9999", session_id="s1"):
+            if not isinstance(item, str):
+                final = item
+        self.assertTrue(final["is_handoff"])
+
+    def test_configured_caller_pin_accepts_only_the_exact_match(self):
+        manager, session_manager = self._pending_auth_manager(caller_pin="7314")
+        final = None
+        for item in manager.handle_turn("It's 1234", session_id="s1"):
+            if not isinstance(item, str):
+                final = item
+        self.assertTrue(final["is_handoff"], "the old hardcoded literal must not match a different configured PIN")
+
+    def test_configured_caller_pin_authenticates_on_exact_match(self):
+        manager, session_manager = self._pending_auth_manager(caller_pin="7314")
+        final = None
+        for item in manager.handle_turn("It's 7314", session_id="s1"):
+            if not isinstance(item, str):
+                final = item
+        self.assertFalse(final["is_handoff"])
+        self.assertEqual(final["tool"]["status"], "success")
+
+
 if __name__ == "__main__":
     unittest.main()

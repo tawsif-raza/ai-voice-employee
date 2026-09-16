@@ -282,6 +282,7 @@ class ConversationManager:
         max_concurrent_generations: Optional[int] = None,
         sleep_fn=None,
         database=None,
+        caller_pin: Optional[str] = None,
     ):
         """
         Args:
@@ -382,6 +383,21 @@ class ConversationManager:
             sleep_fn:          Injectable delay function for retry backoff
                                (plan.md Step 10.5 — tests must not really
                                sleep). Defaults to time.sleep.
+            caller_pin:        Phase 18 fix. An operator-configured value
+                               compared against what an unauthenticated
+                               telephony caller speaks during the
+                               AWAITING_AUTHENTICATION step (see
+                               handle_turn()'s "2.4b"). This is NOT real
+                               per-caller identity verification -- it is a
+                               single shared secret, at most suitable for
+                               a controlled canary/demo deployment where
+                               every caller is known and trusted out of
+                               band. None (the default, and the only safe
+                               value for any real deployment) disables the
+                               mock PIN entirely: every AWAITING_AUTHENTICATION
+                               attempt fails closed to human handoff
+                               regardless of what is spoken, rather than
+                               silently accepting a hardcoded literal.
         """
         self.llm_service = llm_service
         self.retriever = retriever
@@ -396,6 +412,7 @@ class ConversationManager:
         self.audit_logger = audit_logger
         self.metrics = metrics
         self.database = database
+        self.caller_pin = caller_pin
         self.rag_top_k = rag_top_k
         self.rag_score_threshold = rag_score_threshold
         self.system_prompt = system_prompt or self.SYSTEM_PROMPT
@@ -701,21 +718,68 @@ class ConversationManager:
                 and session.pending_action
                 and self.tool_orchestrator is not None
             ):
+                if self.caller_pin is None:
+                    # Phase 18 security-gate fix: this used to accept a
+                    # hardcoded literal ("1234") from any caller as valid
+                    # identity verification -- see PHASE_18 report. There
+                    # is no real per-caller PIN store, so the only safe
+                    # default is fail-closed: never accept any spoken
+                    # value, always hand off to a human. An operator may
+                    # opt into the old (still not real-identity) mock
+                    # behavior by explicitly configuring caller_pin, e.g.
+                    # for a controlled canary where every caller is known
+                    # out of band.
+                    reply = (
+                        "For your security, I'm not able to verify your identity "
+                        "automatically right now — let me connect you with a human agent."
+                    )
+                    self.session_manager.update_session(
+                        session_id,
+                        workflow_state=None,
+                        pending_action=None,
+                        pending_parameters={},
+                    )
+                    yield reply
+                    yield self._final(
+                        reply,
+                        is_handoff=True,
+                        confidence=1.0,
+                        latency_ms=0.0,
+                        retrieved_chunks=[],
+                        clinical_guard_triggered=False,
+                    )
+                    return
                 pin_match = re.search(r"\b\d{4}\b", user_input)
                 if pin_match:
                     pin = pin_match.group(0)
-                    # Use a mock validation: 1234 is accepted as a valid PIN for the canary.
-                    if pin == "1234":
+                    if pin == self.caller_pin:
                         new_metadata = dict(session.metadata)
                         new_metadata["authenticated_caller"] = True
                         self.session_manager.update_session(session_id, metadata=new_metadata)
-                        # Re-execute with newly authenticated identity
+                        # Re-execute with newly authenticated identity.
+                        # Phase 18 fix: this previously set roles=["caller"],
+                        # a string with no entry in identity.py's
+                        # ROLE_PERMISSIONS table and no `permissions` set
+                        # either -- AuthContext.has_permission() is a pure
+                        # membership check against `permissions` (never
+                        # derived from `roles`), so the resulting context
+                        # could pass PolicyEngine's `authenticated` check
+                        # but would then fail every actual permission
+                        # check, silently turning "successful" PIN entry
+                        # into an unusable identity for every real action
+                        # (ORDER_LOOKUP, BOOK_APPOINTMENT, ...). Grant the
+                        # same least-privilege Role.USER permission set
+                        # DevelopmentAuthenticationProvider grants an
+                        # ordinary authenticated user.
                         from action_models import AuthContext
+                        from identity import Role, permissions_for_roles
 
                         new_auth = AuthContext(
                             user_id=session.user_id or "telephony_caller",
                             authenticated=True,
-                            roles=["caller"],
+                            roles=(Role.USER.value,),
+                            permissions=permissions_for_roles((Role.USER,)),
+                            authentication_method="telephony_pin",
                         )
                         reply, tool_metadata = self._execute_pending_authentication(session, new_auth)
                         yield reply
@@ -1714,6 +1778,7 @@ def build_conversation_manager(
     reliability_enabled: bool = True,
     persistence_enabled: bool = True,
     llm_provider=None,
+    caller_pin: Optional[str] = None,
 ) -> ConversationManager:
     """
     Build a fully-wired ConversationManager: resolve LLMService/LLMProvider
@@ -1733,6 +1798,14 @@ def build_conversation_manager(
     """
     if _INFERENCE_DIR not in sys.path:
         sys.path.insert(0, _INFERENCE_DIR)
+
+    # Phase 18: an explicit argument always wins; otherwise resolve from
+    # TELEPHONY_MOCK_PIN. Unset (the safe default for any real
+    # deployment) leaves caller_pin=None, which ConversationManager
+    # treats as "fail closed to human handoff" -- see its own docstring
+    # and handle_turn()'s AWAITING_AUTHENTICATION step.
+    if caller_pin is None:
+        caller_pin = os.environ.get("TELEPHONY_MOCK_PIN") or None
 
     # Note: which max_concurrent_generations default applies (below, via
     # _resolve_max_concurrent_generations()) is decided by llm_service's
@@ -1942,4 +2015,5 @@ def build_conversation_manager(
         llm_circuit_breaker=llm_circuit_breaker,
         max_concurrent_generations=max_concurrent_generations,
         database=persistence.database,
+        caller_pin=caller_pin,
     )

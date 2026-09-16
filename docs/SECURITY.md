@@ -1,7 +1,7 @@
 # Security Overview
 
-**Status:** Living document, first published Phase 11 (2026-08-18).
-**Scope:** The AI Voice Employee conversational assistant — FastAPI (`src/api/server.py`) through `ConversationManager`, `PolicyEngine`, `ClinicalSafetyGuard`, `AuthenticationProvider`, `PrivacyService`, `SessionManager`, `MemoryManager`, `ToolOrchestrator`, and the observability/reliability layers built in Phases 3–10.
+**Status:** Living document, first published Phase 11 (2026-08-18), updated Phase 18 (2026-09-16).
+**Scope:** The AI Voice Employee conversational assistant — FastAPI (`src/api/server.py`) through `ConversationManager`, `PolicyEngine`, `ClinicalSafetyGuard`, `AuthenticationProvider`, `PrivacyService`, `SessionManager`, `MemoryManager`, `ToolOrchestrator`, and the observability/reliability layers built in Phases 3–16, plus the PostgreSQL persistence layer (Phase 12), OpenTelemetry tracing (Phase 14), request-isolated job execution (Phase 15), Twilio webhook/WebSocket signature validation, and the Gemini/Groq free-tier provider path (both added after Phase 16).
 
 This document does not claim the system is "100% secure," nor does it claim regulatory compliance of any kind — no formal compliance assessment has been performed. It documents the threat model, trust boundaries, security invariants this codebase enforces, the classes of attack tested against, and known residual risks, so that claims about this system's security posture are traceable to actual tests rather than assertions.
 
@@ -87,10 +87,21 @@ All 27 required scenarios have dedicated regression coverage. See `PHASE_11_SECU
 26 (concurrency race) — `test_concurrency.py`, `test_security_red_team.py::TestConfirmationReplayRace`.
 27 (malformed configuration) — `test_security_red_team.py::TestConfigurationTamperingFailsSafe`, `test_oidc_provider.py::TestLoadOidcConfig`, `test_auth_mode_separation.py`.
 
-## 6. Residual Risks
+## 6. Phase 18 — Production Security Gate Findings
+
+Full write-up: `PHASE_18_SECURITY_GATE_REPORT.md`. One genuine finding from this pass:
+
+| ID | Severity | Component | Attack | Impact | Fix | Regression Test | Status |
+|---|---|---|---|---|---|---|---|
+| F-04 | HIGH | `conversation_manager.py`'s `AWAITING_AUTHENTICATION` step (telephony caller-PIN verification) | An unauthenticated telephony caller reaching a permission-gated tool action was asked for a "4-digit PIN" that was compared against a hardcoded literal (`"1234"`) — any caller who spoke it was granted a real `AuthContext`. A second, compounding defect meant that context was built with `roles=["caller"]` and no `permissions`, so even a "successful" PIN entry could never actually pass any subsequent permission check. | Any caller could impersonate an authenticated telephony identity by speaking a publicly-known 4-digit value; separately, the feature could never functionally succeed even for a legitimate caller. | `ConversationManager` gained an explicit `caller_pin` parameter (`TELEPHONY_MOCK_PIN` env var), defaulting to `None`. `None` now fails closed — every `AWAITING_AUTHENTICATION` attempt hands off to a human instead of accepting any spoken value. When explicitly configured (for a controlled canary only — this remains a single shared secret, not real per-caller identity verification), the re-authenticated context is granted `permissions_for_roles((Role.USER,))` instead of an empty, unusable permission set. | `tests/test_security_red_team.py::TestCallerPinFailsClosedByDefault` (4 tests) | Fixed |
+
+No CRITICAL findings. No unresolved P0/P1.
+
+## 7. Residual Risks
 
 Explicitly not mitigated by this codebase (out of scope or requires infrastructure this repository does not own):
 
+- **Telephony caller identity is not real per-caller verification.** Even with `TELEPHONY_MOCK_PIN` configured (Section 6, F-04), authentication is a single shared secret common to every caller, not a per-patient/per-caller credential. A real deployment needs an actual caller-identity mechanism (e.g. a real per-patient PIN store, SMS OTP, or binding to the calling phone number) before this path is used for anything beyond a controlled canary with known callers — tracked as a Phase 20 (Voice Workflow Completeness) / Phase 26 (Production Deployment) prerequisite, not invented here per plan.md Rule 5 (no invented business requirements).
 - **External Identity Provider compromise.** `OIDCAuthenticationProvider` trusts whatever the configured IdP signs; a compromised IdP is outside this application's control.
 - **External business API compromise.** Mock tools stand in for real business systems; a real integration's own security is not this codebase's responsibility.
 - **Host/infrastructure compromise.** No amount of application-layer hardening protects against a compromised host, container escape, or supply-chain attack on a dependency.
@@ -100,13 +111,14 @@ Explicitly not mitigated by this codebase (out of scope or requires infrastructu
 - **No distributed rate limiting.** Abuse protection is limited to Phase 8's in-process `SecurityEventDetector` repeated-failure threshold.
 - **No MFA, account recovery, or refresh-token lifecycle** — entirely the external IdP's responsibility (Phase 9 scope).
 
-## 7. Security Testing Methodology
+## 8. Security Testing Methodology
 
 Per plan.md's explicit quality requirements: every security test in this codebase verifies **actual system state** (a returned object, a recorded audit event, an actual side effect, an actual exception) — never generated response prose as proof. Tests are deterministic and reproducible; concurrency tests use real threads with deterministic final-state assertions (never timing as the pass/fail condition). See `PHASE_11_SECURITY_RED_TEAM_REPORT.md` for the full red-team methodology (five-stage: attack-surface mapping → automated adversarial tests → manual logic review → fix vulnerabilities → regression + report) and findings.
 
-## 8. Known Limitations
+## 9. Known Limitations
 
 - No formal penetration test or third-party security audit has been performed — this is internal, automated adversarial testing only.
 - No fuzzing was used as a primary testing method (plan.md explicitly discourages relying on fuzzing alone); all tests here are deterministic, hand-crafted attack simulations.
 - Reliability (Phase 10) and security (Phase 11) testing both run against in-memory test doubles for storage — no durable-storage failure mode has been exercised (see Phase 10 report's Limitations).
-- This document will drift from the codebase over time if not updated alongside future security-relevant changes; treat it as a snapshot as of Phase 11, not a live scan.
+- This document will drift from the codebase over time if not updated alongside future security-relevant changes; treat it as a snapshot as of Phase 18, not a live scan.
+- Twilio `X-Twilio-Signature` enforcement on the `/ws/call` WebSocket upgrade (Section 4) is implemented and unit/integration-tested offline, but explicitly disclosed as **best-effort** — Twilio's exact signing behavior for a Media Streams WebSocket upgrade has not been confirmed against real Twilio traffic (no live Twilio credentials/staging endpoint exist yet; see `LIVE_VERIFICATION_RUNBOOK.md` and Phase 17).
