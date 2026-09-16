@@ -835,6 +835,24 @@ autonomously -- reporting as a blocker rather than continuing.
 
 # PHASE 26 — PRODUCTION DEPLOYMENT
 
+Status: PLANNING COMPLETE, DEPLOYMENT NOT STARTED (2026-09-16). See
+docs/PHASE_26_DEPLOYMENT_PLAN.md. Full deployment plan prepared covering
+all 20 required areas (hosting, compute, Postgres, TLS, WebSocket, DNS,
+Twilio, secrets, observability, health checks, migrations, backup,
+deployment strategy, canary strategy, rollback, cost estimate, required
+credentials, manual steps, security, Definition of Done). Every existing
+reusable artifact was inventoried (Docker/Compose configs, health
+endpoints, /metrics, tracing, canary/rollback docs, Alembic migrations)
+and none were rewritten. No infrastructure created, no cost incurred, no
+account/domain/credential invented. Two small documentation gaps
+identified (missing GROQ_API_KEY/TELEPHONY_MOCK_PIN in .env.canary.example
+and docs/CANARY_DEPLOYMENT.md's env table; dev-default POSTGRES_PASSWORD
+must never be reused) -- flagged, not fixed, per instruction to plan only.
+Remains BLOCKED on real inputs (hosting choice, domain, Twilio account,
+OIDC provider, Deepgram/ElevenLabs/Gemini/Groq keys -- see the plan
+doc's Section 17 for the exact list). Phase 27/28 explicitly not started
+per instruction.
+
 Objective:
 
 Deploy the verified system to production safely.
