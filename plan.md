@@ -577,6 +577,19 @@ docs/PHASE_20_VOICE_WORKFLOW_REPORT.md
 
 # PHASE 21 — PERFORMANCE & LOAD
 
+Status: COMPLETE (2026-09-16). See PHASE_21_PERFORMANCE_REPORT.md.
+New scripts/performance_load_test.py (Phase 16 harness pattern reused).
+Default construction path (max_concurrent_generations=1) confirmed fully
+serial (re-confirms a known, disclosed Phase 16 characteristic); factory/
+remote-provider-configured path (max_concurrent_generations=20) handled
+5/20/50 concurrent jobs with 0 errors; 300 sustained sequential requests:
+0 errors, 0MB memory growth; 20 concurrent requests against real local
+Postgres: 0 errors, p99 50ms (LIVE). Scaling/failure threshold NOT
+FOUND (load never pushed high enough to break -- disclosed honestly, not
+guessed). WebSocket/Twilio load NOT RUN (needs live Twilio, blocked same
+as Phase 17). No unresolved P0/P1; no application code changed (pure
+measurement pass). Next eligible: Phase 22.
+
 Objective:
 
 Determine the actual system capacity.
