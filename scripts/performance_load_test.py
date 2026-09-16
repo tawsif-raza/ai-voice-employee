@@ -171,7 +171,7 @@ def _poll_job(client: httpx.Client, base_url: str, job_id: str, deadline_seconds
 # ---------------------------------------------------------------------------
 
 
-def test_1_concurrency_default_semaphore(concurrency: int = 10, delay: float = 0.3) -> None:
+def scenario_1_concurrency_default_semaphore(concurrency: int = 10, delay: float = 0.3) -> None:
     server._conversation_manager = _fake_conversation_manager(FixedDelayLLMService(delay, "Done."))
     with _live_server() as base_url:
         before = _sample()
@@ -215,7 +215,7 @@ def test_1_concurrency_default_semaphore(concurrency: int = 10, delay: float = 0
 # ---------------------------------------------------------------------------
 
 
-def test_2_concurrency_configured(concurrency: int, delay: float = 0.3, max_concurrent: int = 20) -> None:
+def scenario_2_concurrency_configured(concurrency: int, delay: float = 0.3, max_concurrent: int = 20) -> None:
     server._conversation_manager = _fake_conversation_manager(FixedDelayLLMService(delay, "Done."), max_concurrent_generations=max_concurrent)
     with _live_server() as base_url:
         before = _sample()
@@ -260,7 +260,7 @@ def test_2_concurrency_configured(concurrency: int, delay: float = 0.3, max_conc
 # ---------------------------------------------------------------------------
 
 
-def test_3_sustained_load(n: int = 300) -> None:
+def scenario_3_sustained_load(n: int = 300) -> None:
     server._conversation_manager = _fake_conversation_manager(FixedDelayLLMService(0.0, "Our hours are 9 to 5."))
     with _live_server() as base_url, httpx.Client(timeout=10.0) as client:
         before = _sample()
@@ -303,7 +303,7 @@ def test_3_sustained_load(n: int = 300) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_4_database_pressure(concurrency: int = 20) -> None:
+def scenario_4_database_pressure(concurrency: int = 20) -> None:
     container = "docker-postgres-1"
     if not _docker_container_exists(container):
         _record(
@@ -383,7 +383,7 @@ def test_4_database_pressure(concurrency: int = 20) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_5_websocket_pressure_not_run() -> None:
+def scenario_5_websocket_pressure_not_run() -> None:
     _record(
         "21.5",
         "WebSocket / Twilio Media Streams load",
@@ -406,13 +406,13 @@ if __name__ == "__main__":
     print("=" * 70)
     print(f"Baseline process sample: {_sample()}")
 
-    test_1_concurrency_default_semaphore(concurrency=10, delay=0.3)
-    test_2_concurrency_configured(concurrency=5, delay=0.3, max_concurrent=20)
-    test_2_concurrency_configured(concurrency=20, delay=0.3, max_concurrent=20)
-    test_2_concurrency_configured(concurrency=50, delay=0.3, max_concurrent=20)
-    test_3_sustained_load(n=300)
-    test_4_database_pressure(concurrency=20)
-    test_5_websocket_pressure_not_run()
+    scenario_1_concurrency_default_semaphore(concurrency=10, delay=0.3)
+    scenario_2_concurrency_configured(concurrency=5, delay=0.3, max_concurrent=20)
+    scenario_2_concurrency_configured(concurrency=20, delay=0.3, max_concurrent=20)
+    scenario_2_concurrency_configured(concurrency=50, delay=0.3, max_concurrent=20)
+    scenario_3_sustained_load(n=300)
+    scenario_4_database_pressure(concurrency=20)
+    scenario_5_websocket_pressure_not_run()
 
     print("\n" + "=" * 70)
     print("SUMMARY (JSON)")

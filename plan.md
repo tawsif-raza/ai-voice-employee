@@ -635,6 +635,22 @@ docs/PHASE_21_PERFORMANCE_REPORT.md
 
 # PHASE 22 — OBSERVABILITY & INCIDENT RESPONSE
 
+Status: COMPLETE (2026-09-16). See PHASE_22_OBSERVABILITY_INCIDENT_RESPONSE_REPORT.md.
+Most of this phase's task list already existed (Phase 8/10/11/12/14
+tracing/metrics/audit/rollback). One real gap found and closed: metrics
+were fully recorded in-process but never externally reachable -- new
+GET /metrics (JSON snapshot, unauthenticated, aggregate-only, matches
+/health's pattern). New docs/INCIDENT_RESPONSE.md: alert definitions
+grounded in real metric/event names, the 4-signal (metrics/audit/trace/
+log) diagnosis method, 3 incident playbooks. 3 new tests. Also fixed a
+housekeeping issue found while validating: Phase 21's script filename
+matched pytest's default discovery glob, unlike Phase 16's; renamed its
+internal functions so a bare `pytest -q` no longer errors (CI's actual
+`pytest tests/` invocation was never affected). Full suite (both
+`pytest tests/ -q` and bare `pytest -q`): 917 passed, 0 failed. No
+unresolved P0/P1. Next eligible: Phase 24 (Phase 23 needs real usage
+data this system does not have yet -- same Phase 17/19 dependency).
+
 Objective:
 
 Make the system operable without the developer watching the terminal.

@@ -478,6 +478,30 @@ def voice_health() -> dict:
     }
 
 
+@app.get("/metrics")
+def metrics() -> dict:
+    """
+    Phase 22: exposes MetricsRegistry.snapshot() -- an aggregate-only
+    view (no per-request/per-user data, no high-cardinality label; see
+    that method's and MetricsRegistry's own docstrings) -- so an external
+    monitoring platform can scrape it, closing this repository's
+    previously-disclosed gap (metrics.py's own module docstring already
+    states no external platform is wired up). JSON, not the Prometheus
+    text exposition format, to match this API's existing convention
+    (/health, /health/voice, /ready are all JSON) rather than introduce a
+    new response format and a new dependency for a single endpoint --
+    any scraper can transform JSON, and this deliberately does not pick
+    a monitoring platform on the deployer's behalf (plan.md: do not
+    introduce one speculatively). See docs/INCIDENT_RESPONSE.md for the
+    alert thresholds defined against these exact counter/histogram names.
+    Unauthenticated, matching /health and /health/voice -- the payload
+    contains no secret or user-identifying data.
+    """
+    if _metrics is None:
+        return {"counters": {}, "histograms": {}}
+    return _metrics.snapshot()
+
+
 @app.get("/ready")
 def ready() -> JSONResponse:
     """

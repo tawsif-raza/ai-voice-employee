@@ -150,6 +150,38 @@ class TestHealthEndpoint(unittest.TestCase):
         self.assertEqual(resp.json(), {"status": "ok", "model_loaded": True})
 
 
+class TestMetricsEndpoint(unittest.TestCase):
+    """Phase 22: /metrics exposes MetricsRegistry.snapshot() for external scraping."""
+
+    def test_metrics_returns_snapshot_shape(self):
+        client = TestClient(server.app)
+        resp = client.get("/metrics")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("counters", body)
+        self.assertIn("histograms", body)
+        self.assertIn("requests_total", body["counters"])
+        self.assertIn("generation_latency_ms", body["histograms"])
+
+    def test_metrics_reflects_real_recorded_values(self):
+        server._metrics.increment("requests_total")
+        before = server._metrics.get_counter("requests_total")
+        client = TestClient(server.app)
+        resp = client.get("/metrics")
+        self.assertEqual(resp.json()["counters"]["requests_total"], before)
+
+    def test_metrics_never_returns_none_when_registry_missing(self):
+        original = server._metrics
+        try:
+            server._metrics = None
+            client = TestClient(server.app)
+            resp = client.get("/metrics")
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json(), {"counters": {}, "histograms": {}})
+        finally:
+            server._metrics = original
+
+
 class TestReadyEndpoint(unittest.TestCase):
     """
     Phase 8, plan.md Step 8.14; updated Phase 13 Step 13.1 — /ready reports readiness:
