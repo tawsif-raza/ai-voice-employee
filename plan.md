@@ -835,6 +835,40 @@ autonomously -- reporting as a blocker rather than continuing.
 
 # PHASE 26 — PRODUCTION DEPLOYMENT
 
+Status: PARTIALLY COMPLETE (2026-09-16, execution pass). See
+docs/PHASE_26_PRODUCTION_DEPLOYMENT_REPORT.md for the execution report
+(this supersedes the planning-only status below). Real AWS infrastructure
+provisioned in us-east-1 (account 801702847930) per user-approved
+decisions: ECS Fargate (dedicated cluster/service, distinct from the
+account's pre-existing unrelated my-backend-cluster/ai-video-studio-staging
+resources), RDS PostgreSQL 16 (dedicated instance, real connectivity
+validated via /ready=200), Secrets Manager (10 secrets, DB URL real,
+others placeholder), ALB (real public DNS, HTTP), CloudWatch
+logs/alarms (4 alarms, all OK against live metrics). Migrations applied
+and verified (6 tables present). WebSocket endpoint reachable and
+correctly enforces Twilio signature rejection (403 on unsigned request).
+Graceful degradation verified under a real provider auth failure
+(placeholder Gemini/Groq keys -> safe handoff response, not a crash).
+Local Docker build failed twice (host OOM, 0.1-0.3GB free RAM) --
+pivoted to AWS CodeBuild (3 new resources: S3 bucket, CodeBuild project
++ role) and a new lean docker/Dockerfile.production (126MB, excludes
+unneeded ML/RAG stack per the user's Gemini+Groq-only routing decision,
+confirmed safe by reading the actual import graph) rather than repeatedly
+retrying a build this environment cannot sustain. Found and fixed 2 real
+gaps: docker/Dockerfile never copied alembic.ini/alembic/ (migrations
+couldn't run in any built container); the lean image crashed on RAG's
+missing numpy dependency (fixed via a build-time config patch scoped to
+the production image only, original docker/Dockerfile/configs/config.yaml
+untouched). BLOCKED, explicitly not faked: public HTTPS (no domain --
+confirmed zero Route53 zones/registered domains in this AWS account),
+Twilio webhook, real Deepgram/ElevenLabs/Gemini/Groq keys, OIDC provider
+(AUTH_MODE left at dev default so validation could proceed -- explicitly
+flagged as not production-safe for real traffic). Phase 17/19 remain
+UNRESOLVED; Phase 23 remains DEFERRED. Full suite: 924 passed, 0 failed
+(unchanged). Recommending a user check-in before Phase 27 (Production
+Canary), which needs the same blocked inputs.
+
+--- Planning-pass status (superseded above) ---
 Status: PLANNING COMPLETE, DEPLOYMENT NOT STARTED (2026-09-16). See
 docs/PHASE_26_DEPLOYMENT_PLAN.md. Full deployment plan prepared covering
 all 20 required areas (hosting, compute, Postgres, TLS, WebSocket, DNS,

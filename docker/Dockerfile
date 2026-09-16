@@ -18,6 +18,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY configs/ configs/
 COPY src/ src/
 COPY scripts/ scripts/
+# Phase 26: alembic.ini + alembic/ were never copied into the image, so
+# `alembic upgrade head` (docs/DATABASE.md's own documented migration
+# step, and docs/ROLLBACK_PROCEDURE.md's `alembic downgrade -1`) could
+# not actually run inside a built container -- undetected until this
+# phase's first real image build + deploy. Minimal, additive fix.
+COPY alembic.ini .
+COPY alembic/ alembic/
 # data/ is intentionally not copied — mount it as a volume (docker-compose.yml)
 # so large datasets don't bloat the image and stay editable without a rebuild.
 

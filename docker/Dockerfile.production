@@ -1,0 +1,61 @@
+# AI Voice Employee — lean remote-provider production image (Phase 26).
+#
+# Companion to docker/Dockerfile (unmodified, still the image for local-
+# model/training/RAG use). This one is for a deployment configured with
+# LLM_PROVIDER=free_fallback/gemini/groq/claude/fallback and rag_enabled=
+# false -- no on-box model, no CUDA, no FAISS index. It exists because
+# docker/Dockerfile's ~3.6GB CUDA base image + full ML stack could not be
+# built in this deployment environment's available memory (Phase 26 --
+# see PHASE_26_PRODUCTION_DEPLOYMENT_REPORT.md), and because a remote-
+# provider-only deployment does not need any of that weight in the first
+# place (confirmed by reading src/api/server.py's and conversation_
+# manager.py's top-level imports directly -- the local-model and RAG code
+# paths import their heavy dependencies lazily, inside functions, gated
+# behind LLM_PROVIDER/rag_enabled, never at module import time).
+#
+# If a future deployment needs the local model or RAG, use
+# docker/Dockerfile instead -- do not add torch/transformers/faiss back
+# to this one.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-production.txt .
+RUN pip install --no-cache-dir -r requirements-production.txt
+
+COPY configs/ configs/
+COPY src/ src/
+COPY scripts/ scripts/
+COPY alembic.ini .
+COPY alembic/ alembic/
+# data/ is intentionally not copied -- this image never loads a local
+# model or knowledge-base index (same reasoning as docker/Dockerfile).
+
+# Phase 26: src/api/server.py's lifespan hardcodes rag_enabled=True on
+# every build_conversation_manager() call (no env var exposes it) --
+# RAG is gated only by configs/config.yaml's own rag.enabled flag. This
+# image intentionally excludes RAG's dependencies (faiss-cpu,
+# sentence-transformers, numpy -- confirmed missing caused a real
+# ModuleNotFoundError startup crash during this phase's first deploy
+# attempt), so it must disable RAG here, in THIS image only -- never by
+# editing the shared repo-root configs/config.yaml, which the full
+# docker/Dockerfile (local model + RAG) still needs at rag.enabled=true.
+# Matched to configs/config.yaml's exact current line (verified via grep
+# to be the only "enabled: true" occurrence in the file before adding
+# this); re-verify if that file's rag section is ever reformatted.
+RUN sed -i 's/^  enabled: true$/  enabled: false/' configs/config.yaml
+
+RUN chmod +x scripts/*.sh
+
+ENV PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    PORT=8000
+
+EXPOSE 8000
+
+CMD ["scripts/run_pipeline.sh", "--serve"]

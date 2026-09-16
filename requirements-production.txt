@@ -1,0 +1,51 @@
+# Phase 26: trimmed dependency set for a remote-provider-only production
+# deployment (LLM_PROVIDER=free_fallback/gemini/groq/claude/fallback --
+# no on-box local model, no RAG). Deliberately excludes requirements.txt's
+# "Core ML stack" (transformers/peft/trl/bitsandbytes/accelerate/datasets/
+# huggingface_hub/safetensors/tokenizers) and "RAG" (faiss-cpu/
+# sentence-transformers) sections, plus `rich` (CLI-only formatting) and
+# `pygame-ce` (local audio playback for src/voice/client_tts.py's CLI
+# client, not used by the server).
+#
+# Safe to exclude because none of them are imported at module level
+# anywhere in the request-serving import graph (src/api/server.py ->
+# conversation_manager.py's top-level imports) -- verified by reading
+# both files directly. build_conversation_manager()'s local-model
+# (llm_service.LLMService) and RAG (rag.retriever.Retriever) code paths
+# import those packages lazily, inside the function, gated behind
+# LLM_PROVIDER and rag_enabled -- both configured off for this
+# deployment. If a future deployment re-enables the local model or RAG,
+# it must go back to the full docker/Dockerfile + requirements.txt, not
+# this file.
+#
+# requirements.txt remains the source of truth for version pins; this
+# file is requirements.txt with exactly those sections removed -- keep
+# it in sync by hand when requirements.txt's non-excluded sections change.
+
+# Config / CLI / terminal output
+PyYAML==6.0.3
+
+# Inference API (src/api/server.py)
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+
+# Production OIDC/JWT authentication (src/agent/oidc_provider.py, Phase 9)
+PyJWT==2.13.0
+cryptography==50.0.0
+
+# Voice provider clients (src/voice/stt_service.py, tts_service.py)
+requests==2.34.2
+elevenlabs==2.58.0
+
+# Persistence (src/agent/db.py, Phase 12)
+SQLAlchemy==2.0.52
+psycopg2-binary==2.9.12
+alembic==1.19.1
+
+# Distributed tracing (Phase 14)
+opentelemetry-api==1.33.0
+opentelemetry-sdk==1.33.0
+opentelemetry-instrumentation-fastapi==0.54b0
+opentelemetry-instrumentation-sqlalchemy==0.54b0
+opentelemetry-instrumentation-requests==0.54b0
+opentelemetry-exporter-otlp-proto-grpc==1.33.0
