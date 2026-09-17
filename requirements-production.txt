@@ -28,6 +28,10 @@ PyYAML==6.0.3
 # Inference API (src/api/server.py)
 fastapi==0.139.2
 uvicorn[standard]==0.51.0
+# Required by Starlette's request.form() for Twilio's form-encoded
+# webhook POST bodies (twiml_inbound_call) -- without it every real
+# inbound call 500s at the webhook.
+python-multipart==0.0.32
 
 # Production OIDC/JWT authentication (src/agent/oidc_provider.py, Phase 9)
 PyJWT==2.13.0

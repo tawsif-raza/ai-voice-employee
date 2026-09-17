@@ -26,12 +26,11 @@ Run with:
 
 import json
 import os
-import statistics
 import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -75,7 +74,9 @@ def _percentiles(latencies_ms: list[float]) -> dict:
 
 
 def _record(test_id: str, name: str, result: str, evidence: str, source: str, notes: str) -> None:
-    _RESULTS.append({"test_id": test_id, "name": name, "result": result, "evidence": evidence, "source": source, "notes": notes})
+    _RESULTS.append(
+        {"test_id": test_id, "name": name, "result": result, "evidence": evidence, "source": source, "notes": notes}
+    )
     print(f"\n[{test_id}] {name}: {result} ({source})")
     print(f"  Evidence: {evidence}")
     print(f"  Notes: {notes}")
@@ -216,7 +217,9 @@ def scenario_1_concurrency_default_semaphore(concurrency: int = 10, delay: float
 
 
 def scenario_2_concurrency_configured(concurrency: int, delay: float = 0.3, max_concurrent: int = 20) -> None:
-    server._conversation_manager = _fake_conversation_manager(FixedDelayLLMService(delay, "Done."), max_concurrent_generations=max_concurrent)
+    server._conversation_manager = _fake_conversation_manager(
+        FixedDelayLLMService(delay, "Done."), max_concurrent_generations=max_concurrent
+    )
     with _live_server() as base_url:
         before = _sample()
         t_wall0 = time.perf_counter()
