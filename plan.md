@@ -1053,3 +1053,32 @@ Never fabricate validation.
 
 The repository state is the source of truth.
 
+
+# PRODUCT READINESS AUDIT (2026-09-17)
+
+Status: COMPLETE. See docs/PRODUCT_READINESS_AUDIT.md and
+docs/DEPLOYMENT_HANDOFF.md.
+
+Per a 2026-09-17 strategy change, cloud/production deployment (Phases
+26-28) was deprioritized behind finishing the application itself
+(Priorities 1-9). Re-audited every application-level area against fresh
+evidence rather than trusting prior reports at face value: full suite
+re-run (`python -m pytest tests/ -q`), ruff format, ruff check, mypy.
+Found and fixed two real, previously-undetected defects: `python-multipart`
+was never declared in requirements.txt/requirements-production.txt despite
+the Twilio inbound webhook requiring it for `request.form()` (every real
+call would have 500'd), and CI's own format/lint gates were silently
+failing on main (6 files needed reformatting, 6 lint errors, all
+mechanical -- unused imports/one unused loop var/import ordering). Both
+fixed, commit 0e92715; full suite re-confirmed 924/924 after.
+
+Conclusion: Phases 1-16, 18, 20-22, 24-25 are COMPLETE at the strongest
+evidence level achievable without external credentials. Phases 17, 19, 23
+remain genuinely BLOCKED/DEFERRED on real Twilio/Deepgram/ElevenLabs/OIDC
+credentials and real production traffic -- not on remaining engineering
+work. No further product-development phase is currently eligible.
+docs/DEPLOYMENT_HANDOFF.md documents everything the deployment track
+(Phase 26 resumption, 27, 28) needs once the user intentionally begins it.
+Per the current strategy's own instruction, product development stops
+here pending that decision.
+
