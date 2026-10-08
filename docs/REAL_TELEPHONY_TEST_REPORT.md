@@ -43,6 +43,7 @@
 | Consecutive failures | NOT RUN | **PASS** | Failures 1 and 2: apology + call continues; failure 3: call ends (code 1000), each at ~15.0 s (first-token deadline) |
 | Concurrency | NOT RUN | **PASS** | 5 simultaneous calls all answered; slots released afterwards |
 | Security/logging | NOT RUN | **PASS** | 388 log lines: no Gemini/Groq/Deepgram/ElevenLabs sentinel key, caller number never unmasked, no transcript or answer text |
+| Real ElevenLabs API (one-off) | **BLOCKED** | — | The only provider credential available was an ElevenLabs value placed in `.env.canary.example`. The real API rejected every request with **HTTP 400** `api_key_id_used_as_api_key`: it is a key *ID*, not a secret key (`sk_…`). Request-format variants all gave the same answer, so the adapter is not at fault. Confirmed: the adapter turns this real 400 into `TTSError` (call apologises/ends instead of going silent); the value never appeared in logs. No audio synthesized. |
 
 ## Latency Measurements
 
@@ -105,7 +106,7 @@ Deadline accuracy (configured → measured): filler 4 s → 4.04 s · first-toke
 
 | Priority | Change |
 |---|---|
-| **P0** | Obtain a test Twilio account/number, Deepgram/ElevenLabs keys, Gemini/Groq keys and a tunnel; run the readiness procedure. Nothing else can validate R1–R3. |
+| **P0** | Obtain a test Twilio account/number, Deepgram/ElevenLabs keys (an ElevenLabs **secret key** `sk_…`, not a key ID), Gemini/Groq keys and a tunnel; supply them as environment variables, never in tracked files; run the readiness procedure. Nothing else can validate R1–R3. |
 | **P0** (on first call) | If R1 is confirmed (`Rejected /ws/call … X-Twilio-Signature`), accept the documented signed-URL variants, each still HMAC-verified, with a regression test; re-run CI. |
 | **P1** | U1: decide the greeting (text + whether it can be barged-in). |
 | **P1** | U2: replace "connect you with a human agent" with wording that matches what actually happens, or implement a transfer (a product decision). |
