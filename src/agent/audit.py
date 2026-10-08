@@ -28,6 +28,7 @@ becomes a real requirement.
 
 import logging
 import threading
+from collections import deque
 from typing import Optional
 
 from observability_models import AuditEvent, EventType, SecurityEvent, Severity, new_event_id, now_utc
@@ -46,12 +47,22 @@ class AuditRepository:
     API (plan.md: "Audit records should not become user-editable
     memory"). Append-only from this class's own perspective: there is no
     update()/delete() method.
+
+    Bounded: at most `max_events` audit events and `max_events` security
+    events are retained, oldest evicted first. This is the live server's
+    store whenever PostgreSQL persistence is off, so an unbounded list
+    grew for the life of the process (docs/MASTER_PROJECT_PLAN.md F-08).
     """
 
-    def __init__(self):
+    DEFAULT_MAX_EVENTS = 10_000
+
+    def __init__(self, max_events: int = DEFAULT_MAX_EVENTS):
+        if max_events < 1:
+            raise ValueError("max_events must be >= 1")
+        self.max_events = max_events
         self._lock = threading.Lock()
-        self._events: list[AuditEvent] = []
-        self._security_events: list[SecurityEvent] = []
+        self._events: deque[AuditEvent] = deque(maxlen=max_events)
+        self._security_events: deque[SecurityEvent] = deque(maxlen=max_events)
 
     def append(self, event: AuditEvent) -> None:
         with self._lock:
@@ -112,13 +123,35 @@ class AuditLogger:
     """
 
     def __init__(self, privacy_service=None, repository: Optional[AuditRepository] = None):
-        self._privacy_service = privacy_service
+        self._has_explicit_repository = repository is not None
         self._repository = repository or AuditRepository()
+        self._set_privacy_service(privacy_service)
+
+    def _set_privacy_service(self, privacy_service) -> None:
+        self._privacy_service = privacy_service
         self._logger = (
             get_privacy_aware_logger(privacy_service, name=_AUDIT_LOGGER_NAME)
             if privacy_service is not None
             else logging.getLogger(_AUDIT_LOGGER_NAME)
         )
+
+    def attach_defaults(self, repository: Optional[AuditRepository] = None, privacy_service=None) -> None:
+        """
+        Fills in whatever this logger was constructed without -- the
+        persisted repository and/or the privacy service -- and leaves
+        anything it was explicitly given untouched. Called by
+        build_conversation_manager() for a caller-supplied logger:
+        src/api/server.py builds its logger before persistence is resolved
+        (its auth boundary needs one at import time), so without this the
+        live server's audit trail was never persisted or PII-sanitized
+        (docs/MASTER_PROJECT_PLAN.md F-08). The object identity is kept so
+        every component already holding this logger keeps sharing it.
+        """
+        if repository is not None and not self._has_explicit_repository:
+            self._repository = repository
+            self._has_explicit_repository = True
+        if privacy_service is not None and self._privacy_service is None:
+            self._set_privacy_service(privacy_service)
 
     def record(
         self,

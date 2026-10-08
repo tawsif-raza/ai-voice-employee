@@ -48,6 +48,11 @@ _COUNTER_NAMES = frozenset(
         "voice_stt_interim_count",
         "voice_stt_final_count",
         "voice_tts_synthesis_errors_total",
+        # H2 -- call admission / duration limit (src/api/server.py) and
+        # text-API rate limiting.
+        "voice_calls_rejected_total",
+        "voice_calls_duration_limited_total",
+        "rate_limited_requests_total",
         # Phase 16.2 -- STT reconnect (src/voice/voice_pipeline.py).
         "voice_stt_reconnect_attempts_total",
         "voice_stt_reconnect_exhausted_total",

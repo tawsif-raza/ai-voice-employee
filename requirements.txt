@@ -26,15 +26,25 @@ sentence-transformers==5.6.1
 # Inference API (src/api/server.py)
 fastapi==0.139.2
 uvicorn[standard]==0.51.0
+# Required by Starlette's request.form() for Twilio's form-encoded webhook
+# POST bodies (src/api/server.py twiml_inbound_call) -- without it every
+# real inbound call 500s at the webhook.
+python-multipart==0.0.32
 
 # Production OIDC/JWT authentication (src/agent/oidc_provider.py, Phase 9)
 # — maintained security libraries, never hand-rolled crypto/JWT parsing.
-PyJWT==2.13.0
+PyJWT==2.15.1
 cryptography==50.0.0
 
 # Voice client (src/voice/client_tts.py)
 requests==2.34.2
 elevenlabs==2.58.0
+# Imported directly by src/voice/stt_service.py (Deepgram streaming) and
+# src/voice/tts_service.py (ElevenLabs HTTP). Pinned explicitly rather than
+# left to whatever elevenlabs/uvicorn[standard] resolve: websockets>=14
+# changed the default client's API (docs/MASTER_PROJECT_PLAN.md F-02).
+websockets==17.0.1
+httpx==0.28.1
 pygame-ce==2.5.7
 
 # Persistence (src/agent/db.py, Phase 12) — PostgreSQL in production,
