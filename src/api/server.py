@@ -1007,12 +1007,17 @@ async def _serve_call(websocket: WebSocket, call_manager: VoiceCallManager) -> N
             if call_ended.is_set():
                 break
             remaining = deadline - time.monotonic()
+            # Which limit bounds this wait is decided here, not by re-reading
+            # the clock after the timeout: asyncio may fire a timer up to one
+            # clock-resolution tick early, so "now >= deadline" can still be
+            # false when the call-duration limit is the one that expired.
+            duration_bound = remaining <= inactivity_timeout
             try:
                 if remaining <= 0:
                     raise asyncio.TimeoutError
                 raw_text = await asyncio.wait_for(websocket.receive_text(), timeout=min(remaining, inactivity_timeout))
             except asyncio.TimeoutError:
-                if time.monotonic() >= deadline:
+                if duration_bound:
                     _error_logger.warning(
                         "Ending call: reached MAX_CALL_DURATION_SECONDS=%d.", _SECURITY.max_call_duration_seconds
                     )
