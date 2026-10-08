@@ -41,6 +41,7 @@ jobs:
 
       - name: Run test suite
         env:
+          APP_ENV: dev
           PERSISTENCE_MODE: dev
           AUTH_MODE: dev
         run: python -m pytest tests/ -v

@@ -27,6 +27,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src" / "agent"))
 sys.path.insert(0, str(_ROOT / "src" / "inference"))
 sys.path.insert(0, str(_ROOT / "src" / "api"))
+sys.path.insert(0, str(_ROOT / "src" / "voice"))
 
 from action_models import AuthContext  # noqa: E402
 from conversation_manager import build_conversation_manager  # noqa: E402
@@ -237,6 +238,110 @@ def test_get_or_create_session_recreates_owners_expired_session():
     renewed = sm.get_or_create_session("sess-1", user_id="alice")
 
     assert renewed is not None and renewed.user_id == "alice"
+
+
+# ── F-09: identity isolation (H2) ───────────────────────────────────────────
+
+
+def test_ownerless_session_is_not_handed_to_an_identified_caller():
+    from session_manager import SessionManager
+
+    sm = SessionManager()
+    sm.create_session(session_id="sess-open", user_id=None)
+
+    assert sm.get_or_create_session("sess-open", user_id="mallory") is None
+    assert sm.get_or_create_session("sess-open", user_id=None) is not None
+
+
+def test_memory_is_never_injected_for_unauthenticated_identities():
+    from action_models import ANONYMOUS_CONTEXT
+    from memory_models import MemoryCategory
+
+    llm = RecordingLLM()
+    manager = _manager(llm)
+    mm = manager.memory_manager
+    # Something one anonymous caller might have said earlier.
+    mm.persist_memory(
+        mm.propose_memory(
+            user_id=ANONYMOUS_CONTEXT.user_id,
+            category=MemoryCategory.PREFERENCE,
+            key="preferred_contact_channel",
+            value="sms",
+            source="user_explicit",
+        )
+    )
+
+    _final(manager, "What are your business hours?", auth=ANONYMOUS_CONTEXT, session_id="sess-anon")
+
+    assert all("Known preferences" not in m["content"] for m in llm.calls[-1])
+
+
+def test_each_phone_call_gets_its_own_identity():
+    from stt_service import MockSTTService
+    from tts_service import MockTTSService
+    from voice_pipeline import VoiceCallManager
+
+    calls = VoiceCallManager(conversation_manager=_manager())
+
+    async def _send(msg):
+        return None
+
+    first = calls.register_call("CA1", "MZ1", _send, MockSTTService(), MockTTSService())
+    second = calls.register_call("CA2", "MZ2", _send, MockSTTService(), MockTTSService())
+
+    assert first.session.user_id != second.session.user_id
+    assert "CA1" in first.session.user_id and "CA2" in second.session.user_id
+
+
+def test_cannot_cancel_or_reschedule_another_users_appointment():
+    from action_models import ToolRequest
+
+    orchestrator = _manager().tool_orchestrator
+    alice, mallory = _user("alice"), _user("mallory")
+    booked = orchestrator.invoke(
+        ToolRequest(
+            action="BOOK_APPOINTMENT",
+            params={"doctor_id": "dr_1", "date": "2026-11-02", "time": "10:00", "owner_user_id": "alice"},
+            confirmed=True,
+        ),
+        auth=alice,
+    )
+    assert booked.success, booked.to_dict()
+    appointment_id = booked.result["appointment_id"]
+
+    for action, params in [
+        ("CANCEL_APPOINTMENT", {"appointment_id": appointment_id}),
+        ("RESCHEDULE_APPOINTMENT", {"appointment_id": appointment_id, "date": "2026-11-03", "time": "11:00"}),
+    ]:
+        denied = orchestrator.invoke(ToolRequest(action=action, params=params, confirmed=True), auth=mallory)
+        assert not denied.success and denied.error == "NOT_RESOURCE_OWNER", denied.to_dict()
+
+    cancelled = orchestrator.invoke(
+        ToolRequest(action="CANCEL_APPOINTMENT", params={"appointment_id": appointment_id}, confirmed=True),
+        auth=alice,
+    )
+    assert cancelled.success, "the owner's appointment must be untouched by mallory and still cancellable"
+
+
+def test_caller_supplied_owner_claim_cannot_override_the_lookup():
+    from action_models import ToolRequest
+
+    orchestrator = _manager().tool_orchestrator
+    booked = orchestrator.invoke(
+        ToolRequest(
+            action="BOOK_APPOINTMENT",
+            params={"doctor_id": "dr_1", "date": "2026-11-02", "time": "10:00", "owner_user_id": "alice"},
+            confirmed=True,
+        ),
+        auth=_user("alice"),
+    )
+    forged = ToolRequest(
+        action="CANCEL_APPOINTMENT",
+        params={"appointment_id": booked.result["appointment_id"]},
+        confirmed=True,
+        resource_owner_user_id="mallory",
+    )
+    assert orchestrator.invoke(forged, auth=_user("mallory")).error == "NOT_RESOURCE_OWNER"
 
 
 def test_unknown_session_id_still_creates_a_session_for_the_caller():

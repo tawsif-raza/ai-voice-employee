@@ -995,9 +995,10 @@ class ConversationManager:
         if context_message is not None:
             messages.append(context_message)
         if self.memory_manager is not None:
-            memory_user_id = (auth.user_id if auth is not None else None) or (
-                session.user_id if session is not None else None
-            )
+            # Durable memory is per person, so it is only read for an
+            # authenticated identity: "anonymous" and an unverified caller
+            # are shared labels, not people (H2, F-09).
+            memory_user_id = auth.user_id if auth is not None and auth.authenticated else None
             if memory_user_id:
                 memory_records = self.memory_manager.get_allowed_context(memory_user_id)
                 # Phase 6 (only when configured): a second, content-level

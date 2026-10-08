@@ -80,7 +80,9 @@ from metrics import MetricsRegistry  # noqa: E402
 from observability_models import EventType, new_request_id  # noqa: E402
 from oidc_provider import OIDCAuthenticationProvider, load_oidc_config  # noqa: E402
 from production_logging import configure_production_logging  # noqa: E402
+from rate_limiter import TokenBucketRateLimiter  # noqa: E402
 from reliability_config import load_reliability_config  # noqa: E402
+from runtime_env import PRODUCTION_AUTH_MODES, SecurityPostureError, load_security_settings  # noqa: E402
 from stt_service import DeepgramSTTService, MockSTTService  # noqa: E402
 from telephony_models import TwilioEventType, parse_twilio_frame  # noqa: E402
 from tracing import SpanAttributes, TracingConfig, init_tracing, shutdown_tracing  # noqa: E402  (Phase 14)
@@ -111,7 +113,13 @@ _DEV_AUTH_ENABLED = os.environ.get("DEV_AUTH_ENABLED", "true").strip().lower() !
 # never silently falls back to the development provider if OIDC
 # configuration is missing -- see AUTH_MODE's docstring above.
 AUTH_MODE = os.environ.get("AUTH_MODE", "dev").strip().lower()
-_PRODUCTION_AUTH_MODES = {"production", "oidc"}
+
+# H2 (docs/MASTER_PROJECT_PLAN.md F-03/F-04): APP_ENV decides whether
+# development conveniences (anonymous text API, dev tokens, mock voice,
+# mock PIN, unsigned Twilio endpoints) are available. Unset means
+# production. A forbidden combination raises SecurityPostureError here,
+# uncaught -- the process does not start, same as a missing OIDC config.
+_SECURITY = load_security_settings()
 
 # Phase 8: one shared AuditLogger/MetricsRegistry/SecurityEventDetector
 # for the whole process -- constructed here (not inside
@@ -123,7 +131,7 @@ _audit_logger = AuditLogger()
 _metrics = MetricsRegistry()
 _security_detector = SecurityEventDetector(_audit_logger)
 
-if AUTH_MODE in _PRODUCTION_AUTH_MODES:
+if AUTH_MODE in PRODUCTION_AUTH_MODES:
     # Fails closed by raising AuthConfigurationError, uncaught, if
     # required OIDC configuration is missing/invalid -- the process must
     # not start with broken authentication rather than serve requests
@@ -144,6 +152,8 @@ _conversation_manager: Optional[ConversationManager] = None
 _database: Optional[Database] = None
 _voice_call_manager: Optional[VoiceCallManager] = None
 _tracer_provider = None  # Phase 14: OpenTelemetry TracerProvider lifecycle
+# H2: number of /ws/call connections currently admitted (see websocket_call()).
+_active_call_connections = 0
 # Phase 15 (request/heavy-work isolation): in-process job registry backing
 # POST /jobs/generate + GET /jobs/{job_id} -- see jobs.py's module docstring.
 _job_store = JobStore()
@@ -174,7 +184,11 @@ def resolve_identity(request: Request, authorization: Optional[str] = Header(def
     """
     client_identifier = request.client.host if request.client else "unknown"
     if authorization is None:
-        return ANONYMOUS_CONTEXT
+        # Anonymous access is a development convenience only (H2, F-04):
+        # outside APP_ENV=dev every text-API call must authenticate.
+        if _SECURITY.allow_anonymous_text_api:
+            return ANONYMOUS_CONTEXT
+        raise HTTPException(status_code=401, detail="Invalid or missing credentials.")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(status_code=401, detail="Invalid or missing credentials.")
@@ -186,6 +200,37 @@ def resolve_identity(request: Request, authorization: Optional[str] = Header(def
         # plan.md Step 7.12's "do not log authentication secrets or
         # tokens."
         raise HTTPException(status_code=401, detail="Invalid or missing credentials.")
+
+
+# H2 (F-04): per-identity text-API rate limit; None when disabled
+# (RATE_LIMIT_REQUESTS_PER_MINUTE=0, the APP_ENV=dev default).
+_rate_limiter: Optional[TokenBucketRateLimiter] = (
+    TokenBucketRateLimiter(_SECURITY.rate_limit_per_minute, _SECURITY.rate_limit_burst)
+    if _SECURITY.rate_limit_per_minute > 0
+    else None
+)
+
+
+def rate_limited_identity(request: Request, identity: AuthContext = Depends(resolve_identity)) -> AuthContext:
+    """
+    FastAPI dependency for the generation endpoints: resolve_identity()
+    plus one rate-limit token for that identity. Keyed by the
+    authenticated user_id; only anonymous (APP_ENV=dev) callers fall back
+    to their network address.
+    """
+    limiter = _rate_limiter
+    if limiter is None:
+        return identity
+    if identity.authenticated:
+        key = f"user:{identity.user_id}"
+    else:
+        key = f"ip:{request.client.host if request.client else 'unknown'}"
+    allowed, retry_after = limiter.check(key)
+    if not allowed:
+        if _metrics is not None:
+            _metrics.increment("rate_limited_requests_total")
+        raise HTTPException(status_code=429, detail="Too many requests.", headers={"Retry-After": str(retry_after)})
+    return identity
 
 
 def _log_credential_readiness() -> None:
@@ -256,6 +301,10 @@ async def lifespan(app: FastAPI):
             security_detector=_security_detector,
         )
     _database = getattr(_conversation_manager, "database", None)
+    if not _SECURITY.is_dev and getattr(_conversation_manager, "clinical_guard", None) is None:
+        # build_conversation_manager() always builds the guard (F-01); this
+        # catches any future construction path that would not.
+        raise SecurityPostureError(f"APP_ENV={_SECURITY.app_env.value} requires the clinical safety guard.")
 
     # Phase 14: auto-instrument SQLAlchemy if database is active.
     if _database is not None:
@@ -545,7 +594,7 @@ def ready() -> JSONResponse:
 
 
 @app.post("/generate", response_model=ChatResponse)
-def generate(req: ChatRequest, request: Request, identity: AuthContext = Depends(resolve_identity)):
+def generate(req: ChatRequest, request: Request, identity: AuthContext = Depends(rate_limited_identity)):
     """
     Generate a response to req.message via ConversationManager.handle_turn().
 
@@ -702,7 +751,7 @@ def _run_generate_job(job_id: str, req: ChatRequest, identity: AuthContext, requ
 
 @app.post("/jobs/generate", response_model=JobSubmitResponse, status_code=202)
 async def submit_generate_job(
-    req: ChatRequest, request: Request, identity: AuthContext = Depends(resolve_identity)
+    req: ChatRequest, request: Request, identity: AuthContext = Depends(rate_limited_identity)
 ) -> JobSubmitResponse:
     """
     Same turn logic as POST /generate, decoupled from the request/
@@ -717,7 +766,7 @@ async def submit_generate_job(
 
     request_id = getattr(request.state, "request_id", None) or new_request_id()
     job_id = new_request_id()
-    _job_store.create(job_id)
+    _job_store.create(job_id, owner_user_id=identity.user_id)
 
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, _run_generate_job, job_id, req, identity, request_id)
@@ -726,9 +775,11 @@ async def submit_generate_job(
 
 
 @app.get("/jobs/{job_id}", response_model=JobStatusResponse)
-def get_job_status(job_id: str) -> JobStatusResponse:
+def get_job_status(job_id: str, identity: AuthContext = Depends(resolve_identity)) -> JobStatusResponse:
     record = _job_store.get(job_id)
-    if record is None:
+    # Only the identity that submitted a job may read it; someone else's
+    # job is indistinguishable from an unknown one (H2, F-18).
+    if record is None or record.owner_user_id != identity.user_id:
         raise HTTPException(status_code=404, detail="Unknown job_id.")
 
     response = JobStatusResponse(job_id=record.job_id, status=record.status.value)
@@ -779,6 +830,17 @@ async def twiml_inbound_call(request: Request):
                 reason="Invalid or missing X-Twilio-Signature on /twiml/inbound-call",
             )
             raise HTTPException(status_code=403, detail="Invalid signature.")
+    elif _SECURITY.require_twilio_signature:
+        # Outside APP_ENV=dev an unsigned webhook is never served: without
+        # TWILIO_AUTH_TOKEN there is no way to verify the caller is Twilio.
+        _error_logger.warning("Rejected /twiml/inbound-call: TWILIO_AUTH_TOKEN is not configured.")
+        _audit_logger.record(
+            EventType.AUTH_FAILURE,
+            outcome="denied",
+            actor="twilio_webhook",
+            reason="Signature validation unavailable (TWILIO_AUTH_TOKEN unset) on /twiml/inbound-call",
+        )
+        raise HTTPException(status_code=403, detail="Invalid signature.")
 
     public_stream_url = os.environ.get("TWILIO_MEDIA_STREAM_URL") or os.environ.get("VOICE_PUBLIC_URL")
     if public_stream_url:
@@ -849,7 +911,40 @@ async def websocket_call(websocket: WebSocket):
             )
             await websocket.close(code=1008)  # Policy Violation
             return
+    elif _SECURITY.require_twilio_signature:
+        _error_logger.warning("Rejected /ws/call connection: TWILIO_AUTH_TOKEN is not configured.")
+        _audit_logger.record(
+            EventType.AUTH_FAILURE,
+            outcome="denied",
+            actor="twilio_webhook",
+            reason="Signature validation unavailable (TWILIO_AUTH_TOKEN unset) on /ws/call",
+        )
+        await websocket.close(code=1008)  # Policy Violation
+        return
 
+    # Call admission (H2, F-04): bound concurrent calls per process. The
+    # check and the increment run with no await in between, so two
+    # simultaneous connections cannot both slip past the limit.
+    global _active_call_connections
+    if _active_call_connections >= _SECURITY.max_concurrent_calls:
+        _error_logger.warning(
+            "Rejected /ws/call connection: %d active calls (limit %d).",
+            _active_call_connections,
+            _SECURITY.max_concurrent_calls,
+        )
+        if _metrics is not None:
+            _metrics.increment("voice_calls_rejected_total")
+        await websocket.close(code=1013)  # Try again later
+        return
+    _active_call_connections += 1
+    try:
+        await _serve_call(websocket, _voice_call_manager)
+    finally:
+        _active_call_connections -= 1
+
+
+async def _serve_call(websocket: WebSocket, call_manager: VoiceCallManager) -> None:
+    """Runs one admitted Twilio Media Stream until STOP, disconnect, or the call-duration limit."""
     await websocket.accept()
 
     async def _send_to_twilio(msg: dict):
@@ -861,10 +956,26 @@ async def websocket_call(websocket: WebSocket):
     use_mock = os.environ.get("VOICE_MOCK_SERVICES", "false").strip().lower() == "true"
     current_handler = None
     stt_task = None
+    deadline = time.monotonic() + _SECURITY.max_call_duration_seconds
 
     try:
         while True:
-            raw_text = await websocket.receive_text()
+            remaining = deadline - time.monotonic()
+            try:
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                raw_text = await asyncio.wait_for(websocket.receive_text(), timeout=remaining)
+            except asyncio.TimeoutError:
+                _error_logger.warning(
+                    "Ending call: reached MAX_CALL_DURATION_SECONDS=%d.", _SECURITY.max_call_duration_seconds
+                )
+                if _metrics is not None:
+                    _metrics.increment("voice_calls_duration_limited_total")
+                try:
+                    await websocket.close(code=1000)
+                except Exception:
+                    pass
+                break
             if not raw_text:
                 continue
             try:
@@ -881,7 +992,7 @@ async def websocket_call(websocket: WebSocket):
                 stt_service = MockSTTService() if use_mock else DeepgramSTTService()
                 tts_service = MockTTSService() if use_mock else ElevenLabsTTSService()
 
-                current_handler = _voice_call_manager.register_call(
+                current_handler = call_manager.register_call(
                     call_sid=call_sid,
                     stream_sid=stream_sid,
                     send_fn=_send_to_twilio,
@@ -900,7 +1011,7 @@ async def websocket_call(websocket: WebSocket):
             elif event_type == TwilioEventType.STOP:
                 if current_handler:
                     await current_handler.handle_stop()
-                    await _voice_call_manager.unregister_call(parsed_data.get("stream_sid", ""))
+                    await call_manager.unregister_call(parsed_data.get("stream_sid", ""))
                 break
 
     except WebSocketDisconnect:
@@ -912,7 +1023,7 @@ async def websocket_call(websocket: WebSocket):
             stt_task.cancel()
         if current_handler:
             await current_handler.handle_stop()
-            await _voice_call_manager.unregister_call(current_handler.session.stream_sid)
+            await call_manager.unregister_call(current_handler.session.stream_sid)
 
 
 if __name__ == "__main__":

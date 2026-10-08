@@ -68,6 +68,7 @@ resolved:
 | `LLM_PROVIDER` | Resolved — auto-selects `free_fallback` when `GEMINI_API_KEY`+`GROQ_API_KEY` set and no `ANTHROPIC_API_KEY` |
 | `GEMINI_API_KEY`, `GROQ_API_KEY` | Available (user-supplied) |
 | `ANTHROPIC_API_KEY` | Standing decision: not obtained. Not required — `free_fallback` is a complete provider path. |
+| `APP_ENV` | Leave unset (= `production`) or `staging`. Outside `dev` the server refuses to start with `AUTH_MODE=dev`, `VOICE_MOCK_SERVICES=true` or `TELEPHONY_MOCK_PIN`, and every text-API call must authenticate (H2, 2026-10-08). An existing deployment configured without `AUTH_MODE=production` will therefore **not start** if redeployed — intended. |
 | `AUTH_MODE` | **REQUIRED** to change from `dev` to `production` before any public exposure — currently dev default, explicitly unsafe for real traffic |
 | `OIDC_ISSUER_URL`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL` | **REQUIRED** once `AUTH_MODE=production` — depends on OIDC provider choice (§2) |
 | `PERSISTENCE_MODE`, `DATABASE_URL` | **REQUIRED** for production — real RDS URL already exists in Secrets Manager (`database-url`), not reproduced in plaintext here |
@@ -86,10 +87,16 @@ head matches `alembic/versions/` before resuming.
 1. Register/point the domain; request an ACM certificate.
 2. Add an HTTPS listener to the existing ALB; keep the HTTP listener only
    for redirect.
-3. Populate the 9 placeholder Secrets Manager secrets with real values.
-4. Choose an OIDC provider, set `AUTH_MODE=production` +
-   `OIDC_ISSUER_URL`/`OIDC_AUDIENCE`/`OIDC_JWKS_URL`, redeploy, confirm the
-   app starts (it fails closed if these are wrong — that's correct).
+3. Choose an OIDC provider, set `AUTH_MODE=production` +
+   `OIDC_ISSUER_URL`/`OIDC_AUDIENCE`/`OIDC_JWKS_URL`, leave `APP_ENV`
+   unset (= production) or set `APP_ENV=staging` for the canary, redeploy,
+   confirm the app starts (it fails closed if these are wrong — that's
+   correct). **Do this before step 4**: real provider keys must never be
+   live behind a service that still accepts anonymous or dev-token traffic
+   (order corrected 2026-10-08, docs/MASTER_PROJECT_PLAN.md F-03).
+4. Populate the 9 placeholder Secrets Manager secrets with real values
+   (`TWILIO_AUTH_TOKEN` is required outside `APP_ENV=dev` — without it the
+   Twilio endpoints reject every request).
 5. Point the real Twilio number's webhook at
    `https://<domain>/twiml/inbound` (or current route in `server.py`);
    confirm `X-Twilio-Signature` validation accepts real Twilio requests.

@@ -52,6 +52,9 @@ RUN sed -i 's/^  enabled: true$/  enabled: false/' configs/config.yaml
 
 RUN chmod +x scripts/*.sh
 
+# APP_ENV is deliberately not set here: unset means production
+# (src/agent/runtime_env.py), so this image refuses dev auth, mock voice
+# and the mock PIN, and requires authentication on the text API.
 ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     PORT=8000

@@ -629,7 +629,10 @@ class VoiceCallManager:
             call_sid=call_sid,
             stream_sid=stream_sid,
             session_id=params.get("sessionId") or f"call_{call_sid}",
-            user_id=params.get("userId") or "telephony_caller",
+            # Per-call identity (H2, F-09): one shared "telephony_caller"
+            # id made every caller the owner of every other caller's
+            # bookings and memory.
+            user_id=params.get("userId") or f"telephony:{call_sid}",
             caller_id=params.get("callerId") or params.get("From"),
             metadata=dict(params),
         )

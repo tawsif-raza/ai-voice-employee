@@ -194,12 +194,13 @@ class SessionManager:
         touches nothing -- when the id belongs to a different owner, so a
         guessed or leaked session_id can never delete, reset, re-own, or
         act on someone else's session (docs/MASTER_PROJECT_PLAN.md F-07).
-        A caller with no identity (user_id=None) is never treated as the
-        owner of a session that has one.
+        Ownership must match exactly (H2, F-09): a caller with no identity
+        is never the owner of a session that has one, and an ownerless
+        session is never handed to an identified caller.
         """
         with self._lock:
             existing = self._repository.get(session_id) if isinstance(session_id, str) else None
-            if existing is not None and existing.user_id is not None and existing.user_id != user_id:
+            if existing is not None and existing.user_id != user_id:
                 if self._security_detector is not None:
                     self._security_detector.record_cross_user_access_attempt("session", user_id or "unauthenticated")
                 return None
