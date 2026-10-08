@@ -60,6 +60,7 @@ class JobRecord:
     job_id: str
     status: JobStatus
     created_at: float
+    owner_user_id: Optional[str] = None
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     result: Optional[dict[str, Any]] = field(default=None)
@@ -75,8 +76,8 @@ class JobStore:
         self._order: list[str] = []
         self._max_jobs = max_jobs
 
-    def create(self, job_id: str) -> JobRecord:
-        record = JobRecord(job_id=job_id, status=JobStatus.QUEUED, created_at=time.time())
+    def create(self, job_id: str, owner_user_id: Optional[str] = None) -> JobRecord:
+        record = JobRecord(job_id=job_id, status=JobStatus.QUEUED, created_at=time.time(), owner_user_id=owner_user_id)
         with self._lock:
             self._jobs[job_id] = record
             self._order.append(job_id)
@@ -112,6 +113,11 @@ class JobStore:
                 record.status = JobStatus.FAILED
                 record.error = error
                 record.completed_at = time.time()
+
+    def pending_count(self) -> int:
+        """Jobs not yet finished (queued or running) -- the backpressure measure."""
+        with self._lock:
+            return sum(1 for r in self._jobs.values() if r.status in (JobStatus.QUEUED, JobStatus.RUNNING))
 
     def size(self) -> int:
         with self._lock:

@@ -24,6 +24,7 @@ Run with:
 """
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -37,12 +38,13 @@ import httpx
 import uvicorn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "api"))
+# Local harness: development posture (anonymous text API), like tests/conftest.py.
+os.environ.setdefault("APP_ENV", "dev")
 import server  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
 from action_models import AuthContext  # noqa: E402
-from audit import AuditLogger  # noqa: E402
-from conversation_manager import build_conversation_manager, resolve_persistence_repositories  # noqa: E402
+from conversation_manager import build_conversation_manager  # noqa: E402
 from db import Database, DatabaseUnavailableError, load_database_config  # noqa: E402
 from identity import Role, permissions_for_roles  # noqa: E402
 from observability_models import EventType  # noqa: E402
@@ -112,7 +114,7 @@ def _get_resilient(client: httpx.Client, url: str, retries: int = 2):
     and this function lets the final exception propagate.
     """
     last_exc = None
-    for attempt in range(retries + 1):
+    for _attempt in range(retries + 1):
         try:
             return client.get(url, headers={"Connection": "close"})
         except httpx.TransportError as exc:
@@ -125,7 +127,9 @@ def preflight_verify_environment() -> bool:
     """Steps 1-3 the user's instructions require, re-verified programmatically (not just manually) before any destructive action."""
     name_check = _docker("ps", "-a", "--filter", f"name=^{CONTAINER}$", "--format", "{{.Names}}")
     if CONTAINER not in name_check.stdout:
-        _record("25.0", "Environment preflight", "FAIL", f"Container '{CONTAINER}' does not exist.", "Refusing to proceed.")
+        _record(
+            "25.0", "Environment preflight", "FAIL", f"Container '{CONTAINER}' does not exist.", "Refusing to proceed."
+        )
         return False
 
     inspect = _docker("inspect", CONTAINER, "--format", "{{json .Config.Env}}")
@@ -147,7 +151,7 @@ def preflight_verify_environment() -> bool:
         "Environment preflight (identity + disposability verification)",
         "PASS" if ok else "FAIL",
         f"container={CONTAINER}, matches docker/docker-compose.yml's 'postgres' service "
-        f"(profiles: [\"test\", \"dev\"])={profile_confirmed}, dev-only credentials confirmed={is_dev_creds}, "
+        f'(profiles: ["test", "dev"])={profile_confirmed}, dev-only credentials confirmed={is_dev_creds}, '
         f"volume=docker_postgres_data (named Docker volume, not a bind-mount to a real data directory)",
         "This is the exact same disposable local container Phase 16/21 already used safely. "
         "No docker-compose.prod.yml or equivalent exists anywhere in this repository referencing this "
@@ -267,7 +271,9 @@ def scenario_1_database_outage() -> None:
             _record(
                 "25.1.a",
                 "Health/readiness behavior during outage",
-                "PASS" if health_during.status_code == 200 and ready_during is not None and ready_during.status_code == 503 else "FAIL",
+                "PASS"
+                if health_during.status_code == 200 and ready_during is not None and ready_during.status_code == 503
+                else "FAIL",
                 f"/health during outage={health_during.status_code} (app itself stays up), "
                 f"/ready during outage={ready_during.status_code if ready_during else 'never observed'}, "
                 f"detection_time={detection_time_s:.2f}s",
@@ -298,7 +304,12 @@ def scenario_1_database_outage() -> None:
                     failing_requests.append((None, (time.perf_counter() - t0) * 1000.0, f"{type(exc).__name__}: {exc}"))
 
             graceful = all(
-                (status is not None and 500 <= status < 600 and "Traceback" not in body and "psycopg" not in body.lower())
+                (
+                    status is not None
+                    and 500 <= status < 600
+                    and "Traceback" not in body
+                    and "psycopg" not in body.lower()
+                )
                 for status, _, body in failing_requests
             )
             no_hang = all(latency_ms < 10000.0 for _, latency_ms, _ in failing_requests)
@@ -525,10 +536,9 @@ def scenario_2_container_restart() -> None:
 def scenario_3_provider_outage() -> None:
     from audit import AuditLogger as _AuditLogger
     from metrics import MetricsRegistry
+    from mock_tools import build_default_tool_registry
     from policy_engine import PolicyEngine
     from tool_orchestrator import ToolOrchestrator
-
-    from mock_tools import build_default_tool_registry
 
     audit_logger = _AuditLogger()
     metrics = MetricsRegistry()
@@ -537,9 +547,13 @@ def scenario_3_provider_outage() -> None:
         "fake-claude", [], should_raise=LLMOverloadedError("simulated provider outage", provider="fake-claude")
     )
     working_fallback = MockLLMProvider("fake-gemini", ["I ", "can ", "still ", "help."])
-    fallback_provider = FallbackLLMProvider(broken_primary, working_fallback, audit_logger=audit_logger, metrics=metrics)
+    fallback_provider = FallbackLLMProvider(
+        broken_primary, working_fallback, audit_logger=audit_logger, metrics=metrics
+    )
 
-    tool_orchestrator = ToolOrchestrator(build_default_tool_registry(), PolicyEngine(), audit_logger=audit_logger, metrics=metrics)
+    tool_orchestrator = ToolOrchestrator(
+        build_default_tool_registry(), PolicyEngine(), audit_logger=audit_logger, metrics=metrics
+    )
 
     cm = build_conversation_manager(
         llm_provider=fallback_provider,
@@ -588,7 +602,9 @@ def scenario_3_provider_outage() -> None:
     _record(
         "25.3.b",
         "No duplicate tool execution during a provider outage (tool path is decoupled from LLM health)",
-        "PASS" if exactly_once and llm_untouched and tool_final and tool_final.get("tool", {}).get("status") == "success" else "FAIL",
+        "PASS"
+        if exactly_once and llm_untouched and tool_final and tool_final.get("tool", {}).get("status") == "success"
+        else "FAIL",
         f"tool status={tool_final.get('tool', {}).get('status') if tool_final else 'no final result'}, "
         f"TOOL_SUCCEEDED audit events before={tool_success_before}, after={len(tool_success_events)} "
         f"(delta={len(tool_success_events) - tool_success_before}), "
@@ -597,7 +613,9 @@ def scenario_3_provider_outage() -> None:
 
     # -- Recovery: provider becomes available again -> primary used directly, no fallback needed --
     recovered_primary = MockLLMProvider("fake-claude-recovered", ["Welcome ", "back."])
-    recovered_fallback_provider = FallbackLLMProvider(recovered_primary, working_fallback, audit_logger=audit_logger, metrics=metrics)
+    recovered_fallback_provider = FallbackLLMProvider(
+        recovered_primary, working_fallback, audit_logger=audit_logger, metrics=metrics
+    )
     cm.llm_service = recovered_fallback_provider
     recovered_final = None
     for item in cm.handle_turn("Are you working again?", request_id="dr-recovery-1"):
@@ -722,7 +740,9 @@ def scenario_4_idempotency_across_recovery() -> None:
 
 def scenario_5_resource_cleanup() -> None:
     llm = MockLLMProvider("fake", ["Done."])
-    server._conversation_manager = build_conversation_manager(llm_provider=llm, rag_enabled=False, persistence_enabled=False)
+    server._conversation_manager = build_conversation_manager(
+        llm_provider=llm, rag_enabled=False, persistence_enabled=False
+    )
     server._database = None
 
     with _live_server() as base_url, httpx.Client(timeout=10.0) as client:
@@ -784,7 +804,12 @@ if __name__ == "__main__":
         try:
             scenario_fn()
         except Exception as exc:
-            _record(scenario_fn.__name__, scenario_fn.__name__, "FAIL", f"Scenario itself raised: {type(exc).__name__}: {exc}")
+            _record(
+                scenario_fn.__name__,
+                scenario_fn.__name__,
+                "FAIL",
+                f"Scenario itself raised: {type(exc).__name__}: {exc}",
+            )
         finally:
             # Always ensure Postgres is left running between scenarios.
             _docker("start", CONTAINER, timeout=30)

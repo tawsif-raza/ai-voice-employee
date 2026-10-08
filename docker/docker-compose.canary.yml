@@ -42,6 +42,7 @@ services:
       ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-claude-3-5-haiku-latest}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       GEMINI_MODEL: "${GEMINI_MODEL:-gemini-2.5-flash}"
+      APP_ENV: "${APP_ENV:-staging}"
       AUTH_MODE: "${AUTH_MODE:-production}"
       DEV_AUTH_ENABLED: "${DEV_AUTH_ENABLED:-false}"
       OIDC_ISSUER_URL: "${OIDC_ISSUER_URL:-}"
