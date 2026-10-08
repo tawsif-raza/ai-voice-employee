@@ -39,6 +39,12 @@ cryptography==50.0.0
 # Voice client (src/voice/client_tts.py)
 requests==2.34.2
 elevenlabs==2.58.0
+# Imported directly by src/voice/stt_service.py (Deepgram streaming) and
+# src/voice/tts_service.py (ElevenLabs HTTP). Pinned explicitly rather than
+# left to whatever elevenlabs/uvicorn[standard] resolve: websockets>=14
+# changed the default client's API (docs/MASTER_PROJECT_PLAN.md F-02).
+websockets==17.0.1
+httpx==0.28.1
 pygame-ce==2.5.7
 
 # Persistence (src/agent/db.py, Phase 12) — PostgreSQL in production,
