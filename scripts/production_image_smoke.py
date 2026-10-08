@@ -277,6 +277,28 @@ def check_running_server(base: str, port: int, jwks: JWKS) -> None:
         print("SKIP  database checks (PERSISTENCE_MODE is not production)")
 
 
+def _persistence_is_production() -> bool:
+    return os.environ.get("PERSISTENCE_MODE", "").lower() in ("production", "postgres", "postgresql")
+
+
+def _count_audit_events(event_type=None) -> int:
+    import sqlalchemy
+
+    engine = sqlalchemy.create_engine(os.environ["DATABASE_URL"])
+    try:
+        with engine.connect() as conn:
+            if event_type is None:
+                return conn.execute(sqlalchemy.text("SELECT count(*) FROM audit_events")).scalar() or 0
+            return (
+                conn.execute(
+                    sqlalchemy.text("SELECT count(*) FROM audit_events WHERE event_type = :t"), {"t": event_type}
+                ).scalar()
+                or 0
+            )
+    finally:
+        engine.dispose()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server-cmd", default="scripts/run_pipeline.sh --serve")
@@ -295,20 +317,38 @@ def main() -> int:
             if ready:
                 check_running_server(base, port, jwks)
         finally:
+            sigterm_code = None
             if proc.poll() is None:
                 if os.name == "posix":
                     proc.send_signal(signal.SIGTERM)
                     try:
-                        code = proc.wait(timeout=40)
-                        check("SIGTERM -> clean shutdown (exit 0)", code == 0, f"exit={code}")
+                        sigterm_code = proc.wait(timeout=40)
                     except subprocess.TimeoutExpired:
                         proc.kill()
-                        check("SIGTERM -> clean shutdown (exit 0)", False, "did not exit within 40s")
+                        check("SIGTERM -> process exits within 40s", False, "still running; killed")
                 else:
                     proc.terminate()
                     proc.wait(timeout=20)
             log.seek(0)
             output = log.read()
+        if sigterm_code is not None:
+            # uvicorn shuts down gracefully on SIGTERM and then re-raises the
+            # signal (uvicorn/server.py capture_signals -> signal.raise_signal),
+            # so a clean stop exits with -SIGTERM (143 in a shell), or 0 if the
+            # signal arrives after its handlers are restored. The exit status
+            # alone cannot tell a graceful stop from a kill, so gracefulness is
+            # proven by uvicorn's lifespan-shutdown log line and, with a
+            # database, by the application's own GRACEFUL_SHUTDOWN audit event.
+            check(
+                "SIGTERM -> exits with 0 or -SIGTERM",
+                sigterm_code in (0, -signal.SIGTERM),
+                f"exit={sigterm_code}",
+            )
+            check("SIGTERM -> lifespan shutdown completed", "Application shutdown complete." in output)
+            if _persistence_is_production():
+                check(
+                    "SIGTERM -> GRACEFUL_SHUTDOWN audit event persisted", _count_audit_events("GRACEFUL_SHUTDOWN") > 0
+                )
         leaked = [s for s in (SENTINEL_GEMINI, SENTINEL_GROQ, TWILIO_TOKEN) if s in output]
         check("no credentials in server logs", not leaked, f"found {len(leaked)}")
         if failures:
