@@ -1,3 +1,13 @@
+# H4: this file is the human-edited INPUT. docker/Dockerfile.production installs
+# requirements-production.lock (every transitive package pinned + hashed, resolved
+# for the image's Linux / Python 3.12). After editing this file, regenerate the lock
+# (uv 0.12.3, the version CI pins) and commit both:
+#
+#   uv pip compile requirements-production.txt --python-version 3.12 --python-platform x86_64-unknown-linux-gnu --generate-hashes --no-header -o requirements-production.lock
+#
+# then regenerate requirements-image-test.lock the same way (command in its header).
+# CI fails if the lock is out of date or if the image's installed set differs from it.
+#
 # Phase 26: trimmed dependency set for a remote-provider-only production
 # deployment (LLM_PROVIDER=free_fallback/gemini/groq/claude/fallback --
 # no on-box local model, no RAG). Deliberately excludes requirements.txt's
@@ -34,7 +44,7 @@ uvicorn[standard]==0.51.0
 python-multipart==0.0.32
 
 # Production OIDC/JWT authentication (src/agent/oidc_provider.py, Phase 9)
-PyJWT==2.13.0
+PyJWT==2.15.1
 cryptography==50.0.0
 
 # Voice provider clients (src/voice/stt_service.py, tts_service.py)

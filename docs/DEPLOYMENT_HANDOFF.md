@@ -124,6 +124,13 @@ custom mechanism needed).
 - All 9 placeholder secrets replaced with real values, none left as
   `REPLACE_ME_NOT_A_REAL_VALUE`.
 - HTTPS-only (no plain HTTP listener reachable externally).
+- Deploy only an image whose commit passed CI job `production-image`
+  (H4, 2026-10-08): it builds `docker/Dockerfile.production`, checks the
+  installed packages equal `requirements-production.lock`, runs the test
+  suite and a production smoke test inside the image, and verifies it
+  refuses to start on missing/forbidden configuration. The image now runs
+  as uid 10001 (`USER app`), not root; task definitions that do not
+  override the container user inherit that.
 - Re-run `tests/test_voice_server_integration.py`'s signature-validation
   suite against the real deployed endpoint once real Twilio credentials
   exist, not just in CI.

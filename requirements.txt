@@ -33,7 +33,7 @@ python-multipart==0.0.32
 
 # Production OIDC/JWT authentication (src/agent/oidc_provider.py, Phase 9)
 # — maintained security libraries, never hand-rolled crypto/JWT parsing.
-PyJWT==2.13.0
+PyJWT==2.15.1
 cryptography==50.0.0
 
 # Voice client (src/voice/client_tts.py)
