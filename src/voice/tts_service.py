@@ -23,6 +23,15 @@ from typing import AsyncIterator, Optional
 
 logger = logging.getLogger("ai_voice_agent.voice.tts")
 
+
+class TTSError(RuntimeError):
+    """
+    Speech synthesis failed (H3). Raised instead of returning empty audio so
+    the voice pipeline's failure handling runs -- an empty result used to be
+    indistinguishable from success, leaving the caller in silence.
+    """
+
+
 _CLAUSE_PUNCT_RE = re.compile(r"([.!?;\n]+)")
 
 
@@ -68,11 +77,16 @@ class ElevenLabsTTSService(BaseTTSService):
         voice_id: Optional[str] = None,
         model_id: Optional[str] = None,
         optimize_streaming_latency: int = 3,
+        request_timeout_seconds: float = 15.0,
+        transport=None,
     ):
         self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY", "")
         self.voice_id = voice_id or os.environ.get("ELEVENLABS_VOICE_ID", self.DEFAULT_VOICE_ID)
         self.model_id = model_id or os.environ.get("ELEVENLABS_MODEL_ID", self.DEFAULT_MODEL_ID)
         self.optimize_streaming_latency = optimize_streaming_latency
+        self.request_timeout_seconds = request_timeout_seconds
+        # httpx transport override -- for tests (httpx.MockTransport); None in production.
+        self._transport = transport
 
     async def synthesize_clause(self, text: str) -> bytes:
         """Synthesize a single clause/sentence into raw 8kHz μ-law audio."""
@@ -100,13 +114,18 @@ class ElevenLabsTTSService(BaseTTSService):
             },
         }
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, headers=headers, params=params, json=payload)
-            if resp.status_code != 200:
-                logger.error("ElevenLabs TTS error (%s): %s", resp.status_code, resp.text)
-                return b""
-            raw_audio = strip_wav_header(resp.content)
-            return raw_audio
+        try:
+            async with httpx.AsyncClient(timeout=self.request_timeout_seconds, transport=self._transport) as client:
+                resp = await client.post(url, headers=headers, params=params, json=payload)
+        except httpx.HTTPError as exc:
+            raise TTSError(f"ElevenLabs request failed: {type(exc).__name__}") from None
+        if resp.status_code != 200:
+            # Status only: the body is not needed to diagnose and is not logged.
+            raise TTSError(f"ElevenLabs TTS returned HTTP {resp.status_code}")
+        raw_audio = strip_wav_header(resp.content)
+        if not raw_audio:
+            raise TTSError("ElevenLabs TTS returned no audio")
+        return raw_audio
 
     async def synthesize_stream(
         self,
@@ -118,8 +137,8 @@ class ElevenLabsTTSService(BaseTTSService):
         and stream out raw 8kHz μ-law audio chunks.
         """
         if not self.api_key:
-            logger.warning("ELEVENLABS_API_KEY is not set — TTS generation skipped.")
-            return
+            # Previously a silent skip: every turn produced no audio at all.
+            raise TTSError("ELEVENLABS_API_KEY is not configured")
 
         buffer = []
         async for token in token_stream:

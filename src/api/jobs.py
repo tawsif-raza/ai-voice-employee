@@ -114,6 +114,11 @@ class JobStore:
                 record.error = error
                 record.completed_at = time.time()
 
+    def pending_count(self) -> int:
+        """Jobs not yet finished (queued or running) -- the backpressure measure."""
+        with self._lock:
+            return sum(1 for r in self._jobs.values() if r.status in (JobStatus.QUEUED, JobStatus.RUNNING))
+
     def size(self) -> int:
         with self._lock:
             return len(self._jobs)

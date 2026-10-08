@@ -28,7 +28,7 @@ becomes a real requirement.
 
 import logging
 import threading
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Optional
 
 from observability_models import AuditEvent, EventType, SecurityEvent, Severity, new_event_id, now_utc
@@ -226,17 +226,31 @@ class SecurityEventDetector:
     detection logic of its own.
     """
 
-    def __init__(self, audit_logger: AuditLogger, repeated_failure_threshold: int = 3):
+    DEFAULT_MAX_TRACKED_IDENTIFIERS = 10_000
+
+    def __init__(
+        self,
+        audit_logger: AuditLogger,
+        repeated_failure_threshold: int = 3,
+        max_tracked_identifiers: int = DEFAULT_MAX_TRACKED_IDENTIFIERS,
+    ):
         self._audit_logger = audit_logger
         self._threshold = repeated_failure_threshold
-        self._auth_failure_counts: dict[
-            str, int
-        ] = {}  # keyed by a safe, non-secret identifier (e.g. request source), never the token
+        # Keyed by a safe, non-secret identifier (e.g. request source), never
+        # the token. Bounded LRU (H3): one entry per distinct client address
+        # used to grow for the life of the process; the least recently seen
+        # identifier is evicted first. Locked: requests run in a threadpool.
+        self._max_tracked = max(1, max_tracked_identifiers)
+        self._auth_failure_counts: OrderedDict[str, int] = OrderedDict()
+        self._counts_lock = threading.Lock()
 
     def record_auth_failure(self, identifier: str, request_id: Optional[str] = None) -> None:
         """`identifier` MUST be a safe, non-secret reference (e.g. a client IP or a hashed value) — never the submitted token/credential."""
-        self._auth_failure_counts[identifier] = self._auth_failure_counts.get(identifier, 0) + 1
-        count = self._auth_failure_counts[identifier]
+        with self._counts_lock:
+            count = self._auth_failure_counts.pop(identifier, 0) + 1
+            self._auth_failure_counts[identifier] = count
+            while len(self._auth_failure_counts) > self._max_tracked:
+                self._auth_failure_counts.popitem(last=False)
         if count >= self._threshold:
             self._emit(
                 type_="REPEATED_AUTH_FAILURE",
@@ -249,7 +263,12 @@ class SecurityEventDetector:
             )
 
     def reset_auth_failures(self, identifier: str) -> None:
-        self._auth_failure_counts.pop(identifier, None)
+        with self._counts_lock:
+            self._auth_failure_counts.pop(identifier, None)
+
+    def tracked_identifier_count(self) -> int:
+        with self._counts_lock:
+            return len(self._auth_failure_counts)
 
     def record_cross_user_access_attempt(
         self, resource_type: str, actor: str, request_id: Optional[str] = None

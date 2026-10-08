@@ -53,9 +53,11 @@ import logging
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+from xml.sax.saxutils import escape as _xml_escape
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -157,6 +159,19 @@ _active_call_connections = 0
 # Phase 15 (request/heavy-work isolation): in-process job registry backing
 # POST /jobs/generate + GET /jobs/{job_id} -- see jobs.py's module docstring.
 _job_store = JobStore()
+# H3: /jobs/generate gets its own bounded pool (never the default executor
+# that voice turns used to share) -- created with the reliability config below.
+_jobs_executor: Optional[ThreadPoolExecutor] = None
+
+# H3: spoken by Twilio itself (TwiML <Say>, after <Connect>) whenever the
+# service ends a call's media stream -- provider unavailable, repeated turn
+# failures, maximum call length, dead stream. Independent of ElevenLabs, so
+# it still works when TTS is the failed component. Not played when the
+# caller hangs up.
+VOICE_FALLBACK_MESSAGE = os.environ.get(
+    "VOICE_FALLBACK_MESSAGE",
+    "We're sorry, we can't continue this call right now. Please call back later. Goodbye.",
+)
 
 
 def _get_active_database() -> Optional[Database]:
@@ -329,6 +344,11 @@ async def lifespan(app: FastAPI):
         conversation_manager=_conversation_manager,
         audit_logger=_audit_logger,
         metrics=_metrics,
+        # H3: one in-flight turn per call plus headroom for turns that were
+        # abandoned (deadline/barge-in) but whose provider call has not
+        # returned yet; provider timeouts bound how long a worker stays busy.
+        turn_workers=2 * _SECURITY.max_concurrent_calls,
+        deadlines=_RELIABILITY.voice,
     )
     yield
     # Phase 10 (plan.md Step 10.18): graceful shutdown.
@@ -338,6 +358,9 @@ async def lifespan(app: FastAPI):
                 await _voice_call_manager.unregister_call(stream_sid)
             except Exception:
                 pass
+        _voice_call_manager.shutdown()
+    if _jobs_executor is not None:
+        _jobs_executor.shutdown(wait=False, cancel_futures=True)
     if _database is not None:
         try:
             _database.dispose()
@@ -430,6 +453,7 @@ async def _request_validation_exception_handler(request: Request, exc: RequestVa
 
 
 _RELIABILITY = load_reliability_config()
+_jobs_executor = ThreadPoolExecutor(max_workers=_RELIABILITY.jobs.max_workers, thread_name_prefix="jobs")
 
 
 class ChatRequest(BaseModel):
@@ -764,12 +788,18 @@ async def submit_generate_job(
     if req.stream:
         raise HTTPException(status_code=400, detail="stream=true is not supported for /jobs/generate.")
 
+    # H3 backpressure: never queue unbounded work.
+    if _job_store.pending_count() >= _RELIABILITY.jobs.max_pending:
+        if _metrics is not None:
+            _metrics.increment("jobs_rejected_total")
+        raise HTTPException(status_code=503, detail="Too many queued jobs; retry later.", headers={"Retry-After": "5"})
+
     request_id = getattr(request.state, "request_id", None) or new_request_id()
     job_id = new_request_id()
     _job_store.create(job_id, owner_user_id=identity.user_id)
 
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, _run_generate_job, job_id, req, identity, request_id)
+    loop.run_in_executor(_jobs_executor, _run_generate_job, job_id, req, identity, request_id)
 
     return JobSubmitResponse(job_id=job_id, status=JobStatus.QUEUED.value)
 
@@ -864,6 +894,7 @@ async def twiml_inbound_call(request: Request):
             <Parameter name="inboundTime" value="{int(time.time())}" />
         </Stream>
     </Connect>
+    <Say>{_xml_escape(VOICE_FALLBACK_MESSAGE)}</Say>
 </Response>"""
     return Response(content=twiml_xml, media_type="application/xml")
 
@@ -957,20 +988,42 @@ async def _serve_call(websocket: WebSocket, call_manager: VoiceCallManager) -> N
     current_handler = None
     stt_task = None
     deadline = time.monotonic() + _SECURITY.max_call_duration_seconds
+    inactivity_timeout = _RELIABILITY.voice.media_inactivity_timeout_seconds
+    call_ended = asyncio.Event()
+
+    async def _end_call(reason: str) -> None:
+        # H3: the handler's way to end the call from the service side.
+        # Closing the media stream makes Twilio continue with the TwiML after
+        # <Connect> (VOICE_FALLBACK_MESSAGE); the loop below then exits and
+        # the normal cleanup in `finally` runs.
+        call_ended.set()
+        try:
+            await websocket.close(code=1000)
+        except Exception:
+            pass
 
     try:
         while True:
+            if call_ended.is_set():
+                break
             remaining = deadline - time.monotonic()
             try:
                 if remaining <= 0:
                     raise asyncio.TimeoutError
-                raw_text = await asyncio.wait_for(websocket.receive_text(), timeout=remaining)
+                raw_text = await asyncio.wait_for(websocket.receive_text(), timeout=min(remaining, inactivity_timeout))
             except asyncio.TimeoutError:
-                _error_logger.warning(
-                    "Ending call: reached MAX_CALL_DURATION_SECONDS=%d.", _SECURITY.max_call_duration_seconds
-                )
-                if _metrics is not None:
-                    _metrics.increment("voice_calls_duration_limited_total")
+                if time.monotonic() >= deadline:
+                    _error_logger.warning(
+                        "Ending call: reached MAX_CALL_DURATION_SECONDS=%d.", _SECURITY.max_call_duration_seconds
+                    )
+                    if _metrics is not None:
+                        _metrics.increment("voice_calls_duration_limited_total")
+                else:
+                    # Twilio sends a media frame every 20 ms while a call is
+                    # up; a silent socket this long is a dead stream.
+                    _error_logger.warning("Ending call: no media-stream frame for %.0fs.", inactivity_timeout)
+                    if _metrics is not None:
+                        _metrics.increment("voice_calls_inactivity_ended_total")
                 try:
                     await websocket.close(code=1000)
                 except Exception:
@@ -999,10 +1052,13 @@ async def _serve_call(websocket: WebSocket, call_manager: VoiceCallManager) -> N
                     stt_service=stt_service,
                     tts_service=tts_service,
                     custom_params=parsed_data.custom_parameters,
+                    end_call_fn=_end_call,
                 )
                 await current_handler.handle_start(parsed_data)
-                # Launch STT processing loop in background
-                stt_task = asyncio.create_task(current_handler.process_stt_events())
+                # Launch STT processing loop in background (unless the call
+                # was already ended during start-up, e.g. STT unreachable).
+                if not call_ended.is_set():
+                    stt_task = asyncio.create_task(current_handler.process_stt_events())
 
             elif event_type == TwilioEventType.MEDIA:
                 if current_handler:
