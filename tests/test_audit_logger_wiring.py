@@ -30,8 +30,6 @@ from conversation_manager import PersistenceRepositories, build_conversation_man
 from llm_provider import BaseLLMProvider  # noqa: E402
 from observability_models import EventType  # noqa: E402
 
-F08 = pytest.mark.xfail(strict=True, reason="F-08: server audit logger unpersisted/unsanitized/unbounded; fixed in H1")
-
 
 class StaticLLM(BaseLLMProvider):
     provider_name = "static"
@@ -45,7 +43,6 @@ class FakePersistedAuditRepository(AuditRepository):
     """Stands in for PostgresAuditRepository (same append/list interface)."""
 
 
-@F08
 def test_in_memory_audit_repository_is_bounded():
     repo = AuditRepository()
     logger = AuditLogger(repository=repo)
@@ -57,7 +54,6 @@ def test_in_memory_audit_repository_is_bounded():
     assert events[-1].request_id == f"req_{repo.max_events + 49}", "oldest events are evicted first"
 
 
-@F08
 def test_in_memory_security_events_are_bounded():
     repo = AuditRepository(max_events=10)
     logger = AuditLogger(repository=repo)
@@ -70,7 +66,6 @@ def test_in_memory_security_events_are_bounded():
     assert len(repo.list_security_events()) == 10
 
 
-@F08
 def test_injected_audit_logger_uses_persisted_repository(monkeypatch):
     persisted = FakePersistedAuditRepository()
     monkeypatch.setattr(
@@ -87,7 +82,6 @@ def test_injected_audit_logger_uses_persisted_repository(monkeypatch):
     assert persisted.list_events(), "turn audit events must reach the persisted repository"
 
 
-@F08
 def test_injected_audit_logger_sanitizes_pii_in_metadata():
     shared_logger = AuditLogger()
     build_conversation_manager(

@@ -43,8 +43,6 @@ PRODUCTION_RAG_CONFIG = {
     "clinical_triggers_path": "configs/clinical_triggers.yaml",
 }
 
-F01 = pytest.mark.xfail(strict=True, reason="F-01: clinical guard only built inside the RAG branch; fixed in H1")
-
 
 class RecordingLLM(BaseLLMProvider):
     provider_name = "recording"
@@ -67,13 +65,11 @@ def _build(llm, **kwargs):
     return build_conversation_manager(llm_provider=llm, persistence_enabled=False, **kwargs)
 
 
-@F01
 def test_clinical_guard_present_when_rag_disabled_by_flag():
     manager = _build(RecordingLLM(), rag_enabled=False)
     assert manager.clinical_guard is not None
 
 
-@F01
 def test_clinical_guard_present_when_rag_disabled_by_config(monkeypatch):
     # server.py always calls the factory with rag_enabled=True; the
     # production image turns RAG off through configs/config.yaml instead.
@@ -83,7 +79,6 @@ def test_clinical_guard_present_when_rag_disabled_by_config(monkeypatch):
     assert manager.clinical_guard is not None
 
 
-@F01
 def test_clinical_question_is_handed_off_before_llm_when_rag_disabled(monkeypatch):
     monkeypatch.setattr(conversation_manager, "_load_rag_config", lambda: dict(PRODUCTION_RAG_CONFIG))
     llm = RecordingLLM()
@@ -97,7 +92,6 @@ def test_clinical_question_is_handed_off_before_llm_when_rag_disabled(monkeypatc
     assert llm.calls == [], "a clinical question must never reach the LLM"
 
 
-@F01
 def test_clinical_guard_loads_clinical_triggers_from_any_working_directory(monkeypatch, tmp_path):
     # The configured path is repo-relative. From another working directory
     # it must still resolve to configs/clinical_triggers.yaml -- otherwise
@@ -112,6 +106,16 @@ def test_clinical_guard_loads_clinical_triggers_from_any_working_directory(monke
 
     assert final["clinical_guard_triggered"] is True
     assert llm.calls == []
+
+
+def test_missing_clinical_trigger_file_fails_startup(monkeypatch, tmp_path):
+    # Running with HandoffDetector's generic fallback phrases would look
+    # like a working guard while missing every clinical trigger.
+    config = dict(PRODUCTION_RAG_CONFIG, clinical_triggers_path=str(tmp_path / "missing.yaml"))
+    monkeypatch.setattr(conversation_manager, "_load_rag_config", lambda: config)
+
+    with pytest.raises(FileNotFoundError):
+        _build(RecordingLLM())
 
 
 def test_ordinary_question_still_reaches_llm_when_rag_disabled(monkeypatch):

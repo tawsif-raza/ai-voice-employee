@@ -30,8 +30,6 @@ from stt_service import DeepgramSTTService, STTEventType  # noqa: E402
 API_KEY = "dg-test-key-not-real"
 TRANSCRIPT = "i would like to check my order"
 
-F02 = pytest.mark.xfail(strict=True, reason="F-02: websockets>=14 rejects extra_headers; fixed in H1")
-
 
 class FakeDeepgram:
     def __init__(self):
@@ -64,7 +62,6 @@ class FakeDeepgram:
 
 
 @pytest.mark.asyncio
-@F02
 async def test_deepgram_service_connects_streams_and_closes_against_real_websocket_server(monkeypatch):
     fake = FakeDeepgram()
     async with websockets.serve(fake.handler, "127.0.0.1", 0) as server:

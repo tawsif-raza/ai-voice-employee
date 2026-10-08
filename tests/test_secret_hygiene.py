@@ -33,8 +33,6 @@ from llm_provider import BaseLLMProvider, FallbackLLMProvider, GeminiLLMProvider
 SENTINEL_KEY = "AIzaSENTINEL_do_not_log_0123456789"
 UNREACHABLE_BASE = "http://127.0.0.1:9/v1beta/models"
 
-F06 = pytest.mark.xfail(strict=True, reason="F-06: Gemini key in URL / unredacted error text; fixed in H1")
-
 
 def _unreachable_gemini() -> GeminiLLMProvider:
     provider = GeminiLLMProvider(api_key=SENTINEL_KEY, timeout_seconds=2)
@@ -78,7 +76,6 @@ class _FakeResponse:
         return False
 
 
-@F06
 def test_key_is_sent_in_header_not_url(monkeypatch):
     captured = {}
 
@@ -94,7 +91,6 @@ def test_key_is_sent_in_header_not_url(monkeypatch):
     assert captured["headers"].get("x-goog-api-key") == SENTINEL_KEY
 
 
-@F06
 def test_network_error_exception_chain_does_not_contain_key():
     with pytest.raises(LLMProviderError) as exc_info:
         list(_unreachable_gemini().generate_stream([{"role": "user", "content": "hi"}]))
@@ -102,10 +98,7 @@ def test_network_error_exception_chain_does_not_contain_key():
     assert SENTINEL_KEY not in _exception_chain_text(exc_info.value)
 
 
-@pytest.mark.parametrize(
-    "status_code",
-    [pytest.param(400, marks=F06), pytest.param(403, marks=F06), pytest.param(429, marks=F06), 500],
-)
+@pytest.mark.parametrize("status_code", [400, 403, 429, 500])
 def test_error_body_echoing_key_is_redacted(monkeypatch, status_code):
     # Some proxies/gateways echo the request URL or headers in error
     # bodies; the provider copies the body into its exception message.
@@ -118,7 +111,6 @@ def test_error_body_echoing_key_is_redacted(monkeypatch, status_code):
     assert SENTINEL_KEY not in _exception_chain_text(exc_info.value)
 
 
-@F06
 def test_failover_logs_do_not_contain_key(caplog):
     provider = FallbackLLMProvider(primary=_unreachable_gemini(), fallback=StaticLLM())
 
