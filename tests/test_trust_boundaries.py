@@ -86,7 +86,9 @@ def test_client_history_cannot_add_system_messages():
     sent = llm.calls[-1]
     assert all(INJECTED not in m["content"] for m in sent)
     system_contents = [m["content"] for m in sent if m["role"] == "system"]
-    assert system_contents == [manager.system_prompt]
+    # Exactly the server-authored system message: the base prompt plus the
+    # medical-safety rules (docs/CLINICAL_SAFETY.md), nothing from the client.
+    assert system_contents == [manager.system_prompt + "\n\n" + manager.MEDICAL_SAFETY_PROMPT]
 
 
 def test_client_history_keeps_user_and_assistant_turns_in_order():

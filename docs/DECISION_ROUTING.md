@@ -121,23 +121,9 @@ Shortcut rate = `(decision_route_deterministic_total + decision_route_cache_tota
 | Skipping the clinical guard | Router runs after the guard; a guard hit returns before the router is called; any non-zero guard score disables shortcuts. |
 | Sensitive text in logs / metrics | Only enum values, template names / KB ids and latencies are recorded. |
 
-## Pre-existing safety finding (not changed here): severity HIGH
+## Clinical-guard gap found by this review: since fixed
 
-These medication questions do **not** trigger `configs/clinical_triggers.yaml`, so they go to Gemini/Groq instead of the pharmacist handoff. Verified in the 2026-10-09 review: the guard blocked 1 of 10 representative questions (only "What dose should I take?").
-
-- "Can I take this medicine twice?" / "…twice a day?"
-- "Can I take this with another medicine?" (guard score 0.39, below threshold)
-- "hello, can I take ibuprofen with warfarin"
-- "Is this dosage safe?"
-- "Should I increase my dose?"
-- "Can I stop taking this medicine?"
-- "What happens if I take two tablets?"
-
-**Why HIGH:** `ConversationManager.SYSTEM_PROMPT` contains no instruction against medical advice, so nothing downstream stops the LLM from improvising dosage guidance. That contradicts ARCHITECTURE.md Principle 3 ("the model never improvises medical advice").
-
-**Router impact:** none. The router never shortcuts any of them. They score 0 but match no template, mixed utterances fail full-match, and they are tested with the FAQ candidates switched on. It does not make the gap worse or better.
-
-**Blocks real patient traffic for the whole system,** not just this layer. Fixing the guard changes the clinical safety authority, so it's a separate, owner-approved task. `tests/test_clinical_guard_gaps.py` pins every phrase above as strict xfail, so a guard fix turns them into XPASS failures until the marker is removed.
+The router review found that the clinical guard blocked only 1 of 10 representative medication questions, and that the system prompt had no medical-advice restriction. That was HIGH severity and pre-existing; the router never shortcut any of those questions. It was fixed separately by the clinical safety hardening: new medication-decision patterns, an urgent-risk tier, honest responses, and prompt rules for Gemini/Groq. See `docs/CLINICAL_SAFETY.md`. The former strict-xfail cases in `tests/test_clinical_guard_gaps.py` are now ordinary passing tests.
 
 ## Benchmark
 
@@ -162,7 +148,7 @@ What this does **not** show: how often real callers say a shortcut-eligible utte
 ## Production considerations
 
 - **FAQ answers** stay off until the owner verifies the content (see "FAQ / cache policy").
-- **Clinical-guard gap** (above) blocks real patient traffic for the whole system.
+- **Clinical safety** is the clinical boundary's job, not the router's (`docs/CLINICAL_SAFETY.md`). Its own limits (keyword rules, no clinical review, no real telephony) apply to the whole system.
 - **Appointments:** "Cancel my appointment" and "Can I reschedule my appointment?" reach the existing tool layer, which still demands an appointment id and the caller's PIN. Appointment *lookup* ("When is my appointment?") and a bare "Can I reschedule?" are classified `UNKNOWN`, and no lookup tool exists, so they go to `LLM`. The router does not pretend otherwise; adding a lookup is IntentEngine / tool-layer work.
 - **Real telephony is unvalidated.** Every voice figure here comes from `scripts/telephony_simulation.py` (real server and adapters, fake providers). Run `docs/REAL_TELEPHONY_READINESS.md` with real credentials before production traffic.
 - **Pattern coverage** is unmeasured against real speech. Tune it from `decision_route_*` counters and reviewed transcripts, not by guessing.

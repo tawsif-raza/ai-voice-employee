@@ -482,6 +482,29 @@ async def scenario_clinical(port):
     )
 
 
+async def scenario_urgent(port):
+    """docs/CLINICAL_SAFETY.md: a possible emergency gets the emergency instruction first, no LLM."""
+    LLM.answers = {}
+    async with TwilioCall(port, "CAurgent") as call:
+        await call.stt_ready()
+        mark, el_mark = len(LLM.events), len(EL.requests)
+        t_end = now()
+        DG.say("I'm having trouble breathing after taking my medication.")
+        got = await wait_for(lambda: call.first_media_after(t_end) is not None, 10)
+        await asyncio.sleep(0.5)
+        spoken = [t for _ts, t in EL.requests[el_mark:]]
+        first_media_ms = round((call.first_media_after(t_end) - t_end) * 1000, 1) if got else None
+    llm_called = len(LLM.events) > mark
+    first = spoken[0].lower() if spoken else ""
+    record(
+        "urgent_risk_on_voice",
+        got and not llm_called and "emergency" in first,
+        f"emergency instruction spoken first={'emergency' in first}, LLM called={llm_called}, "
+        f"speech end -> first audio {first_media_ms} ms",
+        latency_ms={"speech_end_to_first_media": first_media_ms},
+    )
+
+
 async def scenario_decision_router(port):
     """docs/DECISION_ROUTING.md: a greeting and a thanks are spoken without any LLM request (FAQ CACHE is off)."""
     LLM.answers = {}
@@ -771,6 +794,7 @@ async def scenario_concurrent_calls(port):
 SCENARIOS = {
     "basic_turns": scenario_basic_turns,
     "clinical": scenario_clinical,
+    "urgent": scenario_urgent,
     "decision_router": scenario_decision_router,
     "barge_in": scenario_barge_in,
     "llm_failures": scenario_llm_failures,

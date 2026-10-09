@@ -71,6 +71,11 @@ _COUNTER_NAMES = frozenset(
         "llm_fallback_cooldown_triggered_total",
         "llm_fallback_used_total",
         "llm_failover_events_total",
+        # Clinical safety step (docs/CLINICAL_SAFETY.md): one counter per
+        # tier plus internal check failures. Never labelled with caller text.
+        "clinical_blocks_urgent_total",
+        "clinical_blocks_medication_total",
+        "clinical_guard_errors_total",
         # Decision/Routing Layer (src/agent/decision_router.py).
         "decisions_total",
         "decision_route_deterministic_total",

@@ -1,13 +1,13 @@
 """
-Known clinical-guard gaps, found while auditing for the Decision/Routing
-Layer (docs/DECISION_ROUTING.md, "Pre-existing safety finding").
+Clinical-guard gaps found while auditing for the Decision/Routing Layer
+(docs/DECISION_ROUTING.md) and fixed by the clinical safety hardening
+(docs/CLINICAL_SAFETY.md, configs/clinical_triggers.yaml).
 
-These medication questions are NOT caught by configs/clinical_triggers.yaml
-today, so they reach the LLM instead of the pharmacist handoff. The router
-never shortcuts them (tests/test_decision_router.py), but it does not fix
-the guard either: changing the clinical safety authority is a separate,
-owner-approved change. Strict xfail -- when the guard is fixed these start
-passing, fail as XPASS, and the marker must be removed.
+These medication questions used to score 0 (or below threshold) and reach
+the LLM instead of the clinical safety response. They were pinned here as
+strict xfail; they now pass as ordinary regression tests. The end-to-end
+proof that they never reach Gemini or Groq is in
+tests/test_clinical_safety_hardening.py.
 """
 
 import sys
@@ -34,7 +34,6 @@ GAPS = [
 ]
 
 
-@pytest.mark.xfail(strict=True, reason="pre-existing clinical-guard gap; fix needs owner approval")
 @pytest.mark.parametrize("text", GAPS)
 def test_clinical_guard_catches_frequency_and_interaction_questions(text):
     assert HandoffDetector(_ROOT / "configs" / "clinical_triggers.yaml").score(text).is_handoff

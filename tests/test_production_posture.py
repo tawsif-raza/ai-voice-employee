@@ -97,6 +97,42 @@ def test_text_api_serves_authenticated_requests_outside_dev(production_client):
     assert response.json()["response"] == "We open at nine."
 
 
+@pytest.mark.parametrize(
+    "message,rule",
+    [
+        ("Should I increase my dose?", "MEDICAL_DOSAGE"),
+        ("I can't breathe after taking my pills", "URGENT_MEDICAL_RISK"),
+    ],
+)
+@pytest.mark.parametrize("stream", [False, True])
+def test_clinical_safety_holds_under_the_production_posture(monkeypatch, message, rule, stream):
+    # docs/CLINICAL_SAFETY.md: the same boundary in production as in dev,
+    # through the real authenticated route, and the LLM is never called.
+    calls = []
+
+    class SpyLLM(StaticLLM):
+        def generate_stream(self, messages, **kwargs):
+            calls.append(messages)
+            yield from super().generate_stream(messages, **kwargs)
+
+    monkeypatch.setattr(server, "_SECURITY", load_security_settings({**PRODUCTION, "RATE_LIMIT_BURST": "1000"}))
+    monkeypatch.setattr(server, "_authentication_provider", FakeOIDCProvider())
+    manager = build_conversation_manager(llm_provider=SpyLLM(), rag_enabled=False, persistence_enabled=False)
+    monkeypatch.setattr(server, "_conversation_manager", manager)
+
+    response = TestClient(server.app).post(
+        "/generate", json={"message": message, "stream": stream}, headers=_auth("token-alice")
+    )
+
+    assert response.status_code == 200
+    expected = manager.URGENT_SAFETY_RESPONSE if rule == "URGENT_MEDICAL_RISK" else manager.CLINICAL_HANDOFF_RESPONSE
+    if stream:
+        assert '"done": true' in response.text and '"is_handoff": true' in response.text
+    else:
+        assert response.json()["response"] == expected and response.json()["is_handoff"] is True
+    assert calls == []
+
+
 def test_streaming_generate_also_requires_auth(production_client):
     assert production_client.post("/generate", json={**BODY, "stream": True}).status_code == 401
     ok = production_client.post("/generate", json={**BODY, "stream": True}, headers=_auth("token-alice"))

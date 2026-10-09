@@ -213,6 +213,29 @@ class PolicyEngine:
             reason="No clinical safety trigger detected.",
         )
 
+    def evaluate_urgent(self, urgent_result: Optional[HandoffMatch]) -> PolicyDecision:
+        """
+        Same as evaluate_clinical() for the urgent-risk tier of the clinical
+        safety boundary (configs/urgent_triggers.yaml): a possible emergency
+        (breathing, severe allergic reaction, collapse, suspected overdose).
+        Still policy "clinical", so PRECEDENCE is unchanged.
+        """
+        if urgent_result is not None and urgent_result.is_handoff:
+            return PolicyDecision(
+                allowed=False,
+                policy="clinical",
+                rule="URGENT_MEDICAL_RISK",
+                action=Action.HANDOFF,
+                reason="Possible medical emergency: the caller is directed to emergency services.",
+            )
+        return PolicyDecision(
+            allowed=True,
+            policy="clinical",
+            rule="NO_URGENT_RISK",
+            action=Action.ALLOW,
+            reason="No urgent-risk trigger detected.",
+        )
+
     # ── Generation ───────────────────────────────────────────────────────
 
     def evaluate_generation(self, intent_routing: Optional[RoutingDecision] = None) -> PolicyDecision:
