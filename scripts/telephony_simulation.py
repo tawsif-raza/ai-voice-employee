@@ -483,13 +483,13 @@ async def scenario_clinical(port):
 
 
 async def scenario_decision_router(port):
-    """docs/DECISION_ROUTING.md: a greeting and a verified FAQ are spoken without any LLM request."""
+    """docs/DECISION_ROUTING.md: a greeting and a thanks are spoken without any LLM request (FAQ CACHE is off)."""
     LLM.answers = {}
     latencies = {}
     ok = True
     async with TwilioCall(port, "CArouter") as call:
         ok &= await call.stt_ready()
-        for name, text in (("greeting", "Hello"), ("faq", "What are your opening hours?")):
+        for name, text in (("greeting", "Hello"), ("thanks", "Thank you")):
             await asyncio.sleep(0.3)
             mark = len(LLM.events)
             t_end = now()
@@ -504,7 +504,7 @@ async def scenario_decision_router(port):
     record(
         "decision_router_shortcut_on_voice",
         ok,
-        f"greeting + FAQ spoken with no LLM request; ms {latencies}",
+        f"greeting + thanks spoken with no LLM request; ms {latencies}",
         latency_ms=latencies,
     )
 

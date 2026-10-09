@@ -25,6 +25,12 @@ GAPS = [
     "Can I take this medicine twice a day?",
     "Can I take this with another medicine?",
     "hello, can I take ibuprofen with warfarin",
+    # Confirmed in the 2026-10-09 final router review (same root cause:
+    # dosage / frequency / stopping questions without a trigger keyword).
+    "Is this dosage safe?",
+    "Should I increase my dose?",
+    "Can I stop taking this medicine?",
+    "What happens if I take two tablets?",
 ]
 
 

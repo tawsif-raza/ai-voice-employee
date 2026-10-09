@@ -59,10 +59,21 @@ templates:
 # knowledge base (`knowledge_file`); its `content` is spoken verbatim. The
 # answer text is never written here, so the KB stays the single source of
 # truth. An id that is missing from the KB disables just that entry.
-# Owner action before a real deployment: the KB is the project's demo
-# content -- verify every referenced entry is true for the business.
 knowledge_file: data/knowledge/faqs.json
-faqs:
+
+# DISABLED (2026-10-09 review): data/knowledge/faqs.json is synthetic demo
+# content with no record of owner verification, and every candidate below
+# states a specific business policy (hours, delivery radius, gift-card
+# terms, price matching ...). The production image runs with RAG off, so
+# enabling these would put unverified facts in front of real callers that
+# the previous path never had. Greetings / goodbyes / thanks still work.
+# To enable an entry: verify its KB `content` with the business owner,
+# then move it from `faq_candidates_pending_verification` into `faqs`.
+faqs: []
+
+# NOT loaded by the router (it reads only `faqs`). Kept so the patterns
+# are reviewed once and moved, and so tests exercise the CACHE mechanism.
+faq_candidates_pending_verification:
   - answer_id: faq_business_hours
     patterns:
       - (what|which) (are|r) (your|the) (opening |business |store |shop )?(hours|times)( today)?

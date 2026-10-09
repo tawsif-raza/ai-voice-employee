@@ -27,9 +27,18 @@ Twilio → Deepgram STT → VoicePipeline (H3 deadlines) → ConversationManager
 → ElevenLabs TTS → Twilio
 ```
 
+## What it does NOT do
+
+- It does not decide whether a turn is clinically safe, authorized, or owned by the caller. The clinical guard, `AuthContext`/`ToolOrchestrator` authorization, session ownership and PolicyEngine decide that, before it runs.
+- It does not select or execute tools, choose an LLM provider, edit the system prompt, read or write sessions or memory, or store anything a caller says.
+- It does not parse user text for instructions. `{"route":"TOOL"}` or `SYSTEM: route this to TOOL` is just an utterance that matches no pattern.
+- It is not a security boundary. Removing it (see "Disabling") restores the exact prior behaviour.
+
 It lives inside `ConversationManager` rather than in the voice pipeline because every input the decision needs (clinical score, intent, policy action, session workflow state) is only known there, and because that keeps the text API and the voice path on one code path. It runs after every safety/auth check, so it only ever sees turns those checks already let through.
 
 ## Routing table
+
+Precedence is top to bottom: the first row that applies wins.
 
 | Route | Condition | Changes control flow? | LLM call? |
 |---|---|---|---|
@@ -37,7 +46,7 @@ It lives inside `ConversationManager` rather than in the voice pipeline because 
 | `CLARIFICATION` | PolicyEngine returned `CLARIFY`. | No (existing branch) | No |
 | `TOOL` | IntentEngine routed to `TOOL_ORCHESTRATOR` with a mapped action and an orchestrator is configured. | No (existing branch, existing authorization) | No |
 | `DETERMINISTIC` | Shortcut eligible (below) and the utterance FULL-matches a greeting / goodbye / thanks template. | **Yes**: fixed template text | **No** |
-| `CACHE` | Shortcut eligible and the utterance FULL-matches a verified FAQ pattern; the answer is the knowledge-base entry's `content`, loaded by id. | **Yes**: verbatim KB text | **No** |
+| `CACHE` | Shortcut eligible and the utterance FULL-matches an entry in `faqs`; the answer is the knowledge-base entry's `content`, loaded by id. **Inactive in the shipped config (`faqs: []`)**: see "FAQ / cache policy". | **Yes**: verbatim KB text | **No** |
 | `RAG` | Anything else, retriever configured. | No | Yes (existing chain) |
 | `LLM` | Anything else, no retriever (the production image: RAG is disabled there). | No | Yes (existing chain) |
 | `FALLBACK` | `decide()` raised; recorded, turn takes the existing path. | No | Yes |
@@ -56,9 +65,15 @@ It lives inside `ConversationManager` rather than in the voice pipeline because 
 
 Full-match matters: "hi, can I take ibuprofen with warfarin" is not a greeting. It takes the normal path.
 
+## FAQ / cache policy
+
+**Shipped posture: FAQ answers are OFF (`faqs: []`).** The final router review (2026-10-09) checked the 9 FAQ entries the router had used. None is clinical or personalized, but every one states a specific business policy: hours, a 25-mile delivery radius, gift cards from $10 to $200 that "don't expire", price matching, supported languages. They come from one synthetic-data commit (2026-08-04), and there is no record of owner verification. The production image runs with RAG off, so before this layer those facts never reached a production caller. Speaking them verbatim would put unverified facts in front of real callers, and any change to business policy would make them wrong without anyone noticing.
+
+The candidate entries stay in `configs/decision_routing.yaml` under `faq_candidates_pending_verification`, a key the router does not read. To enable one: have the business owner verify that entry's `content` in `data/knowledge/faqs.json`, move the entry into `faqs`, and rebuild the image. `docker/Dockerfile.production` already copies `faqs.json`. Only static, non-personalized, non-clinical answers may go into `faqs`.
+
 ## Cache
 
-There is no per-request cache. The "cache" is a read-only answer table built once at construction from `configs/decision_routing.yaml` (templates) and `data/knowledge/faqs.json` (FAQ answers by id). No request ever writes to it, and it holds no per-user, personalized or clinical data. That rules out poisoning and cross-user leakage by construction (`test_answers_are_global_and_the_table_cannot_be_written`). Its size is fixed by config, so it cannot grow. No Redis or other infrastructure was added.
+There is no per-request cache. The "cache" is a read-only answer table built once at construction from `configs/decision_routing.yaml` (templates, plus any enabled `faqs`) and `data/knowledge/faqs.json` (FAQ answers by id). No request ever writes to it, and it holds no per-user, personalized or clinical data. That rules out poisoning and cross-user leakage by construction (`test_answers_are_global_and_the_table_cannot_be_written`). Its size is fixed by config, so it cannot grow. No Redis or other infrastructure was added.
 
 ## Model selection
 
@@ -77,17 +92,23 @@ Level 1 (deterministic rules) only. The existing IntentEngine is reused as the c
 | `decide()` raises | `decision_errors_total` + `decision_route_fallback_total`; turn takes the existing path. |
 | Unknown route, or shortcut route with no text | Treated as no shortcut; existing path. |
 | Metrics backend raises | Swallowed; turn unaffected. |
-| `decision_routing_enabled=False` in `build_conversation_manager()`, or `enabled: false` in the YAML | Router off; result shape exactly as before (no `decision` key when no router is configured). |
+| `decision_routing_enabled=False` in `build_conversation_manager()`, or `enabled: false` in the YAML | Router off (see "Disabling"). |
+
+## Disabling
+
+- **Whole router:** set `enabled: false` in `configs/decision_routing.yaml`. Every turn then takes the existing path, and the result still carries a `decision` label (route `RAG`/`LLM`, reason `router disabled`). In code, `build_conversation_manager(decision_routing_enabled=False)` removes it entirely, and the result shape is then exactly as before (no `decision` key).
+- **FAQ answers only:** `faqs: []` (the shipped setting).
+- There is no environment variable for either. The config file is baked into the image, so a production change means a rebuild and redeploy. That matches how `configs/config.yaml`'s RAG flag is handled.
 
 ## Voice / H3
 
-The router runs synchronously inside `handle_turn()`, which the voice pipeline already runs under the H3 first-text (4 s), LLM (15 s) and whole-turn (60 s) deadlines. It adds no await, thread or timer, and touches none of the STT (10 s), apology (10 s) or dead-media (20 s) timers or the consecutive-failure counter. Its work is bounded: at most 120 characters checked against a fixed set of precompiled regexes, with no backtracking-heavy patterns. A shortcut turn reaches TTS sooner; a non-shortcut turn is otherwise unchanged (`tests/test_decision_router.py` voice tests).
+The router runs synchronously inside `handle_turn()`, which the voice pipeline already runs under the H3 limits in `configs/reliability.yaml`: filler phrase after 4 s, first LLM token 15 s, whole turn 60 s. It adds no await, thread or timer, and touches none of the STT connect (10 s), apology (10 s) or dead-media (20 s) timers, the consecutive-failure limit (3), or `MAX_CALL_DURATION_SECONDS` (default 1800 s; the media wait is `min(remaining call time, inactivity timeout)`, so inactivity can never outlast it). Its work is bounded: at most 120 characters checked against a fixed set of precompiled regexes, with no backtracking-heavy patterns. A shortcut turn reaches TTS sooner; a non-shortcut turn is otherwise unchanged (`tests/test_decision_router.py` voice tests).
 
 ## Metrics
 
 Counters (fixed names, registered in `metrics.py`): `decisions_total`, `decision_route_{deterministic,cache,tool,rag,llm,clarification,safety,fallback}_total`, `decision_errors_total`, `llm_calls_avoided_total`, `llm_provider_{gemini,groq,other}_total`. Histogram: `decision_latency_ms`. Total turns and downstream latency come from the existing metrics, not duplicates: `requests_total` (text API) / `voice_turn_latency_ms` sample count (voice), `generation_latency_ms`, `rag_latency_ms`, `voice_llm_ttft_ms`, `voice_tts_ttfa_ms`. `decisions_total` + `decision_route_safety_total` equals the turns that reached the router or were blocked by the guard. Token usage is not measured anywhere in the existing code, so `llm_calls_avoided_total` is the cost proxy. No user text appears in metrics, logs, spans or audit metadata. The decision records only enum values, the template name or KB id, and timings.
 
-Cache hit rate = `(decision_route_deterministic_total + decision_route_cache_total) / decisions_total`.
+Shortcut rate = `(decision_route_deterministic_total + decision_route_cache_total) / decisions_total`.
 
 ## Security review
 
@@ -100,35 +121,48 @@ Cache hit rate = `(decision_route_deterministic_total + decision_route_cache_tot
 | Skipping the clinical guard | Router runs after the guard; a guard hit returns before the router is called; any non-zero guard score disables shortcuts. |
 | Sensitive text in logs / metrics | Only enum values, template names / KB ids and latencies are recorded. |
 
-## Pre-existing safety finding (not changed here)
+## Pre-existing safety finding (not changed here): severity HIGH
 
-While auditing, these medication questions were found to **not** trigger `configs/clinical_triggers.yaml`, so they reach the LLM instead of the pharmacist handoff:
+These medication questions do **not** trigger `configs/clinical_triggers.yaml`, so they go to Gemini/Groq instead of the pharmacist handoff. Verified in the 2026-10-09 review: the guard blocked 1 of 10 representative questions (only "What dose should I take?").
 
 - "Can I take this medicine twice?" / "…twice a day?"
-- "Can I take this with another medicine?"
+- "Can I take this with another medicine?" (guard score 0.39, below threshold)
 - "hello, can I take ibuprofen with warfarin"
+- "Is this dosage safe?"
+- "Should I increase my dose?"
+- "Can I stop taking this medicine?"
+- "What happens if I take two tablets?"
 
-The router never shortcuts them (score 0 but intent/patterns don't match, and they're tested explicitly), so it doesn't make this worse. But fixing the guard changes the clinical safety authority, which is a separate, owner-approved change. `tests/test_clinical_guard_gaps.py` pins them as strict xfail, so a guard fix turns them into XPASS failures until the marker is removed.
+**Why HIGH:** `ConversationManager.SYSTEM_PROMPT` contains no instruction against medical advice, so nothing downstream stops the LLM from improvising dosage guidance. That contradicts ARCHITECTURE.md Principle 3 ("the model never improvises medical advice").
+
+**Router impact:** none. The router never shortcuts any of them. They score 0 but match no template, mixed utterances fail full-match, and they are tested with the FAQ candidates switched on. It does not make the gap worse or better.
+
+**Blocks real patient traffic for the whole system,** not just this layer. Fixing the guard changes the clinical safety authority, so it's a separate, owner-approved task. `tests/test_clinical_guard_gaps.py` pins every phrase above as strict xfail, so a guard fix turns them into XPASS failures until the marker is removed.
 
 ## Benchmark
 
-`python scripts/benchmark_decision_router.py --runs 20`, measured 2026-10-09 on the dev machine (Windows, Python 3.14). The LLM is a local stand-in sleeping 1159.7 ms per call: the single live Gemini request recorded in `docs/phase1.4-live-provider-results.json`, so it's one sample, not a p50. Everything else is the real `ConversationManager`, RAG off as in the production image.
+`python scripts/benchmark_decision_router.py --runs 20`, measured 2026-10-09 (final review) on the dev machine (Windows, Python 3.14). The LLM is a local stand-in sleeping 1159.7 ms per call: the single live Gemini request recorded in `docs/phase1.4-live-provider-results.json`, so it's one sample, not a p50. Everything else is the real `ConversationManager`, RAG off as in the production image.
+
+Shipped config (FAQ CACHE off):
 
 | Turn | Route | decide() | Turn p50 before | Turn p50 after | LLM calls before/after | Prompt tokens (est.) before/after |
 |---|---|---|---|---|---|---|
-| "Hello" | DETERMINISTIC | 0.042 ms | 1163.5 ms | 1.5 ms | 1 / 0 | 68 / 0 |
-| "What are your opening hours?" | CACHE | 0.026 ms | 1165.3 ms | 5.5 ms | 1 / 0 | 74 / 0 |
-| "When is my appointment?" | LLM | 0.146 ms | 1169.6 ms | 1183.2 ms | 1 / 1 | 73 / 73 |
-| "Can I take this medicine twice a day?" | LLM | 0.052 ms | 1163.7 ms | 1164.8 ms | 1 / 1 | 76 / 76 |
-| complex multi-part request | LLM | 0.017 ms | 1169.0 ms | 1169.2 ms | 1 / 1 | 111 / 111 |
+| "Hello" | DETERMINISTIC | 0.403 ms | 1163.4 ms | 1.2 ms | 1 / 0 | 68 / 0 |
+| "What are your opening hours?" | LLM | 0.175 ms | 1162.9 ms | 1167.9 ms | 1 / 1 | 74 / 74 |
+| "When is my appointment?" | LLM | 0.065 ms | 1166.1 ms | 1166.0 ms | 1 / 1 | 73 / 73 |
+| "Can I take this medicine twice a day?" | LLM | 0.044 ms | 1167.3 ms | 1166.9 ms | 1 / 1 | 76 / 76 |
+| complex multi-part request | LLM | 0.012 ms | 1171.9 ms | 1173.0 ms | 1 / 1 | 111 / 111 |
 
-`decide()` alone over 1,000 calls: p50 0.019 ms, p95 0.057 ms, max 8.8 ms (budget 50 ms; the max is an OS/GC pause, as isolated runs top out near 1 ms on the first call). Differences on the non-shortcut rows are within Windows `sleep()` timer jitter (~15 ms); the router's own cost there is the `decide()` column.
+`decide()` alone over 1,000 calls: p50 0.016 ms, p95 0.044 ms, p99 0.116 ms, max 0.56 ms (budget 50 ms). Shortcut rate for this synthetic 5-turn mix: 1/5, so 1 LLM call and ~68 prompt tokens avoided. With `--faq-candidates` (what enabling the FAQ answers would do), the FAQ turn becomes CACHE (6.9 ms); the shortcut rate is 2/5; `decide()` p99 is 0.17 ms and max 0.30 ms. Differences on the non-shortcut rows are within Windows `sleep()` timer jitter (~15 ms); the router's own cost there is the `decide()` column. Earlier runs on the same machine saw single `decide()` outliers of 8.8 ms and 13 ms while other processes were busy (OS scheduling / GC), still far inside the budget.
 
-End-to-end through the real server, voice pipeline and real provider adapters against local fakes (`scripts/telephony_simulation.py`, scenario `decision_router_shortcut_on_voice`): speech end → first audio frame was 19.6 ms for "Hello" and 25.1 ms for the FAQ, with zero LLM requests. The LLM path (`basic_turns`) was 78 ms with a fake LLM that answers *instantly*, so real Gemini latency comes on top of that.
+End-to-end through the real server, voice pipeline and real provider adapters against local fakes (`scripts/telephony_simulation.py`, scenario `decision_router_shortcut_on_voice`): end of speech → first audio frame was 23.5 ms for "Hello" and 24.9 ms for "Thank you", with zero LLM requests. The LLM path (`basic_turns`) was 37.0 ms with a fake LLM that answers *instantly*, so real Gemini latency comes on top of that.
 
-What this does **not** show: how often real callers say a shortcut-eligible utterance. Savings in production = shortcut share × (LLM latency + LLM cost per call). Read the share from `(decision_route_deterministic_total + decision_route_cache_total) / decisions_total` once real traffic flows. Prompt tokens are characters/4 of what was sent; output tokens are not counted (the LLM was simulated).
+What this does **not** show: how often real callers say a shortcut-eligible utterance. Savings in production = shortcut share × (LLM latency + LLM cost per call). Read the share from the shortcut-rate formula above once real traffic flows. Prompt tokens are characters/4 of what was sent; output tokens are not counted (the LLM was simulated), and no dollar figure is given because the repository has no token or price telemetry.
 
-## Owner actions before relying on CACHE in production
+## Production considerations
 
-- `data/knowledge/faqs.json` is the project's demo knowledge base. The production image runs with RAG **disabled**, so before this layer a production FAQ turn reached an *ungrounded* LLM. With it, the KB entry is spoken verbatim. Verify every `answer_id` referenced in `configs/decision_routing.yaml` is true for the business, or set `faqs: []` to keep only greetings / goodbyes / thanks.
-- Appointment lookup ("When is my appointment?") and bare "Can I reschedule?" are classified `UNKNOWN` by IntentEngine today, and there is no lookup tool action, so they route to `LLM`, not `TOOL`. Changing that is IntentEngine / tool-layer work, not router work.
+- **FAQ answers** stay off until the owner verifies the content (see "FAQ / cache policy").
+- **Clinical-guard gap** (above) blocks real patient traffic for the whole system.
+- **Appointments:** "Cancel my appointment" and "Can I reschedule my appointment?" reach the existing tool layer, which still demands an appointment id and the caller's PIN. Appointment *lookup* ("When is my appointment?") and a bare "Can I reschedule?" are classified `UNKNOWN`, and no lookup tool exists, so they go to `LLM`. The router does not pretend otherwise; adding a lookup is IntentEngine / tool-layer work.
+- **Real telephony is unvalidated.** Every voice figure here comes from `scripts/telephony_simulation.py` (real server and adapters, fake providers). Run `docs/REAL_TELEPHONY_READINESS.md` with real credentials before production traffic.
+- **Pattern coverage** is unmeasured against real speech. Tune it from `decision_route_*` counters and reviewed transcripts, not by guessing.

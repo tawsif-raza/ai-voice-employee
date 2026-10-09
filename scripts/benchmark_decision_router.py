@@ -15,19 +15,25 @@ What is measured vs modelled:
   docs/phase1.4-live-provider-results.json -- a single sample, not a p50).
   No network, no API key, no spend.
 - Retrieval is off, matching docker/Dockerfile.production (RAG disabled).
+- The router is the shipped configs/decision_routing.yaml (FAQ CACHE off).
+  --faq-candidates also enables `faq_candidates_pending_verification`, to
+  measure what turning the FAQ answers on would change.
 - Tokens are estimated as prompt characters / 4. Cost is only printed when
   --usd-per-1k-input-tokens is given; this script never assumes a price.
 
 Usage:
-    python scripts/benchmark_decision_router.py [--runs 20] [--llm-latency-ms 1159.7] [--json out.json]
+    python scripts/benchmark_decision_router.py [--runs 20] [--llm-latency-ms 1159.7] [--faq-candidates] [--json out.json]
 """
 
 import argparse
 import json
+import math
 import statistics
 import sys
 import time
 from pathlib import Path
+
+import yaml
 
 _ROOT = Path(__file__).resolve().parents[1]
 for _sub in ("src/agent", "src/inference"):
@@ -85,15 +91,31 @@ def _run_turn(manager, llm, text):
     }
 
 
-def _manager(llm, routing_enabled):
-    return build_conversation_manager(
+def _router(faq_candidates):
+    if not faq_candidates:
+        return DecisionRouter.from_config_file()
+    config = yaml.safe_load((_ROOT / "configs" / "decision_routing.yaml").read_text("utf-8"))
+    config["faqs"] = config.get("faq_candidates_pending_verification") or []
+    return DecisionRouter(config)
+
+
+def _manager(llm, routing_enabled, faq_candidates):
+    manager = build_conversation_manager(
         llm_provider=llm, rag_enabled=False, persistence_enabled=False, decision_routing_enabled=routing_enabled
     )
+    if routing_enabled:
+        manager.decision_router = _router(faq_candidates)
+    return manager
 
 
-def _decision_latency(runs):
+def _percentile(sorted_samples, q):
+    """Nearest-rank percentile of an already sorted list."""
+    return sorted_samples[max(0, math.ceil(q * len(sorted_samples)) - 1)]
+
+
+def _decision_latency(runs, faq_candidates):
     """decide() alone, isolated from the rest of the turn."""
-    router, engine = DecisionRouter.from_config_file(), IntentEngine()
+    router, engine = _router(faq_candidates), IntentEngine()
     samples = []
     for _ in range(runs):
         for _, text in SCENARIOS:
@@ -108,7 +130,8 @@ def _decision_latency(runs):
     return {
         "samples": len(samples),
         "p50_ms": statistics.median(samples),
-        "p95_ms": samples[int(len(samples) * 0.95) - 1],
+        "p95_ms": _percentile(samples, 0.95),
+        "p99_ms": _percentile(samples, 0.99),
         "max_ms": samples[-1],
     }
 
@@ -118,6 +141,7 @@ def main(argv=None):
     parser.add_argument("--runs", type=int, default=20)
     parser.add_argument("--llm-latency-ms", type=float, default=LIVE_GEMINI_SAMPLE_MS)
     parser.add_argument("--usd-per-1k-input-tokens", type=float, default=None)
+    parser.add_argument("--faq-candidates", action="store_true", help="also enable the unverified FAQ candidates")
     parser.add_argument("--json", type=Path, default=None)
     args = parser.parse_args(argv)
 
@@ -126,7 +150,7 @@ def main(argv=None):
         row = {"scenario": name}
         for label, enabled in (("before", False), ("after", True)):
             llm = SimulatedLLM(args.llm_latency_ms)
-            manager = _manager(llm, enabled)
+            manager = _manager(llm, enabled, args.faq_candidates)
             results = [_run_turn(manager, llm, text) for _ in range(args.runs)]
             row[label] = {
                 "total_p50_ms": statistics.median(r["total_ms"] for r in results),
@@ -139,9 +163,10 @@ def main(argv=None):
             }
         rows.append(row)
 
-    decision = _decision_latency(max(args.runs, 200))
+    decision = _decision_latency(max(args.runs, 200), args.faq_candidates)
 
     print(f"LLM stand-in latency: {args.llm_latency_ms:.1f} ms/call (modelled; RAG off as in the production image)")
+    print(f"Router config: shipped{' + FAQ candidates (NOT the shipped posture)' if args.faq_candidates else ''}")
     print(f"Runs per scenario: {args.runs}\n")
     header = f"{'scenario':<12} {'route':<14} {'decide ms':>9} {'before p50':>11} {'after p50':>10} {'LLM b/a':>8} {'tok b/a':>10}"
     print(header)
@@ -156,7 +181,14 @@ def main(argv=None):
         )
     print(
         f"\ndecide() alone over {decision['samples']} calls: p50 {decision['p50_ms']:.4f} ms, "
-        f"p95 {decision['p95_ms']:.4f} ms, max {decision['max_ms']:.4f} ms (budget 50 ms)"
+        f"p95 {decision['p95_ms']:.4f} ms, p99 {decision['p99_ms']:.4f} ms, max {decision['max_ms']:.4f} ms "
+        "(budget 50 ms)"
+    )
+
+    shortcuts = sum(r["after"]["route"] in ("DETERMINISTIC", "CACHE") for r in rows)
+    print(
+        f"Shortcut rate for this {len(rows)}-turn mix: {shortcuts}/{len(rows)} "
+        "(a synthetic mix -- not a production rate)"
     )
 
     calls_before = sum(r["before"]["llm_calls_per_turn"] for r in rows)
@@ -168,7 +200,16 @@ def main(argv=None):
 
     if args.json:
         args.json.write_text(
-            json.dumps({"llm_latency_ms": args.llm_latency_ms, "rows": rows, "decide": decision}, indent=2), "utf-8"
+            json.dumps(
+                {
+                    "llm_latency_ms": args.llm_latency_ms,
+                    "faq_candidates": args.faq_candidates,
+                    "rows": rows,
+                    "decide": decision,
+                },
+                indent=2,
+            ),
+            "utf-8",
         )
 
 
