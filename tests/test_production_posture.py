@@ -74,7 +74,9 @@ def _auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-BODY = {"message": "What time do you open?"}
+# Must reach the LLM: a greeting or verified-FAQ question is answered by the
+# decision router (docs/DECISION_ROUTING.md) without calling the stub below.
+BODY = {"message": "What is your return policy for online orders?"}
 
 
 @pytest.mark.parametrize("path", ["/generate", "/jobs/generate"])

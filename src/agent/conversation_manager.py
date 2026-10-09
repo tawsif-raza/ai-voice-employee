@@ -72,6 +72,14 @@ _INFERENCE_DIR = str(Path(__file__).resolve().parents[1] / "inference")
 if _INFERENCE_DIR not in sys.path:
     sys.path.insert(0, _INFERENCE_DIR)
 from action_models import ANONYMOUS_CONTEXT, ActionProposal, AuthContext, ToolRequest  # noqa: E402
+from decision_router import (  # noqa: E402
+    DecisionRoute,
+    DecisionRouter,
+    fallback_decision,
+    record_decision,
+    record_llm_provider,
+    record_safety_block,
+)
 from handoff_detector import HandoffDetector, HandoffMatch  # noqa: E402
 from intent_engine import IntentEngine, IntentResult, Route, RoutingDecision  # noqa: E402
 from memory_manager import MemoryManager  # noqa: E402
@@ -291,6 +299,7 @@ class ConversationManager:
         sleep_fn=None,
         database=None,
         caller_pin: Optional[str] = None,
+        decision_router: Optional[DecisionRouter] = None,
     ):
         """
         Args:
@@ -406,6 +415,14 @@ class ConversationManager:
                                attempt fails closed to human handoff
                                regardless of what is spoken, rather than
                                silently accepting a hardcoded literal.
+            decision_router:   A DecisionRouter (src/agent/decision_router.py)
+                               -- optimization only. None (the default)
+                               preserves exact prior behavior: every turn
+                               that reaches generation runs RAG -> LLM.
+                               When set, a short greeting/goodbye/thanks or
+                               verified-FAQ turn that cleared every check
+                               above is answered with fixed text instead
+                               (see handle_turn()'s "2.7.").
         """
         self.llm_service = llm_service
         self.retriever = retriever
@@ -421,6 +438,7 @@ class ConversationManager:
         self.metrics = metrics
         self.database = database
         self.caller_pin = caller_pin
+        self.decision_router = decision_router
         self.rag_top_k = rag_top_k
         self.rag_score_threshold = rag_score_threshold
         self.system_prompt = system_prompt or self.SYSTEM_PROMPT
@@ -592,6 +610,10 @@ class ConversationManager:
 
         normalized_history = self._normalize_history(history or [])
         turn_actor = auth.user_id if auth is not None and auth.authenticated else None
+        # The clinical guard's score for a turn it let through (None if no
+        # guard ran). Only the decision router reads it: any partial
+        # clinical signal disables its shortcuts.
+        clinical_confidence: Optional[float] = None
 
         # 2. Clinical safety check — deterministic, runs before generation,
         # and can short-circuit the turn entirely (ARCHITECTURE.md
@@ -646,6 +668,7 @@ class ConversationManager:
                 if self.metrics is not None:
                     self.metrics.increment("policy_denials_total")
                     self.metrics.increment("handoffs_total")
+                record_safety_block(self.metrics)
                 yield self.CLINICAL_HANDOFF_RESPONSE
                 yield self._final(
                     self.CLINICAL_HANDOFF_RESPONSE,
@@ -657,6 +680,7 @@ class ConversationManager:
                     policy=clinical_policy.to_dict(),
                 )
                 return
+            clinical_confidence = clinical_match.confidence
 
         # 2.4. Session lookup + pending-confirmation interception (Phase 5).
         # Runs after the clinical guard (never before — a "yes" reply is
@@ -902,6 +926,38 @@ class ConversationManager:
                 _span.set_attribute(SpanAttributes.POLICY_NAME, generation_policy.policy or "")
             except Exception:
                 pass
+
+        # 2.55. Decision/Routing Layer (optimization only). Runs after every
+        # check above and decides nothing they decide: clarification and the
+        # tool branch below keep their own conditions and never read
+        # `route_decision`. Its only effect is the "2.7." shortcut. A router error
+        # is recorded and the turn takes the existing path.
+        route_decision = None
+        if self.decision_router is not None:
+            tool_action = (
+                self._INTENT_TO_TOOL_ACTION.get(routing.intent)
+                if routing.route == Route.TOOL_ORCHESTRATOR and self.tool_orchestrator is not None
+                else None
+            )
+            with _traced("conversation.route_decision"):
+                try:
+                    route_decision = self.decision_router.decide(
+                        user_input,
+                        routing,
+                        generation_action=getattr(generation_policy.action, "value", str(generation_policy.action)),
+                        clinical_confidence=clinical_confidence,
+                        tool_action=tool_action,
+                        retriever_available=self.retriever is not None,
+                        workflow_pending=bool(session is not None and session.workflow_state),
+                    )
+                except Exception:
+                    logger.warning("Decision router failed; using the existing path", exc_info=True)
+                    if self.metrics is not None:
+                        self.metrics.increment("decision_errors_total")
+                    route_decision = fallback_decision(intent=routing.intent)
+            record_decision(self.metrics, route_decision)
+        decision_metadata = route_decision.to_dict() if route_decision is not None else None
+
         if generation_policy.action == Action.CLARIFY:
             if self.audit_logger is not None:
                 from observability_models import EventType
@@ -927,6 +983,7 @@ class ConversationManager:
                 clinical_guard_triggered=False,
                 intent=routing.to_dict(),
                 policy=generation_policy.to_dict(),
+                decision=decision_metadata,
             )
             return
 
@@ -955,8 +1012,63 @@ class ConversationManager:
                     clinical_guard_triggered=False,
                     intent=routing.to_dict(),
                     tool=tool_metadata,
+                    decision=decision_metadata,
                 )
                 return
+
+        # 2.7. Decision-router shortcut: a fixed greeting/goodbye/thanks or a
+        # verified knowledge-base FAQ answer instead of RAG -> LLM. The
+        # conditions the router already applied are re-checked here from this
+        # method's own state, so a router defect can at worst fail to
+        # optimize -- it can never reach this branch for a clinical,
+        # clarification, tool or non-RAG_LLM turn. The answer is still passed
+        # through the handoff detector, like every other response.
+        if (
+            route_decision is not None
+            and route_decision.route in DecisionRoute.SHORTCUTS
+            and isinstance(route_decision.response, str)
+            and route_decision.response.strip()
+            and clinical_confidence == 0.0
+            and generation_policy.action == Action.ALLOW
+            and routing.route == Route.RAG_LLM
+            and not (session is not None and session.workflow_state)
+        ):
+            reply = route_decision.response
+            try:
+                shortcut_handoff = self.handoff_detector.score(reply)
+            except Exception:
+                shortcut_handoff = HandoffMatch(is_handoff=True, confidence=1.0)
+            if self.audit_logger is not None:
+                from observability_models import EventType
+
+                self.audit_logger.record(
+                    EventType.POLICY_ALLOW,
+                    outcome="allowed",
+                    actor=turn_actor,
+                    request_id=request_id,
+                    policy="decision_router",
+                    reason=f"Answered by route {route_decision.route}.",
+                    metadata={
+                        "route": route_decision.route,
+                        "answer_key": route_decision.answer_key,
+                        "intent": routing.intent,
+                    },
+                )
+            if self.metrics is not None and shortcut_handoff.is_handoff:
+                self.metrics.increment("handoffs_total")
+            yield reply
+            yield self._final(
+                reply,
+                is_handoff=shortcut_handoff.is_handoff,
+                confidence=shortcut_handoff.confidence,
+                latency_ms=0.0,
+                retrieved_chunks=[],
+                clinical_guard_triggered=False,
+                intent=routing.to_dict(),
+                policy=generation_policy.to_dict(),
+                decision=decision_metadata,
+            )
+            return
 
         # 3. Safe-path retrieval — a retrieval failure degrades to an
         # ungrounded turn rather than failing it (ARCHITECTURE.md §5
@@ -1213,6 +1325,7 @@ class ConversationManager:
                 except Exception:
                     pass
 
+        record_llm_provider(self.metrics, final_llm)
         response_text = (final_llm or {}).get("text", "".join(chunks).strip())
         latency_ms = (final_llm or {}).get("latency_ms", 0.0)
 
@@ -1304,6 +1417,7 @@ class ConversationManager:
             degraded=degraded,
             intent=routing.to_dict(),
             policy=handoff_policy.to_dict(),
+            decision=decision_metadata,
         )
 
     # ── Tool-backed actions (Phase 4) ───────────────────────────────────────
@@ -1663,8 +1777,9 @@ class ConversationManager:
         intent: Optional[dict] = None,
         policy: Optional[dict] = None,
         tool: Optional[dict] = None,
+        decision: Optional[dict] = None,
     ) -> dict:
-        return {
+        result = {
             "response": response,
             "is_handoff": is_handoff,
             "handoff_confidence": confidence,
@@ -1677,6 +1792,11 @@ class ConversationManager:
             "tool": tool,
             "policy": policy,
         }
+        # Only present when a DecisionRouter is configured, so the result
+        # shape is exactly unchanged without one.
+        if decision is not None:
+            result["decision"] = decision
+        return result
 
 
 # ── Factory ──────────────────────────────────────────────────────────────────
@@ -1800,6 +1920,7 @@ def build_conversation_manager(
     persistence_enabled: bool = True,
     llm_provider=None,
     caller_pin: Optional[str] = None,
+    decision_routing_enabled: bool = True,
 ) -> ConversationManager:
     """
     Build a fully-wired ConversationManager: resolve LLMService/LLMProvider
@@ -2048,4 +2169,6 @@ def build_conversation_manager(
         max_concurrent_generations=max_concurrent_generations,
         database=persistence.database,
         caller_pin=caller_pin,
+        # configs/decision_routing.yaml's own `enabled` flag also applies.
+        decision_router=DecisionRouter.from_config_file() if decision_routing_enabled else None,
     )

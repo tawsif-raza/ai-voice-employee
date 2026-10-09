@@ -71,6 +71,21 @@ _COUNTER_NAMES = frozenset(
         "llm_fallback_cooldown_triggered_total",
         "llm_fallback_used_total",
         "llm_failover_events_total",
+        # Decision/Routing Layer (src/agent/decision_router.py).
+        "decisions_total",
+        "decision_route_deterministic_total",
+        "decision_route_cache_total",
+        "decision_route_tool_total",
+        "decision_route_rag_total",
+        "decision_route_llm_total",
+        "decision_route_clarification_total",
+        "decision_route_safety_total",
+        "decision_route_fallback_total",
+        "decision_errors_total",
+        "llm_calls_avoided_total",
+        "llm_provider_gemini_total",
+        "llm_provider_groq_total",
+        "llm_provider_other_total",
     }
 )
 
@@ -87,6 +102,8 @@ _HISTOGRAM_NAMES = frozenset(
         "voice_llm_ttft_ms",
         "voice_tts_ttfa_ms",
         "voice_interruption_latency_ms",
+        # Decision/Routing Layer.
+        "decision_latency_ms",
     }
 )
 

@@ -142,8 +142,11 @@ def test_api_response_and_logs_do_not_contain_key_when_gemini_fails(caplog):
     try:
         with caplog.at_level(logging.DEBUG):
             client = TestClient(server.app)
-            blocking = client.post("/generate", json={"message": "What are your opening hours?"})
-            streaming = client.post("/generate", json={"message": "What are your opening hours?", "stream": True})
+            # Must reach the LLM (a verified FAQ is answered by the decision router).
+            blocking = client.post("/generate", json={"message": "What is your return policy for online orders?"})
+            streaming = client.post(
+                "/generate", json={"message": "What is your return policy for online orders?", "stream": True}
+            )
     finally:
         server._conversation_manager = previous
 

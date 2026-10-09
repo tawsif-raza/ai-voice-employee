@@ -420,13 +420,17 @@ async def scenario_basic_turns(port):
         "speech_end_to_first_media": [],
     }
     LLM.answers = {
-        "opening": "We are open from nine to five on weekdays.",
+        "return": "Unused items can be returned within thirty days.",
         "parking": "Yes, there is free parking behind the building.",
-        "repeat": "Of course. We are open from nine to five on weekdays.",
+        "repeat": "Of course. Unused items can be returned within thirty days.",
     }
     async with TwilioCall(port, "CAbasic") as call:
         connected = await call.stt_ready()
-        utterances = ["What are your opening hours?", "Is there parking nearby?", "Could you repeat that please?"]
+        utterances = [
+            "What is your return policy for online orders?",
+            "Is there parking nearby?",
+            "Could you repeat that please?",
+        ]
         ok = connected
         for text in utterances:
             await asyncio.sleep(0.3)
@@ -475,6 +479,33 @@ async def scenario_clinical(port):
         "clinical_guard_on_voice",
         got and not llm_called and "pharmacist" in spoken,
         f"handoff spoken={got}, LLM called={llm_called}",
+    )
+
+
+async def scenario_decision_router(port):
+    """docs/DECISION_ROUTING.md: a greeting and a verified FAQ are spoken without any LLM request."""
+    LLM.answers = {}
+    latencies = {}
+    ok = True
+    async with TwilioCall(port, "CArouter") as call:
+        ok &= await call.stt_ready()
+        for name, text in (("greeting", "Hello"), ("faq", "What are your opening hours?")):
+            await asyncio.sleep(0.3)
+            mark = len(LLM.events)
+            t_end = now()
+            DG.say(text)
+            got = await wait_for(lambda t_end=t_end: call.first_media_after(t_end) is not None, 10)
+            await asyncio.sleep(0.4)
+            ok &= got and len(LLM.events) == mark
+            if got:
+                latencies[f"{name}_speech_end_to_first_media"] = round(
+                    (call.first_media_after(t_end) - t_end) * 1000, 1
+                )
+    record(
+        "decision_router_shortcut_on_voice",
+        ok,
+        f"greeting + FAQ spoken with no LLM request; ms {latencies}",
+        latency_ms=latencies,
     )
 
 
@@ -543,7 +574,7 @@ async def scenario_llm_failures(port):
     LLM.answers = {}
     # Gemini error -> Groq
     LLM.gemini["mode"] = "error"
-    _, _, spoken, ev = await _single_turn(port, "CAgemerr", "What are your opening hours?")
+    _, _, spoken, ev = await _single_turn(port, "CAgemerr", "What is your return policy for online orders?")
     groq_used = any(p == "groq" and w == "first_text" for _t, p, w in ev)
     record(
         "gemini_error_falls_back_to_groq",
@@ -552,19 +583,19 @@ async def scenario_llm_failures(port):
     )
     # Gemini empty -> Groq
     LLM.gemini["mode"] = "empty"
-    _, _, spoken, ev = await _single_turn(port, "CAgemempty", "What are your opening hours?")
+    _, _, spoken, ev = await _single_turn(port, "CAgemempty", "What is your return policy for online orders?")
     groq_used = any(p == "groq" and w == "first_text" for _t, p, w in ev)
     record("gemini_empty_treated_as_failure", groq_used, f"groq answered={groq_used}; spoken={[s for _t, s in spoken]}")
     # Both unavailable -> conversation layer's fixed apology/handoff text
     LLM.gemini["mode"] = LLM.groq["mode"] = "error"
-    _, _, spoken, _ = await _single_turn(port, "CAbothdown", "What are your opening hours?")
+    _, _, spoken, _ = await _single_turn(port, "CAbothdown", "What is your return policy for online orders?")
     words = " ".join(s for _t, s in spoken)
     record("both_llms_down_not_silent", "trouble" in words, f"spoken={[s for _t, s in spoken]}")
     # Gemini hang -> filler at ~4 s, Groq fallback after Gemini's own 30 s timeout would exceed 15 s deadline
     LLM.groq["mode"] = "ok"
     LLM.gemini["mode"] = "hang:40"
     call, t_end, spoken, _ = await _single_turn(
-        port, "CAgemhang", "What are your opening hours?", wait=25, until="say that again"
+        port, "CAgemhang", "What is your return policy for online orders?", wait=25, until="say that again"
     )
     filler = next((t for t, s in spoken if "One moment" in s), None)
     apology = next((t for t, s in spoken if "say that again" in s), None)
@@ -581,7 +612,9 @@ async def scenario_llm_failures(port):
 async def scenario_tts_failures(port):
     LLM.answers = {}
     EL.mode = "fail_next:1"
-    call, _t, spoken, _ = await _single_turn(port, "CAtts1", "What are your opening hours?", until="say that again")
+    call, _t, spoken, _ = await _single_turn(
+        port, "CAtts1", "What is your return policy for online orders?", until="say that again"
+    )
     still_open = call.open_before_hangup
     record(
         "elevenlabs_temporary_failure",
@@ -593,7 +626,7 @@ async def scenario_tts_failures(port):
         await call.stt_ready()
         await asyncio.sleep(0.2)
         t_end = now()
-        DG.say("What are your opening hours?")
+        DG.say("What is your return policy for online orders?")
         closed = await call.wait_closed(15)
     record(
         "elevenlabs_permanent_failure_closes_stream",
@@ -623,7 +656,7 @@ async def scenario_stt_failures(port):
         reconnected = await wait_for(lambda: DG.connections > before, 6)
         await asyncio.sleep(0.3)
         t_end = now()
-        DG.say("What are your opening hours?")
+        DG.say("What is your return policy for online orders?")
         answered = await wait_for(lambda: call.first_media_after(t_end) is not None, 10)
     record(
         "deepgram_drop_reconnects",
@@ -722,7 +755,7 @@ async def scenario_concurrent_calls(port):
         await c.__aenter__()
     await wait_for(lambda: DG.connections >= 5, 5)
     t_end = now()
-    DG.say_all("What are your opening hours?")
+    DG.say_all("What is your return policy for online orders?")
     answered = await wait_for(lambda: all(c.first_media_after(t_end) for c in calls), 15)
     active = server._active_call_connections
     for c in calls:
@@ -738,6 +771,7 @@ async def scenario_concurrent_calls(port):
 SCENARIOS = {
     "basic_turns": scenario_basic_turns,
     "clinical": scenario_clinical,
+    "decision_router": scenario_decision_router,
     "barge_in": scenario_barge_in,
     "llm_failures": scenario_llm_failures,
     "tts_failures": scenario_tts_failures,

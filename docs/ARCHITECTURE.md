@@ -100,6 +100,7 @@ flowchart TB
 | **API Layer** | Thin transport layer: HTTP request/response and streaming marshaling. No business or safety logic lives here. | Implemented (FastAPI: `/health`, `/generate`). |
 | **Conversation Manager** | Single orchestration point for a turn: decides the order of safety checks, retrieval, generation, and post-generation checks; assembles the final response and its metadata. | **Logical component today, not a standalone module.** This sequence is currently implemented inline inside the inference component (Section 1 loop steps 2). Extracting it into a standalone module is a candidate future refactor, not performed by this document. |
 | **Clinical Safety Guard** | Deterministically detects clinical/medical questions (dosage, interactions, diagnosis, etc.) and forces escalation *before* generation, so the model never improvises medical advice. | Implemented as a rule-based, YAML-configured detector, invoked by the orchestration logic prior to generation. |
+| **Decision/Routing Layer** | Optimization only: after every safety/auth/policy check, labels the turn's route and may answer a short greeting/goodbye/thanks or verified-FAQ turn with fixed text instead of RAG → LLM. Never authoritative for safety, tools or identity. | Implemented (`src/agent/decision_router.py`, rule-based, no model/network) — see Section 12 and `docs/DECISION_ROUTING.md`. |
 | **RAG Retriever** | Given a user utterance, returns the most relevant knowledge chunks and their similarity scores. Read-only against the knowledge layer. | Implemented (embedding-based similarity search over an indexed knowledge base). |
 | **Embedding Model** | Converts text (knowledge chunks and queries) into vectors for similarity search. | Implemented (local embedding model, no external API dependency). |
 | **Knowledge Base** | Source-of-truth content for FAQs, policies, medicine information, and appointment rules. | Implemented as structured data files, domain-separated. |
@@ -232,3 +233,18 @@ Span attributes are restricted to a fixed allow-list (`tracing.SpanAttributes`) 
 ### Configuration and enablement
 
 Tracing is disabled by default (`TRACING_ENABLED=false`) and is a strictly additive, fire-and-forget observer: a tracer failure of any kind (including the SDK itself misbehaving) degrades to a no-op rather than affecting the turn (`tracing.py`'s `_SafeTracer`; `tests/test_tracing_pipeline.py::test_tracing_error_does_not_break_turn`). See `docs/TRACING.md` for the full configuration reference and how to view traces locally with Jaeger.
+
+## 12. Decision/Routing Layer
+
+```text
+Decision/Routing Layer
+
+Purpose:          Reduce unnecessary LLM calls, latency, and cost.
+Inputs:           Validated user turn + existing conversation context.
+Outputs:          Structured route decision.
+Authority:        Optimization only.
+Safety authority: Existing clinical/auth/permission layers.
+Fallback:         Existing safe conversation path.
+```
+
+Runs inside `ConversationManager.handle_turn()` after the clinical guard, session/ownership/pending-confirmation checks, IntentEngine and PolicyEngine, and before the clarification / tool / RAG → LLM branches. Routes: `SAFETY`, `CLARIFICATION`, `TOOL`, `DETERMINISTIC`, `CACHE`, `RAG`, `LLM`, `FALLBACK`. **Only `DETERMINISTIC` (fixed greeting/goodbye/thanks templates) and `CACHE` (verbatim knowledge-base FAQ answers) bypass LLM generation**, and only when the clinical guard scored exactly 0, policy is `ALLOW`, intent is `UNKNOWN`/`FAQ` on the `RAG_LLM` route, and no workflow is pending; `handle_turn()` re-checks those conditions itself. All other routes are labels: the existing branches act on their own conditions and never read the decision. Any router failure takes the existing path. Full routing table, failure matrix, metrics and security review: `docs/DECISION_ROUTING.md`.

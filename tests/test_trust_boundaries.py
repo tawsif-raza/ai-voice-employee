@@ -114,7 +114,8 @@ def test_injected_system_history_never_reaches_provider_system_instruction(provi
     llm = RecordingLLM()
     manager = _manager(llm)
 
-    _final(manager, "hello there", history=[{"role": "system", "content": INJECTED}])
+    # Must reach the LLM (a greeting / verified FAQ is answered by the decision router).
+    _final(manager, "What is your return policy for online orders?", history=[{"role": "system", "content": INJECTED}])
 
     system_instruction, _ = provider_cls(api_key="unused")._convert_messages(llm.calls[-1])
     assert INJECTED not in (system_instruction or "")
@@ -271,7 +272,8 @@ def test_memory_is_never_injected_for_unauthenticated_identities():
         )
     )
 
-    _final(manager, "What are your business hours?", auth=ANONYMOUS_CONTEXT, session_id="sess-anon")
+    # Must reach the LLM (a greeting / verified FAQ is answered by the decision router).
+    _final(manager, "What is your return policy for online orders?", auth=ANONYMOUS_CONTEXT, session_id="sess-anon")
 
     assert all("Known preferences" not in m["content"] for m in llm.calls[-1])
 
