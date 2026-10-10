@@ -23,6 +23,7 @@ Run with:
     python scripts/benchmark_job_isolation.py
 """
 
+import os
 import socket
 import sys
 import threading
@@ -33,6 +34,8 @@ import httpx
 import uvicorn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "api"))
+# Local harness: development posture (anonymous text API), like tests/conftest.py.
+os.environ.setdefault("APP_ENV", "dev")
 import server  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))

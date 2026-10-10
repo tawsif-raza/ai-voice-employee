@@ -1,0 +1,114 @@
+# Decision/Routing Layer (src/agent/decision_router.py).
+#
+# An OPTIMIZATION layer only. It runs inside ConversationManager after the
+# clinical guard, session checks, IntentEngine and PolicyEngine have
+# already run, and the only thing it can do is replace the RAG -> LLM
+# generation path with a fixed answer for a short, fully-matched utterance
+# below. It never selects or executes tools, never changes clarification
+# or the clinical block, and never sees or stores per-user data. See
+# docs/DECISION_ROUTING.md.
+#
+# Every pattern is a Python regex FULL-matched against the utterance after
+# lower-casing, deleting apostrophes ("that's" -> "thats"), replacing other
+# punctuation with spaces, collapsing whitespace, and stripping one
+# leading courtesy prefix and one trailing courtesy suffix (see
+# `courtesy_prefixes` / `courtesy_suffixes`). Full-match means a compound
+# utterance ("hi, can I take ibuprofen with warfarin") never matches: it
+# takes the normal path.
+
+enabled: true
+
+# Longer utterances skip the shortcut checks entirely (bounds the work,
+# and a long utterance is never a greeting or a one-line FAQ).
+max_utterance_chars: 120
+
+courtesy_prefixes:
+  - (hi|hello|hey)( there)?
+  - (ok|okay|um|uh|so|yes|yeah)
+  - (can|could) you (please )?tell me
+  - (please )?tell me
+  - i (just )?(want|wanted|would like|d like) to know
+  - do you know
+courtesy_suffixes:
+  - please
+  - (thanks|thank you)( very much| so much)?
+
+# Fixed, non-factual conversational responses (route DETERMINISTIC).
+templates:
+  greeting:
+    response: "Hello! How can I help you today?"
+    patterns:
+      - (hi|hello|hey|hiya|howdy)( there)?
+      - good (morning|afternoon|evening)
+      - (hi|hello|hey) good (morning|afternoon|evening)
+  goodbye:
+    response: "Thank you for calling. Goodbye!"
+    patterns:
+      - (ok |okay )?(bye|goodbye|bye bye)
+      - (thanks|thank you)( very much| so much)? (bye|goodbye|bye bye)
+      - (no )?thats (all|it|everything)( for (now|today))?
+      - (no )?thats all i (need|needed)
+      - (no )?nothing else
+      - have a (good|nice|great) (day|one|evening)
+  thanks:
+    response: "You're welcome! Is there anything else I can help you with?"
+    patterns:
+      - (ok |okay |great |perfect )?(thanks|thank you)( very much| so much| a lot)?
+
+# Verified answers (route CACHE). `answer_id` names an entry in the
+# knowledge base (`knowledge_file`); its `content` is spoken verbatim. The
+# answer text is never written here, so the KB stays the single source of
+# truth. An id that is missing from the KB disables just that entry.
+knowledge_file: data/knowledge/faqs.json
+
+# DISABLED (2026-10-09 review): data/knowledge/faqs.json is synthetic demo
+# content with no record of owner verification, and every candidate below
+# states a specific business policy (hours, delivery radius, gift-card
+# terms, price matching ...). The production image runs with RAG off, so
+# enabling these would put unverified facts in front of real callers that
+# the previous path never had. Greetings / goodbyes / thanks still work.
+# To enable an entry: verify its KB `content` with the business owner,
+# then move it from `faq_candidates_pending_verification` into `faqs`.
+faqs: []
+
+# NOT loaded by the router (it reads only `faqs`). Kept so the patterns
+# are reviewed once and moved, and so tests exercise the CACHE mechanism.
+faq_candidates_pending_verification:
+  - answer_id: faq_business_hours
+    patterns:
+      - (what|which) (are|r) (your|the) (opening |business |store |shop )?(hours|times)( today)?
+      - what (are|r) your (opening|business) (hours|times)
+      - when (are you|do you) open( today| tomorrow| on (sunday|sundays|saturday|saturdays|the weekend))?
+      - what time do you (open|close)( today| tonight| tomorrow)?
+      - (what are )?your (opening |business )?hours
+      - are you open( today| tomorrow| now| on (sunday|sundays|saturday|saturdays|the weekend))?
+  - answer_id: faq_mobile_app
+    patterns:
+      - do you have (a|an) (mobile )?app
+      - is there (a|an) (mobile )?app
+  - answer_id: faq_contact_methods
+    patterns:
+      - how (can|do) i (contact|reach) (you|support|customer support|customer service)
+  - answer_id: faq_delivery_areas
+    patterns:
+      - (where|what areas) do you deliver( to)?
+      - what is your delivery (area|radius|coverage)
+  - answer_id: faq_curbside_pickup
+    patterns:
+      - do you (have|offer|do) curbside( pickup)?
+      - is (there )?curbside pickup available
+  - answer_id: faq_gift_cards
+    patterns:
+      - do you (have|sell|offer) gift cards
+  - answer_id: faq_loyalty_program
+    patterns:
+      - do you have a (loyalty|rewards) (program|scheme)
+      - how does (your|the) (loyalty|rewards) program work
+  - answer_id: faq_price_match
+    patterns:
+      - do you (price match|match prices)
+      - do you offer price matching
+  - answer_id: faq_language_support
+    patterns:
+      - what languages do you (support|speak|offer)
+      - do you (speak|support) spanish

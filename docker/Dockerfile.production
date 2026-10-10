@@ -16,7 +16,10 @@
 # If a future deployment needs the local model or RAG, use
 # docker/Dockerfile instead -- do not add torch/transformers/faiss back
 # to this one.
-FROM python:3.12-slim
+# Base pinned by tag AND digest (H4): a floating `python:3.12-slim` changes
+# Python patch level and Debian packages under the same name, so two builds
+# of one commit could differ. Bump deliberately; CI re-tests every build.
+FROM python:3.12.15-slim-trixie@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
 
 WORKDIR /app
 
@@ -25,16 +28,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-production.txt .
-RUN pip install --no-cache-dir -r requirements-production.txt
+# Installs exactly the hash-locked set (H4): --no-deps means nothing outside
+# the lock can be pulled in, --require-hashes means nothing inside it can be
+# substituted. requirements-production.txt is the human-edited input; the
+# lock is generated from it (see the header of that file) and CI fails if
+# the two drift or if the installed set differs from the lock.
+COPY requirements-production.lock .
+RUN pip install --no-cache-dir --no-deps --require-hashes -r requirements-production.lock
 
 COPY configs/ configs/
 COPY src/ src/
 COPY scripts/ scripts/
 COPY alembic.ini .
 COPY alembic/ alembic/
-# data/ is intentionally not copied -- this image never loads a local
-# model or knowledge-base index (same reasoning as docker/Dockerfile).
+# data/ is otherwise intentionally not copied -- this image never loads a
+# local model or knowledge-base index (same reasoning as docker/Dockerfile).
+# The one exception is the FAQ file the decision router answers verified
+# FAQ questions from (configs/decision_routing.yaml `knowledge_file`);
+# without it those turns simply take the normal LLM path.
+COPY data/knowledge/faqs.json data/knowledge/faqs.json
 
 # Phase 26: src/api/server.py's lifespan hardcodes rag_enabled=True on
 # every build_conversation_manager() call (no env var exposes it) --
@@ -48,14 +60,26 @@ COPY alembic/ alembic/
 # Matched to configs/config.yaml's exact current line (verified via grep
 # to be the only "enabled: true" occurrence in the file before adding
 # this); re-verify if that file's rag section is ever reformatted.
-RUN sed -i 's/^  enabled: true$/  enabled: false/' configs/config.yaml
+RUN sed -i 's/^  enabled: true$/  enabled: false/' configs/config.yaml \
+    && grep -qx '  enabled: false' configs/config.yaml \
+    && ! grep -qx '  enabled: true' configs/config.yaml
+# (H4) the two greps fail the build if the sed above silently stops
+# matching, instead of shipping an image that tries to load FAISS.
 
-RUN chmod +x scripts/*.sh
+RUN chmod +x scripts/*.sh \
+    && groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --no-create-home --home-dir /nonexistent app
 
+# APP_ENV is deliberately not set here: unset means production
+# (src/agent/runtime_env.py), so this image refuses dev auth, mock voice
+# and the mock PIN, and requires authentication on the text API.
 ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     PORT=8000
 
 EXPOSE 8000
+
+# Never run the service as root (H4). Nothing in /app is written at runtime.
+USER app
 
 CMD ["scripts/run_pipeline.sh", "--serve"]

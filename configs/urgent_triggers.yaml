@@ -1,0 +1,96 @@
+# Urgent-risk tier of the clinical safety boundary (docs/CLINICAL_SAFETY.md).
+#
+# Same HandoffDetector engine and format as configs/clinical_triggers.yaml
+# (ADR-005: one matching engine, several configurations). ConversationManager
+# scores this FIRST, in the same clinical-safety step, before the clinical
+# guard: a match speaks ConversationManager.URGENT_SAFETY_RESPONSE (call the
+# local emergency number now) with no retrieval, tool or LLM call.
+#
+# Scope: things that may need emergency care NOW -- breathing problems,
+# severe allergic-reaction signs, loss of consciousness / seizure, chest pain,
+# a suspected overdose or poisoning. Patterns are written as events ("I took
+# too many", "I'm having trouble breathing"), not hypotheticals ("can I
+# overdose on ..."), so ordinary medication questions stay with the clinical
+# guard's pharmacist/doctor response rather than an emergency instruction.
+# They run on normalize()d text: lower-case, punctuation -> spaces
+# ("can't" -> "can t", "i'm" -> "i m").
+#
+# A missing, empty or malformed file fails startup
+# (build_conversation_manager), never silently disables this tier.
+
+decision_threshold: 0.6
+
+exact_phrases:
+  weight: 0.95
+  phrases:
+    - trouble breathing
+    - difficulty breathing
+    - hard to breathe
+    - can t breathe
+    - cannot breathe
+    - shortness of breath
+    - short of breath
+    - not breathing
+    - stopped breathing
+    - anaphylaxis
+    - anaphylactic
+    - throat is closing
+    - throat closing
+    - passed out
+    - unconscious
+    - unresponsive
+    - won t wake up
+    - can t wake
+    - having a seizure
+    - had a seizure
+    - chest pain
+    - chest pains
+    - overdosed
+    - poisoned
+
+regex_patterns:
+  weight: 0.9
+  patterns:
+    # Breathing.
+    - '\b(trouble|difficulty|problems?|struggling|hard|unable|can t|cannot|couldn t)\s+(to\s+)?breath\w*\b'
+    # Severe allergic-reaction signs: swelling of the airway / face.
+    - '\b(throat|tongue|lips?|face|mouth)\b.{0,20}\b(swell\w*|swollen|closing|tight\w*|puff\w*)\b'
+    - '\b(swell\w*|swollen|puff\w*)\b.{0,20}\b(throat|tongue|lips?|face|mouth)\b'
+    # Loss of consciousness, collapse, seizure.
+    - '\b(fainted|fainting|collapsed|collapsing|blacked out|passing out|seizing|convuls\w*)\b'
+    - '\b(having|had|is having|s having|m having)\s+(a\s+)?(seizure|fit|heart attack|stroke)\b'
+    # Chest pain as an event.
+    - '\b(chest)\s+(pain|pains|tight\w*|pressure|hurts?)\b'
+    # Suspected overdose / poisoning, as an event (not "can I overdose on").
+    - '\b(took|taken|swallowed|gave|given)\b.{0,30}\b(too many|too much|a lot of|whole (bottle|pack|packet|box|strip)|handful|all (of )?(my|his|her|their|the) (pills|tablets|medic\w*|meds))\b'
+    - '\b(accidentally|by mistake|by accident|mistakenly)\s+(\w+\s+){0,3}?(took|taken|take|swallowed|gave|given|doubled)\b.{0,30}\b(dos(e|es|age)|pills?|tablet\w*|capsules?|med[ie]c\w*|meds|twice|double|extra|too (many|much)|more than|wrong (pill|tablet|med[ie]c\w*|dose))\b'
+    - '\b(took|taken|swallowed|had|gave|given)\b.{0,25}\bmore than (prescribed|recommended|directed|i should|he should|she should|the (label|dose|recommended|prescribed))\b'
+    - '\b(child|kid|baby|toddler|son|daughter)\b.{0,30}\b(swallowed|ate|eaten|got into|drank)\b.{0,25}\b(pills?|tablet\w*|capsules?|med[ie]c\w*|meds|bottle|bleach|detergent|cleaning)\b'
+    - '\b(took|taken|had|having|has)\s+an\s+overdose\b'
+
+synonyms:
+  weight: 0.8
+  proximity_window: 4
+  actions:
+    - severe
+    - sudden
+    - really bad
+  targets:
+    - rash
+    - swelling
+    - bleeding
+    - dizziness
+    - vomiting
+  standalone_targets:
+    - allergic shock
+    - coughing up blood
+    - vomiting blood
+
+semantic_examples:
+  weight: 0.7
+  similarity_threshold: 0.6
+  examples:
+    - i am having trouble breathing after taking my medication
+    - my throat is swelling up after taking this pill
+    - i think i took an overdose
+    - my child swallowed some of my pills

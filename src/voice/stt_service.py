@@ -113,7 +113,10 @@ class DeepgramSTTService(BaseSTTService):
         url = self._build_ws_url()
         headers = {"Authorization": f"Token {self.api_key}"}
         try:
-            self._ws = await websockets.connect(url, extra_headers=headers, ping_interval=10, ping_timeout=10)
+            # `additional_headers` is the asyncio client's keyword (the
+            # default since websockets 14, pinned in requirements*.txt);
+            # the legacy `extra_headers` raises TypeError there.
+            self._ws = await websockets.connect(url, additional_headers=headers, ping_interval=10, ping_timeout=10)
             self._is_connected = True
             logger.info("Connected to Deepgram streaming STT (model=%s)", self.model)
         except Exception as exc:
