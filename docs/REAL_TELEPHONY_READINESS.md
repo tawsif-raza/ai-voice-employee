@@ -8,7 +8,7 @@ Phone → Twilio → Deepgram STT → safety/intent → Gemini/Groq → ElevenLa
 
 1. Caller dials the Twilio number. Twilio POSTs the number's **Voice webhook** → `POST https://<public-host>/twiml/inbound-call`.
 2. The server checks `X-Twilio-Signature` (HMAC-SHA1 over the reconstructed URL + form params, keyed by `TWILIO_AUTH_TOKEN`). Outside `APP_ENV=dev` an unsigned or mis-signed request is rejected with 403, and a missing `TWILIO_AUTH_TOKEN` rejects everything.
-3. Response is TwiML: `<Connect><Stream url="wss://<public-host>/ws/call"/></Connect>` then `<Say>` (`VOICE_FALLBACK_MESSAGE`), which Twilio speaks if the service ends the stream.
+3. Response is TwiML: `<Connect><Stream url="wss://<public-host>/ws/call"/></Connect>` then `<Say>` (`VOICE_FALLBACK_MESSAGE`), which Twilio speaks if the service ends the stream. **Exception:** a call that produced an urgent-risk answer, or a medication answer the caller never heard, is instead redirected by a Twilio call-update request to a safety message (`VOICE_URGENT_FALLBACK_MESSAGE`) before the stream closes (docs/CLINICAL_SAFETY.md, "Voice: when TTS fails").
 4. Twilio opens `wss://<public-host>/ws/call` (signed again). Admission check (`MAX_CONCURRENT_CALLS`), then `connected` → `start` (opens Deepgram) → 20 ms μ-law `media` frames → `stop`.
 5. Each Deepgram final transcript runs one turn through `ConversationManager.handle_turn()` (clinical guard → session → intent/policy → tools or LLM) in the dedicated voice pool; text streams to ElevenLabs; μ-law audio goes back as `media` frames, `clear` on barge-in, `mark` at turn end.
 
@@ -41,6 +41,7 @@ Phone → Twilio → Deepgram STT → safety/intent → Gemini/Groq → ElevenLa
 1. **WebSocket signature URL (highest risk).** Twilio's security docs say that for Media Streams WSS handshakes you may need to *append a trailing `/`* to the URL passed to signature validation ([Twilio: Webhooks security](https://www.twilio.com/docs/usage/security)). Our `/ws/call` check validates `https://<host>/ws/call` (no trailing slash). The scheme Twilio signs (`https` vs `wss`) is not explicit in that document. **Symptom if wrong:** every call is rejected at the WebSocket (`Rejected /ws/call connection: missing or invalid X-Twilio-Signature`), and the caller hears the TwiML `<Say>` immediately. **Proposed fix, after confirmation:** accept the documented URL variants (with/without trailing slash, `https`/`wss`), each still requiring a valid HMAC with `TWILIO_AUTH_TOKEN`, with a regression test. This is not a weakening; it is not applied yet because the change policy requires real-call evidence.
 2. **Webhook URL reconstruction behind a proxy/tunnel.** `/twiml/inbound-call` signs `X-Forwarded-Proto` + `X-Forwarded-Host`/`Host` + path. If the tunnel rewrites `Host`, the webhook returns 403. Check the first webhook's status in the Twilio debugger.
 3. **`TWILIO_MEDIA_STREAM_URL`** must be set to the public `wss://…/ws/call`; otherwise the stream URL is derived from request headers.
+4. **Safety fallback (call-update request).** This is unverified against real Twilio. Check that the test account's auth token can update its own calls, that the `start` frame's `accountSid`/`callSid` arrive as expected, and that Twilio speaks the `<Say>` after the stream is redirected. **Symptom if wrong:** the log line `…with the urgent safety fallback: NOT delivered, generic fallback plays`, and `voice_safety_fallback_failures_total` increments.
 
 ## 4. Exact configuration for a real test
 
@@ -70,7 +71,7 @@ Run the production image (`docker/Dockerfile.production`) or, for a quick local 
 4. **Twilio console (test number):** Voice → "A call comes in" → Webhook → `POST https://<tunnel-host>/twiml/inbound-call`.
 5. **First call — connectivity only:** call, stay silent 3 s, then say "What are your opening hours?". Check pre-call risks §3 in this order: webhook 200 (Twilio debugger) → `/ws/call` accepted (no "Rejected /ws/call" log) → `Connected to Deepgram` log → audio heard.
 6. **Run the test matrix** in the report (§3 there), one scenario per call, recording timestamps from the server's `TIME_TO_FIRST_AUDIO` / `TURN_*` events and a stopwatch for what the caller hears.
-7. **Failure tests:** use a second deployment configuration with an invalid provider key (e.g. ElevenLabs) — never by editing code — to observe the real fallback and whether Twilio plays the `<Say>`.
+7. **Failure tests:** use a second deployment configuration with an invalid provider key (e.g. ElevenLabs) — never by editing code — to observe the real fallback and whether Twilio plays the `<Say>`. With ElevenLabs disabled this way, say an **urgent** test phrase ("I'm having trouble breathing after taking my medicine") and confirm the caller hears the urgent safety message from Twilio, **not** "call back later" (pre-call risk 4).
 8. **After testing:** rotate any key that was used in an environment that logged verbosely; delete test call recordings in Twilio if any were enabled (keep recording **off**).
 
 ## 6. Safety precautions

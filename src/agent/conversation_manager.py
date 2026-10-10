@@ -121,6 +121,24 @@ def _load_safety_detector(path: Path, name: str) -> HandoffDetector:
     return HandoffDetector.from_config(config)
 
 
+class SafetyResponse(str):
+    """
+    A clinical-safety response: a plain `str` to every consumer (text API,
+    tests, TTS), tagged with its tier -- "urgent" or "medication". The voice
+    pipeline reads the tag as the text is yielded, before TTS runs, so that
+    if speech synthesis then fails it still knows the call involved a
+    safety response and keeps the caller safe (docs/CLINICAL_SAFETY.md,
+    "Voice: when TTS fails"). It never carries anything the caller said.
+    """
+
+    category: str
+
+    def __new__(cls, text: str, category: str) -> "SafetyResponse":
+        tagged = super().__new__(cls, text)
+        tagged.category = category
+        return tagged
+
+
 logger = logging.getLogger("ai_voice_agent.conversation")
 
 # Phase 14: module-level tracer singleton. Safe under both the real SDK and
@@ -1560,7 +1578,7 @@ class ConversationManager:
         except Exception:
             logger.warning("Clinical safety metrics not recorded (%s); response still sent", category)
         record_safety_block(self.metrics)
-        yield response
+        yield SafetyResponse(response, category)
         yield self._final(
             response,
             is_handoff=True,

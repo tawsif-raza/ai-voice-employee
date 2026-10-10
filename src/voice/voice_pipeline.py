@@ -110,6 +110,17 @@ class VoiceCallHandler:
         self._executor = executor
         self._consecutive_turn_failures = 0
         self._ending = False
+        # Clinical safety on the voice path (docs/CLINICAL_SAFETY.md, "Voice:
+        # when TTS fails"). Set from ConversationManager's SafetyResponse
+        # tag as the text is produced, before TTS runs, so a TTS failure
+        # cannot hide that the call needed a safety answer:
+        #   urgent_risk_detected  -- sticky for the whole call: any later
+        #                            service-side ending uses the urgent
+        #                            fallback, never "call back later".
+        #   _undelivered_safety   -- a safety response the caller could
+        #                            not hear ("urgent" / "medication").
+        self.urgent_risk_detected = False
+        self._undelivered_safety: Optional[str] = None
 
         # Cancellation token of the CURRENT turn (barge-in, superseding turn,
         # call end). Replaced for every new turn so cancelling one turn can
@@ -398,6 +409,8 @@ class VoiceCallHandler:
         start_time = time.perf_counter()
         spoken_tokens: list[str] = []
         failure: Optional[str] = None
+        # This turn's clinical-safety response, if it is one: (text, tier).
+        safety: Optional[tuple[str, str]] = None
         try:
             # 1. Prepare AuthContext and parameters for ConversationManager
             auth = None
@@ -539,6 +552,13 @@ class VoiceCallHandler:
                         if isinstance(token_item, Exception):
                             raise token_item
                         if isinstance(token_item, str) and token_item:
+                            category = getattr(token_item, "category", None)
+                            if category in ("urgent", "medication"):
+                                # Recorded BEFORE TTS sees the text.
+                                nonlocal safety
+                                safety = (str(token_item), category)
+                                if category == "urgent":
+                                    self.urgent_risk_detected = True
                             got_text = True
                             spoken_tokens.append(token_item)
                             yield token_item
@@ -635,7 +655,7 @@ class VoiceCallHandler:
                 failure = "empty_response"
 
             if failure is not None:
-                await self._handle_turn_failure(transcript, turn_id, failure, full_text)
+                await self._handle_turn_failure(transcript, turn_id, failure, full_text, safety=safety)
                 return
 
             # 4. Turn concluded cleanly
@@ -680,9 +700,18 @@ class VoiceCallHandler:
             if self.metrics:
                 self.metrics.increment("voice_calls_failed")
             if not cancel_event.is_set():
-                await self._handle_turn_failure(transcript, turn_id, "error", "".join(spoken_tokens).strip())
+                await self._handle_turn_failure(
+                    transcript, turn_id, "error", "".join(spoken_tokens).strip(), safety=safety
+                )
 
-    async def _handle_turn_failure(self, transcript: str, turn_id: int, reason: str, partial_text: str) -> None:
+    async def _handle_turn_failure(
+        self,
+        transcript: str,
+        turn_id: int,
+        reason: str,
+        partial_text: str,
+        safety: Optional[tuple[str, str]] = None,
+    ) -> None:
         """
         A turn that timed out, failed, or produced nothing: record it, then
         either apologise (bounded) and keep listening, or -- after
@@ -711,6 +740,21 @@ class VoiceCallHandler:
             caller_id=self.session.caller_id,
             extra={"reason": reason, "consecutive_failures": self._consecutive_turn_failures},
         )
+        if safety is not None:
+            # A clinical-safety turn (docs/CLINICAL_SAFETY.md): never swap
+            # the safety answer for the generic "say that again" apology.
+            # Retry the safety text itself (bounded like the apology); if
+            # even that cannot be spoken, end the call -- the server then
+            # has Twilio speak a safety fallback instead of "call back later".
+            safety_text, tier = safety
+            spoken = await self.speak_bounded(safety_text)
+            self.session.record_turn_completed(user_text=transcript, assistant_text=safety_text if spoken else "")
+            if not spoken:
+                self._undelivered_safety = tier
+                await self.end_call("safety_speech_failed")
+            elif self._consecutive_turn_failures >= self._deadlines.max_consecutive_turn_failures:
+                await self.end_call("repeated_turn_failures")
+            return
         if self._consecutive_turn_failures >= self._deadlines.max_consecutive_turn_failures:
             self.session.record_turn_completed(user_text=transcript, assistant_text=partial_text)
             await self.end_call("repeated_turn_failures")
@@ -724,6 +768,17 @@ class VoiceCallHandler:
             # The caller cannot hear us at all (TTS down); don't keep them
             # talking to silence for more turns.
             await self.end_call("fallback_speech_failed")
+
+    def service_fallback_tier(self) -> Optional[str]:
+        """
+        Which safety fallback Twilio must speak if the service ends this
+        call now: "urgent" once any urgent-risk response was produced on the
+        call (sticky), "medication" when a medication-safety response could
+        not be spoken, else None (the ordinary TwiML fallback applies).
+        """
+        if self.urgent_risk_detected:
+            return "urgent"
+        return self._undelivered_safety
 
     async def speak_bounded(self, text: str) -> bool:
         """

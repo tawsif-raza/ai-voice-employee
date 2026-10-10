@@ -67,6 +67,10 @@ _COUNTER_NAMES = frozenset(
         # Phase 16.2 -- STT reconnect (src/voice/voice_pipeline.py).
         "voice_stt_reconnect_attempts_total",
         "voice_stt_reconnect_exhausted_total",
+        # Safety fallback when a safety call ends from the service side
+        # (src/voice/call_fallback.py): spoken by Twilio, or not delivered.
+        "voice_safety_fallbacks_total",
+        "voice_safety_fallback_failures_total",
         # LLM provider routing / failover.
         "llm_fallback_cooldown_triggered_total",
         "llm_fallback_used_total",

@@ -72,6 +72,7 @@ from pydantic import BaseModel, Field, field_validator
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "voice"))
 _INFERENCE_DIR = str(Path(__file__).resolve().parent.parent / "inference")
+import call_fallback  # noqa: E402  (urgent / medication safety fallback)
 from action_models import ANONYMOUS_CONTEXT, AuthContext  # noqa: E402
 from audit import AuditLogger, SecurityEventDetector  # noqa: E402
 from conversation_manager import ConversationManager, build_conversation_manager  # noqa: E402
@@ -172,6 +173,22 @@ VOICE_FALLBACK_MESSAGE = os.environ.get(
     "VOICE_FALLBACK_MESSAGE",
     "We're sorry, we can't continue this call right now. Please call back later. Goodbye.",
 )
+# Clinical safety (docs/CLINICAL_SAFETY.md, "Voice: when TTS fails"): a call
+# that produced an urgent-risk response must never end on the generic "call
+# back later". Before closing such a call's stream, the server has Twilio
+# speak this instead (src/voice/call_fallback.py). No number unless VERIFIED.
+VOICE_URGENT_FALLBACK_MESSAGE = (
+    os.environ.get("VOICE_URGENT_FALLBACK_MESSAGE", "").strip() or call_fallback.DEFAULT_URGENT_FALLBACK_MESSAGE
+)
+# Test seams for the Twilio call-update request: an alternative API base URL
+# is honoured only with APP_ENV=dev (never send the auth token elsewhere in
+# production), and pytest can inject an httpx transport.
+_twilio_http_transport = None
+
+
+def _twilio_api_base_url() -> str:
+    override = os.environ.get("TWILIO_API_BASE_URL", "").strip()
+    return override if override and _SECURITY.is_dev else call_fallback.TWILIO_API_BASE_URL
 
 
 def _get_active_database() -> Optional[Database]:
@@ -990,13 +1007,49 @@ async def _serve_call(websocket: WebSocket, call_manager: VoiceCallManager) -> N
     deadline = time.monotonic() + _SECURITY.max_call_duration_seconds
     inactivity_timeout = _RELIABILITY.voice.media_inactivity_timeout_seconds
     call_ended = asyncio.Event()
+    call_ids = {"account_sid": "", "call_sid": ""}  # from Twilio's `start` frame
 
     async def _end_call(reason: str) -> None:
-        # H3: the handler's way to end the call from the service side.
+        # H3: every service-side ending goes through here -- the handler's
+        # (provider unavailable, repeated failures, unspeakable safety
+        # answer) and this loop's own (call-duration limit, dead stream).
         # Closing the media stream makes Twilio continue with the TwiML after
         # <Connect> (VOICE_FALLBACK_MESSAGE); the loop below then exits and
         # the normal cleanup in `finally` runs.
         call_ended.set()
+        try:
+            tier = current_handler.service_fallback_tier() if current_handler is not None else None
+            message = call_fallback.fallback_message(tier, VOICE_URGENT_FALLBACK_MESSAGE)
+            if message is not None:
+                # A safety call: replace the generic goodbye with a safety
+                # message Twilio speaks itself (src/voice/call_fallback.py).
+                redirected = await call_fallback.redirect_call(
+                    call_ids["account_sid"],
+                    call_ids["call_sid"],
+                    call_fallback.build_fallback_twiml(message),
+                    auth_token=os.environ.get("TWILIO_AUTH_TOKEN", ""),
+                    base_url=_twilio_api_base_url(),
+                    transport=_twilio_http_transport,
+                )
+                _error_logger.warning(
+                    "Call %s ended (%s) with the %s safety fallback: %s.",
+                    call_ids["call_sid"],
+                    reason,
+                    tier,
+                    "spoken by Twilio" if redirected else "NOT delivered, generic fallback plays",
+                )
+                if _metrics is not None:
+                    _metrics.increment(
+                        "voice_safety_fallbacks_total" if redirected else "voice_safety_fallback_failures_total"
+                    )
+        except Exception as exc:
+            # Never let the safety fallback stop the stream from closing:
+            # the call then ends on the ordinary TwiML <Say>, and it is counted.
+            _error_logger.warning(
+                "Safety fallback for call %s failed unexpectedly: %s", call_ids["call_sid"], type(exc).__name__
+            )
+            if _metrics is not None:
+                _metrics.increment("voice_safety_fallback_failures_total")
         try:
             await websocket.close(code=1000)
         except Exception:
@@ -1029,10 +1082,7 @@ async def _serve_call(websocket: WebSocket, call_manager: VoiceCallManager) -> N
                     _error_logger.warning("Ending call: no media-stream frame for %.0fs.", inactivity_timeout)
                     if _metrics is not None:
                         _metrics.increment("voice_calls_inactivity_ended_total")
-                try:
-                    await websocket.close(code=1000)
-                except Exception:
-                    pass
+                await _end_call("duration_limit" if duration_bound else "media_inactivity")
                 break
             if not raw_text:
                 continue
@@ -1046,6 +1096,7 @@ async def _serve_call(websocket: WebSocket, call_manager: VoiceCallManager) -> N
             if event_type == TwilioEventType.START:
                 stream_sid = parsed_data.stream_sid
                 call_sid = parsed_data.call_sid
+                call_ids["account_sid"], call_ids["call_sid"] = parsed_data.account_sid, call_sid
 
                 stt_service = MockSTTService() if use_mock else DeepgramSTTService()
                 tts_service = MockTTSService() if use_mock else ElevenLabsTTSService()

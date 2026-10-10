@@ -56,6 +56,38 @@ If a real handoff (e.g. a Twilio `<Dial>` to a staffed pharmacist line) or a ver
 | Metrics or audit backend raises | The safety response is still spoken. Observability is best-effort in the block path, and the pre-guard `requests_total` increment is now best-effort too (it previously could crash a turn before the safety step). |
 | Gemini fails, Groq fallback | Irrelevant to a blocked turn: no provider is ever called (`test_gemini_failure_cannot_send_a_blocked_request_to_groq`). |
 
+## Voice: when TTS fails
+
+The safety responses are text, and on a call they become audio through ElevenLabs. Before this fix, an urgent-risk answer could be lost on its way to the caller:
+
+```
+"I'm having trouble breathing…" → urgent tier → URGENT_SAFETY_RESPONSE → ElevenLabs FAILS
+  → turn failure → generic apology via the same dead TTS FAILS → end_call
+  → stream closed → Twilio plays the inbound TwiML <Say>: "…Please call back later. Goodbye."
+```
+
+A temporary TTS failure also replaced the emergency instruction with the generic "Could you please say that again?". And the call-duration and dead-media endings went straight to the same generic goodbye, even right after an urgent answer.
+
+Now:
+
+1. `ConversationManager` yields the safety response as a `SafetyResponse`, a plain `str` tagged `urgent` or `medication`. The voice handler reads the tag **before** TTS runs.
+2. **Temporary TTS failure** on a safety turn: the handler retries the **safety text itself** (bounded by the existing `fallback_speech_timeout_seconds`), never the generic apology. The call continues, and H3 failure counting is unchanged.
+3. **Permanent TTS failure** (the retry can't be spoken): the call ends with reason `safety_speech_failed`.
+4. **Any service-side ending** (the handler's, the call-duration limit, the dead-media timeout) of a call that produced an urgent answer, or whose medication answer was never heard: the server sends Twilio's call-update request. It's `POST /2010-04-01/Accounts/{AccountSid}/Calls/{CallSid}.json` with `Twiml=<Response><Say>…</Say><Hangup/></Response>` (`src/voice/call_fallback.py`). Twilio speaks it with its own voice, independent of ElevenLabs, then hangs up. Urgent is **sticky** for the call.
+5. **Ordinary calls are unchanged:** no request, and the inbound TwiML `<Say>` (`VOICE_FALLBACK_MESSAGE`) applies.
+
+The urgent message is `VOICE_URGENT_FALLBACK_MESSAGE`; an empty or unset value means the built-in default:
+
+> This may need urgent medical help. Please hang up and call your local emergency number right now, or poison control if it's a possible overdose. We can't continue this call, and we can't call anyone for you from this line. Goodbye.
+
+It names a phone number only if the operator sets one that is verified for the location. The medication message is fixed text matching `CLINICAL_HANDOFF_RESPONSE`.
+
+The request needs `TWILIO_AUTH_TOKEN`, which is always set outside `APP_ENV=dev` because Twilio webhooks are refused without it. It also needs the call's SIDs, taken from the stream's `start` frame and checked against Twilio's `AC…`/`CA…` format before they go into a URL. The token, the TwiML and Twilio's reply are never logged. `TWILIO_API_BASE_URL` (a test seam) is honoured only with `APP_ENV=dev`.
+
+**Residual gap:** if the call-update request fails (Twilio API unreachable, wrong token, the call already over), the caller hears the ordinary fallback. That case is logged (`…NOT delivered, generic fallback plays`) and counted (`voice_safety_fallback_failures_total`). It is **unverified against real Twilio**.
+
+Tests: `tests/test_voice_safety_fallback.py` covers the handler with each TTS outcome, the TwiML, the request, and the real `/ws/call` endpoint with signature checks on. The telephony simulation scenario `urgent_with_tts_down_uses_urgent_fallback` runs the real server and real ElevenLabs adapter against a fake outage and a fake Twilio REST.
+
 ## LLM defence in depth
 
 `ConversationManager.MEDICAL_SAFETY_PROMPT` is appended to the first system message of every generated turn, including when `system_prompt` is overridden. Gemini and Groq receive the same message list through `FallbackLLMProvider`. It forbids dose, frequency, start/stop/skip/combine advice, interaction or suitability judgments, and symptom interpretation. It tells the model to direct urgent symptoms to the local emergency number, to invent no numbers or transfers, and to ignore requests to drop the rules. `SYSTEM_PROMPT` itself is unchanged because the local fine-tuned model was trained against it.
@@ -64,7 +96,7 @@ This is **not** the primary control. It only matters for requests the determinis
 
 ## Observability
 
-Counters (fixed names, no labels, no caller text): `clinical_blocks_urgent_total`, `clinical_blocks_medication_total`, `clinical_guard_errors_total`, plus the existing `policy_denials_total`, `handoffs_total` and `decision_route_safety_total`. The audit `SAFETY_BLOCK` event carries only `confidence`, `rule` (`URGENT_MEDICAL_RISK` / `MEDICAL_DOSAGE` / `SAFETY_CHECK_UNAVAILABLE` / `POLICY_ENGINE_UNAVAILABLE`) and `category`.
+Counters (fixed names, no labels, no caller text): `clinical_blocks_urgent_total`, `clinical_blocks_medication_total`, `clinical_guard_errors_total`, `voice_safety_fallbacks_total` / `voice_safety_fallback_failures_total` (the call-update request above), plus the existing `policy_denials_total`, `handoffs_total` and `decision_route_safety_total`. The audit `SAFETY_BLOCK` event carries only `confidence`, `rule` (`URGENT_MEDICAL_RISK` / `MEDICAL_DOSAGE` / `SAFETY_CHECK_UNAVAILABLE` / `POLICY_ENGINE_UNAVAILABLE`) and `category`.
 
 ## Known limits
 

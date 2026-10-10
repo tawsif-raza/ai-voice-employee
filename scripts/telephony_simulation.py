@@ -44,13 +44,20 @@ SENTINELS = {
     "GROQ_API_KEY": "gsk_SIMULATION_SENTINEL_groq",
     "DEEPGRAM_API_KEY": "dg_SIMULATION_SENTINEL_deepgram",
     "ELEVENLABS_API_KEY": "el_SIMULATION_SENTINEL_elevenlabs",
+    # Turns Twilio signature checks ON (the fake Twilio client signs its
+    # WebSocket handshake) and lets the server make the safety-fallback
+    # call-update request (to a fake Twilio REST transport, never the network).
+    "TWILIO_AUTH_TOKEN": "twilio_SIMULATION_SENTINEL_token",
 }
+SIM_ACCOUNT_SID = "AC" + "5" * 32  # fictional, well-formed Twilio SIDs
+URGENT_CALL_SID = "CA" + "e" * 32
 CALLER_NUMBER = "+15550001234"  # reserved fictional number; must not appear unmasked in logs
 
 os.environ.setdefault("APP_ENV", "dev")
 os.environ.update(SENTINELS)
 os.environ.update({"LLM_PROVIDER": "free_fallback", "PERSISTENCE_MODE": "dev", "VOICE_MOCK_SERVICES": "false"})
-os.environ.pop("TWILIO_AUTH_TOKEN", None)
+# TWILIO_AUTH_TOKEN stays set (sentinel): every simulated call signs its
+# handshake, as real Twilio does, and the safety fallback can authenticate.
 os.environ.pop("ANTHROPIC_API_KEY", None)
 
 LOG = io.StringIO()
@@ -66,6 +73,7 @@ import stt_service  # noqa: E402
 import tts_service  # noqa: E402
 import uvicorn  # noqa: E402
 import websockets  # noqa: E402
+from twilio_signature import compute_signature  # noqa: E402
 
 now = time.monotonic
 
@@ -264,6 +272,25 @@ class ElevenLabsScript:
 
 EL = ElevenLabsScript()
 
+# ── fake Twilio REST (call-update requests: the safety fallback) ────────────
+TWILIO_REST: list[dict] = []
+
+
+def fake_twilio_rest(request: httpx.Request) -> httpx.Response:
+    import xml.etree.ElementTree as ET
+
+    twiml = httpx.QueryParams(request.content.decode()).get("Twiml", "")
+    root = ET.fromstring(twiml)
+    TWILIO_REST.append(
+        {
+            "path": request.url.path,
+            "authed": request.headers.get("authorization", "").startswith("Basic "),
+            "verbs": [child.tag for child in root],
+            "say": root.find("Say").text if root.find("Say") is not None else "",
+        }
+    )
+    return httpx.Response(200, json={"sid": URGENT_CALL_SID, "status": "in-progress"})
+
 
 async def fake_elevenlabs(request: httpx.Request) -> httpx.Response:
     text = json.loads(request.content).get("text", "")
@@ -296,7 +323,10 @@ class TwilioCall:
 
     async def __aenter__(self):
         self.dg_baseline = DG.connections
-        self.ws = await websockets.connect(self.url)
+        # Signed the way real Twilio signs the Media Streams handshake (the
+        # server verifies it: TWILIO_AUTH_TOKEN is set above).
+        signature = compute_signature(SENTINELS["TWILIO_AUTH_TOKEN"], self.url.replace("ws://", "http://", 1), {})
+        self.ws = await websockets.connect(self.url, additional_headers={"X-Twilio-Signature": signature})
         self.connected_at = now()
         await self.ws.send(json.dumps({"event": "connected", "protocol": "Call", "version": "1.0.0"}))
         await self.ws.send(
@@ -305,7 +335,7 @@ class TwilioCall:
                     "event": "start",
                     "streamSid": self.stream_sid,
                     "start": {
-                        "accountSid": "ACsimulation",
+                        "accountSid": SIM_ACCOUNT_SID,
                         "streamSid": self.stream_sid,
                         "callSid": self.call_sid,
                         "tracks": ["inbound"],
@@ -645,19 +675,56 @@ async def scenario_tts_failures(port):
         f"call still open={still_open}; spoken={[s for _t2, s in spoken]}",
     )
     EL.mode = "always_fail"
+    rest_mark = len(TWILIO_REST)
     async with TwilioCall(port, "CAttsdead") as call:
         await call.stt_ready()
         await asyncio.sleep(0.2)
         t_end = now()
         DG.say("What is your return policy for online orders?")
         closed = await call.wait_closed(15)
+    redirected = len(TWILIO_REST) > rest_mark
     record(
         "elevenlabs_permanent_failure_closes_stream",
-        closed is not None and call.close_code == 1000,
-        f"stream closed by service after {round(closed - t_end, 2) if closed else None}s, code {call.close_code} "
-        "(real Twilio would now play the TwiML <Say> -- NOT verifiable here)",
+        closed is not None and call.close_code == 1000 and not redirected,
+        f"stream closed by service after {round(closed - t_end, 2) if closed else None}s, code {call.close_code}; "
+        f"safety redirect requested={redirected} (ordinary call: the inbound TwiML <Say> applies -- real Twilio "
+        "playback NOT verifiable here)",
     )
     EL.mode = "ok"
+
+
+async def scenario_urgent_tts_down(port):
+    """docs/CLINICAL_SAFETY.md, "Voice: when TTS fails": the emergency instruction survives an ElevenLabs outage."""
+    LLM.answers = {}
+    EL.mode = "always_fail"
+    mark, rest_mark = len(LLM.events), len(TWILIO_REST)
+    async with TwilioCall(port, URGENT_CALL_SID) as call:
+        await call.stt_ready()
+        await asyncio.sleep(0.2)
+        t_end = now()
+        DG.say("I'm having trouble breathing after taking my medicine.")
+        closed = await call.wait_closed(15)
+    EL.mode = "ok"
+    redirects = TWILIO_REST[rest_mark:]
+    said = redirects[0]["say"] if redirects else ""
+    llm_called = len(LLM.events) > mark
+    ok = (
+        closed is not None
+        and len(redirects) == 1
+        and redirects[0]["authed"]
+        and redirects[0]["path"].endswith(f"/Calls/{URGENT_CALL_SID}.json")
+        and redirects[0]["verbs"] == ["Say", "Hangup"]
+        and "emergency" in said.lower()
+        and "call back later" not in said.lower()
+        and not llm_called
+    )
+    record(
+        "urgent_with_tts_down_uses_urgent_fallback",
+        ok,
+        f"call-update requests={len(redirects)}, LLM called={llm_called}, stream closed after "
+        f"{round(closed - t_end, 2) if closed else None}s; Twilio told to say: {said[:70]!r}... then hang up "
+        "(real Twilio playback NOT verifiable here)",
+    )
 
 
 async def scenario_stt_failures(port):
@@ -799,6 +866,7 @@ SCENARIOS = {
     "barge_in": scenario_barge_in,
     "llm_failures": scenario_llm_failures,
     "tts_failures": scenario_tts_failures,
+    "urgent_tts_down": scenario_urgent_tts_down,
     "stt_failures": scenario_stt_failures,
     "dead_media": scenario_dead_media,
     "call_duration": scenario_call_duration,
@@ -850,6 +918,7 @@ def start_fake_providers():
     server.ElevenLabsTTSService = lambda: tts_service.ElevenLabsTTSService(
         transport=httpx.MockTransport(fake_elevenlabs)
     )
+    server._twilio_http_transport = httpx.MockTransport(fake_twilio_rest)
     return httpd
 
 
