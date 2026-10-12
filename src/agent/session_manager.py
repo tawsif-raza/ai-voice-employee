@@ -186,6 +186,29 @@ class SessionManager:
                 return None
             return session
 
+    def get_or_create_session(self, session_id: str, user_id: Optional[str] = None) -> Optional[SessionState]:
+        """
+        Resolves a caller-supplied session_id for `user_id`: returns the
+        caller's usable session, or creates one if the id is unused (or
+        the caller's own session has expired/ended). Returns None -- and
+        touches nothing -- when the id belongs to a different owner, so a
+        guessed or leaked session_id can never delete, reset, re-own, or
+        act on someone else's session (docs/MASTER_PROJECT_PLAN.md F-07).
+        Ownership must match exactly (H2, F-09): a caller with no identity
+        is never the owner of a session that has one, and an ownerless
+        session is never handed to an identified caller.
+        """
+        with self._lock:
+            existing = self._repository.get(session_id) if isinstance(session_id, str) else None
+            if existing is not None and existing.user_id != user_id:
+                if self._security_detector is not None:
+                    self._security_detector.record_cross_user_access_attempt("session", user_id or "unauthenticated")
+                return None
+            session = self.get_session(session_id, user_id=user_id)
+            if session is None:
+                session = self.create_session(session_id=session_id, user_id=user_id)
+            return session
+
     def _expire(self, session: SessionState) -> None:
         """Assumes the caller already holds self._lock (private helper, called only from within a locked method)."""
         session.status = SessionStatus.EXPIRED

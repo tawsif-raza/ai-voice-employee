@@ -14,7 +14,12 @@ config = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: the default (True) silences every
+    # logger already created in this process -- the application's
+    # ai_voice_agent.* loggers too -- whenever migrations run in-process
+    # (e.g. tests/test_db_migrations.py), which made later log-content
+    # assertions vacuous.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Phase 12 (plan.md Step 12.3): reuse src/agent/db_models.py's declarative
 # Base/metadata for autogenerate support, and src/agent/db.py's own

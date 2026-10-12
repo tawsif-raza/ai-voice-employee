@@ -1,0 +1,5 @@
+# Test tooling installed (into a separate --target dir) when CI runs the
+# test suite inside the production image -- see .github/workflows/ci.yml
+# job production-image. Same pins as requirements-dev.txt.
+pytest==9.1.1
+pytest-asyncio==1.4.0

@@ -513,12 +513,30 @@ class ToolOrchestrator:
             # is set by the caller, "does this identity own the resource" —
             # e.g. USER + CANCEL_APPOINTMENT + own appointment -> ALLOW,
             # USER + CANCEL_APPOINTMENT + another user's appointment -> DENY.
+            # H2 (F-09): when the tool registered an owner lookup, the
+            # resource's owner is resolved here, authoritatively, rather
+            # than taken from the request -- so CANCEL/RESCHEDULE on an
+            # appointment id the caller did not book is denied. A lookup
+            # that fails denies the action.
+            resource_owner_user_id = tool_request.resource_owner_user_id
+            owner_lookup = self._registry.get_owner_lookup(action)
+            if owner_lookup is not None:
+                try:
+                    resource_owner_user_id = owner_lookup(dict(tool_request.params))
+                except Exception:
+                    return ToolExecutionResult(
+                        success=False,
+                        tool=action,
+                        status="failure",
+                        error="OWNERSHIP_LOOKUP_FAILED",
+                        request_id=tool_request.request_id,
+                    )
             if spec.required_permission is not None:
                 try:
                     authz = self._policy_engine.evaluate_authorization(
                         auth,
                         spec.required_permission,
-                        resource_owner_user_id=tool_request.resource_owner_user_id,
+                        resource_owner_user_id=resource_owner_user_id,
                     )
                 except Exception:
                     try:

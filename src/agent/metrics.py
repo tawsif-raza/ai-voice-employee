@@ -48,13 +48,53 @@ _COUNTER_NAMES = frozenset(
         "voice_stt_interim_count",
         "voice_stt_final_count",
         "voice_tts_synthesis_errors_total",
+        # H2 -- call admission / duration limit (src/api/server.py) and
+        # text-API rate limiting.
+        "voice_calls_rejected_total",
+        "voice_calls_duration_limited_total",
+        "rate_limited_requests_total",
+        # H3 -- voice deadlines / graceful failure (src/voice/voice_pipeline.py,
+        # src/api/server.py) and jobs backpressure.
+        "voice_turn_fillers_total",
+        "voice_turn_failures_total",
+        "voice_turn_deadline_exceeded_total",
+        "voice_turns_superseded_total",
+        "voice_fallback_speech_failures_total",
+        "voice_calls_ended_by_service_total",
+        "voice_calls_inactivity_ended_total",
+        "voice_stt_connect_failures_total",
+        "jobs_rejected_total",
         # Phase 16.2 -- STT reconnect (src/voice/voice_pipeline.py).
         "voice_stt_reconnect_attempts_total",
         "voice_stt_reconnect_exhausted_total",
+        # Safety fallback when a safety call ends from the service side
+        # (src/voice/call_fallback.py): spoken by Twilio, or not delivered.
+        "voice_safety_fallbacks_total",
+        "voice_safety_fallback_failures_total",
         # LLM provider routing / failover.
         "llm_fallback_cooldown_triggered_total",
         "llm_fallback_used_total",
         "llm_failover_events_total",
+        # Clinical safety step (docs/CLINICAL_SAFETY.md): one counter per
+        # tier plus internal check failures. Never labelled with caller text.
+        "clinical_blocks_urgent_total",
+        "clinical_blocks_medication_total",
+        "clinical_guard_errors_total",
+        # Decision/Routing Layer (src/agent/decision_router.py).
+        "decisions_total",
+        "decision_route_deterministic_total",
+        "decision_route_cache_total",
+        "decision_route_tool_total",
+        "decision_route_rag_total",
+        "decision_route_llm_total",
+        "decision_route_clarification_total",
+        "decision_route_safety_total",
+        "decision_route_fallback_total",
+        "decision_errors_total",
+        "llm_calls_avoided_total",
+        "llm_provider_gemini_total",
+        "llm_provider_groq_total",
+        "llm_provider_other_total",
     }
 )
 
@@ -71,6 +111,8 @@ _HISTOGRAM_NAMES = frozenset(
         "voice_llm_ttft_ms",
         "voice_tts_ttfa_ms",
         "voice_interruption_latency_ms",
+        # Decision/Routing Layer.
+        "decision_latency_ms",
     }
 )
 

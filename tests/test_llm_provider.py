@@ -223,9 +223,7 @@ class TestLLMProvider(unittest.TestCase):
             self.assertIsInstance(provider.fallback, GroqLLMProvider)
 
     def test_default_provider_mode_prefers_paid_fallback_only_with_claude_key(self):
-        with patch.dict(
-            "os.environ", {"ANTHROPIC_API_KEY": "k1", "GEMINI_API_KEY": "k2"}, clear=True
-        ):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k1", "GEMINI_API_KEY": "k2"}, clear=True):
             self.assertEqual(_default_provider_mode(), "fallback")
 
     def test_default_provider_mode_prefers_free_fallback_without_claude_key(self):

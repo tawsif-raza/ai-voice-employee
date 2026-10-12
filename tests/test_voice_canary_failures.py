@@ -64,6 +64,24 @@ class FailingTTSService(BaseTTSService):
         raise ConnectionError("ElevenLabs TTS endpoint connection refused")
 
 
+class FlakyTTSService(BaseTTSService):
+    """Fails the first `failures` synthesize calls, then speaks normally."""
+
+    def __init__(self, failures: int):
+        self._failures_left = failures
+        self.spoken: list[str] = []
+
+    async def synthesize_stream(self, token_stream, cancellation_event=None):
+        if self._failures_left > 0:
+            self._failures_left -= 1
+            raise ConnectionError("ElevenLabs TTS endpoint connection refused")
+        text = []
+        async for token in token_stream:
+            text.append(token)
+            yield b"\xff" * 160
+        self.spoken.append("".join(text))
+
+
 class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
     async def test_twilio_disconnect_handled_gracefully(self):
         """When Twilio WebSocket disconnects during audio streaming, handler does not crash."""
@@ -187,7 +205,12 @@ class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
         await handler.handle_stop()
 
     async def test_tts_failure_degrades_gracefully(self):
-        """When ElevenLabs TTS synthesis fails, pipeline logs error and does not drop call."""
+        """
+        A transient ElevenLabs failure (one turn) is answered with a spoken
+        apology and the call keeps going -- it is neither crashed nor dropped.
+        (H3: a *persistent* TTS failure is covered by
+        test_persistent_tts_failure_ends_call_instead_of_silence below.)
+        """
         outbound = []
 
         async def mock_send(msg):
@@ -199,7 +222,7 @@ class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
             handoff_detector=HandoffDetector(config_path=HANDOFF_CONFIG),
         )
         stt = MockSTTService()
-        tts = FailingTTSService()
+        tts = FlakyTTSService(failures=1)
         session = CallSession(call_sid="CA_TTS_ERR", stream_sid="MZ_TTS_ERR", session_id="s_tts")
 
         handler = VoiceCallHandler(
@@ -214,10 +237,52 @@ class TestVoiceCanaryFailures(unittest.IsolatedAsyncioTestCase):
         stt_task = asyncio.create_task(handler.process_stt_events())
 
         await stt.push_event(STTEvent(STTEventType.FINAL_TRANSCRIPT, text="Test message"))
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.2)
 
-        # Call is still active, not abruptly crashed
+        # Call is still active, not abruptly crashed, and the apology was spoken.
         self.assertTrue(handler.is_active)
+        self.assertTrue(any(m.get("event") == "media" for m in outbound))
+        self.assertIn("having trouble", " ".join(tts.spoken))
+        stt_task.cancel()
+        await handler.handle_stop()
+
+    async def test_persistent_tts_failure_ends_call_instead_of_silence(self):
+        """
+        H3: when TTS cannot speak at all -- not even the apology -- the caller
+        would otherwise talk to silence indefinitely. The handler ends the call
+        through the service-side path (the server's end_call_fn closes the
+        media stream; Twilio then plays the TwiML fallback message).
+        """
+        ended = []
+
+        async def mock_send(msg):
+            pass
+
+        async def end_call_fn(reason):
+            ended.append(reason)
+
+        cm = ConversationManager(
+            llm_service=None,
+            clinical_guard=HandoffDetector(config_path=CLINICAL_CONFIG),
+            handoff_detector=HandoffDetector(config_path=HANDOFF_CONFIG),
+        )
+        stt = MockSTTService()
+        session = CallSession(call_sid="CA_TTS_DEAD", stream_sid="MZ_TTS_DEAD", session_id="s_tts_dead")
+        handler = VoiceCallHandler(
+            session=session,
+            send_to_twilio_fn=mock_send,
+            conversation_manager=cm,
+            stt_service=stt,
+            tts_service=FailingTTSService(),
+            end_call_fn=end_call_fn,
+        )
+
+        await stt.connect()
+        stt_task = asyncio.create_task(handler.process_stt_events())
+        await stt.push_event(STTEvent(STTEventType.FINAL_TRANSCRIPT, text="Test message"))
+        await asyncio.sleep(0.2)
+
+        self.assertEqual(ended, ["fallback_speech_failed"])
         stt_task.cancel()
         await handler.handle_stop()
 

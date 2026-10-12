@@ -197,6 +197,7 @@ def build_default_tool_registry(
             idempotency="IDEMPOTENT_WRITE",
         ),
         appointments.cancel,
+        owner_lookup=lambda params: appointments.get_owner(params.get("appointment_id")),
     )
     registry.register(
         ActionSpec(
@@ -219,6 +220,7 @@ def build_default_tool_registry(
             idempotency="IDEMPOTENT_WRITE",
         ),
         appointments.reschedule,
+        owner_lookup=lambda params: appointments.get_owner(params.get("appointment_id")),
     )
     registry.register(
         ActionSpec(
