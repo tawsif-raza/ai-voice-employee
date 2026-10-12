@@ -73,7 +73,11 @@ def _run_probe(tmp_path, require):
     (tmp_path / "test_probe.py").write_text(_PROBE, encoding="utf-8")
     # A passing sibling module, as in the real suite (a run whose ONLY module is skipped exits 5, not 0).
     (tmp_path / "test_sibling.py").write_text("def test_sibling():\n    assert True\n", encoding="utf-8")
-    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(TESTS_DIR), "PYTHONDONTWRITEBYTECODE": "1"}
+    # Extend, never replace, the parent's PYTHONPATH: the production-image CI job installs pytest into a
+    # separate --target directory that is reachable ONLY through PYTHONPATH.
+    inherited = os.environ.get("PYTHONPATH", "")
+    pythonpath = os.pathsep.join(part for part in (str(TESTS_DIR), inherited) if part)
+    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": pythonpath, "PYTHONDONTWRITEBYTECODE": "1"}
     if require:
         env[REQUIRE_ENV] = "1"
     return subprocess.run(
