@@ -1,19 +1,15 @@
 """
 Tests for tools/aitk/core/schema.py -- the versioned results schema.
 
-See tests/test_aitk_stats.py for why this module skips when tools/ is absent.
+See tests/aitk_support.py for when this module skips (production image) or fails (AITK_REQUIRE_TOOLS=1).
 """
 
-import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
+from aitk_support import ensure_toolkit_on_path
 
-_TOOLS = Path(__file__).resolve().parents[1] / "tools"
-if not (_TOOLS / "aitk").is_dir():
-    pytest.skip("tools/aitk is not present (not shipped in the production image)", allow_module_level=True)
-sys.path.insert(0, str(_TOOLS))
+ensure_toolkit_on_path()
 
 from aitk.core import schema  # noqa: E402
 from aitk.core.schema import (  # noqa: E402

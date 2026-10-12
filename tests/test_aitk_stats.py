@@ -6,23 +6,18 @@ formulas this repository already uses (see stats.py's module docstring) and
 require the shared implementation to match them exactly, so migrating a
 caller cannot silently move a published number.
 
-tools/ is development tooling and is not copied into the production image
-(docker/Dockerfile.production), where the CI job mounts only tests/. The
-module skips itself there; in any real checkout tools/aitk exists.
+See tests/aitk_support.py: the module skips when tools/ is absent (production image) and
+FAILS instead when AITK_REQUIRE_TOOLS=1 (the normal CI job).
 """
 
 import json
 import math
 import random
-import sys
-from pathlib import Path
 
 import pytest
+from aitk_support import ensure_toolkit_on_path
 
-_TOOLS = Path(__file__).resolve().parents[1] / "tools"
-if not (_TOOLS / "aitk").is_dir():
-    pytest.skip("tools/aitk is not present (not shipped in the production image)", allow_module_level=True)
-sys.path.insert(0, str(_TOOLS))
+ensure_toolkit_on_path()
 
 from aitk.core import stats  # noqa: E402
 from aitk.core.stats import EmptySampleError, percentile, summarize  # noqa: E402

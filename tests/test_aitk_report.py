@@ -1,21 +1,17 @@
 """
 Tests for tools/aitk/core/report.py -- JSON serialization and file helpers.
 
-See tests/test_aitk_stats.py for why this module skips when tools/ is absent.
+See tests/aitk_support.py for when this module skips (production image) or fails (AITK_REQUIRE_TOOLS=1).
 """
 
 import json
 import os
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
+from aitk_support import ensure_toolkit_on_path
 
-_TOOLS = Path(__file__).resolve().parents[1] / "tools"
-if not (_TOOLS / "aitk").is_dir():
-    pytest.skip("tools/aitk is not present (not shipped in the production image)", allow_module_level=True)
-sys.path.insert(0, str(_TOOLS))
+ensure_toolkit_on_path()
 
 from aitk.core import report as report_io  # noqa: E402
 from aitk.core.schema import Evidence, Metric, Report, Result, SchemaError, Status  # noqa: E402
