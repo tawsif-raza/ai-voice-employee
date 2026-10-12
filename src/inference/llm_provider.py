@@ -21,6 +21,12 @@ Contract:
 Every provider implements `generate_stream(messages, **kwargs)` yielding text tokens
 and ending with `{"text": full_text, "latency_ms": latency_ms, "provider": name, ...}`
 dict, exactly matching ConversationManager's expectations.
+
+The final dict may also carry an optional ``"usage"`` key: provider-REPORTED token
+counts in a canonical shape (see src/inference/llm_usage.py and
+docs/AI_COST_TRACKING.md). It is present only when the provider actually reported
+usable counts -- its absence means "unknown", never zero -- and no existing
+consumer reads it.
 """
 
 import json
@@ -39,6 +45,16 @@ import yaml
 _AGENT_DIR = str(Path(__file__).resolve().parents[1] / "agent")
 if _AGENT_DIR not in sys.path:
     sys.path.insert(0, _AGENT_DIR)
+# llm_usage.py is a sibling module; modules here are imported by bare name (no packages).
+_INFERENCE_DIR = str(Path(__file__).resolve().parent)
+if _INFERENCE_DIR not in sys.path:
+    sys.path.insert(0, _INFERENCE_DIR)
+
+from llm_usage import (  # noqa: E402
+    AnthropicUsageAccumulator,
+    GeminiUsageAccumulator,
+    OpenAIStyleUsageAccumulator,
+)
 
 logger = logging.getLogger("ai_voice_agent.llm_provider")
 
@@ -81,6 +97,18 @@ def _redact_secret(text: object, secret: Optional[str]) -> str:
     if secret:
         text = text.replace(secret, "[REDACTED]")
     return text
+
+
+def _with_usage(result: dict, usage: Optional[dict]) -> dict:
+    """
+    Attach provider-reported token usage to a successful response's final dict.
+    Additive: the key is added only when the provider actually reported usage
+    (src/inference/llm_usage.py), so every existing consumer of the dict is
+    unaffected and "no usage" is never represented as zero tokens.
+    """
+    if usage is not None:
+        result["usage"] = usage
+    return result
 
 
 # ── Abstract Base Provider ──────────────────────────────────────────────────
@@ -194,6 +222,7 @@ class ClaudeLLMProvider(BaseLLMProvider):
 
         start_time = time.perf_counter()
         accumulated_text = []
+        usage_acc = AnthropicUsageAccumulator()
 
         try:
             with requests.post(
@@ -237,6 +266,7 @@ class ClaudeLLMProvider(BaseLLMProvider):
                     except json.JSONDecodeError:
                         continue
 
+                    usage_acc.observe(event)
                     evt_type = event.get("type")
                     if evt_type == "content_block_delta":
                         delta = event.get("delta", {})
@@ -269,12 +299,15 @@ class ClaudeLLMProvider(BaseLLMProvider):
             # answer -- raising lets FallbackLLMProvider fail over and
             # ConversationManager fall back, instead of the caller hearing silence.
             raise LLMProviderError("empty response", provider=self.provider_name, retryable=True)
-        yield {
-            "text": full_text,
-            "latency_ms": latency_ms,
-            "provider": self.provider_name,
-            "model": self.model,
-        }
+        yield _with_usage(
+            {
+                "text": full_text,
+                "latency_ms": latency_ms,
+                "provider": self.provider_name,
+                "model": self.model,
+            },
+            usage_acc.result(),
+        )
 
 
 # ── Gemini (Google) Provider ────────────────────────────────────────────────
@@ -374,6 +407,7 @@ class GeminiLLMProvider(BaseLLMProvider):
 
         start_time = time.perf_counter()
         accumulated_text = []
+        usage_acc = GeminiUsageAccumulator()
 
         try:
             with requests.post(
@@ -415,6 +449,7 @@ class GeminiLLMProvider(BaseLLMProvider):
                     except json.JSONDecodeError:
                         continue
 
+                    usage_acc.observe(event)
                     candidates = event.get("candidates", [])
                     if candidates:
                         parts = candidates[0].get("content", {}).get("parts", [])
@@ -439,12 +474,15 @@ class GeminiLLMProvider(BaseLLMProvider):
             # answer -- raising lets FallbackLLMProvider fail over and
             # ConversationManager fall back, instead of the caller hearing silence.
             raise LLMProviderError("empty response", provider=self.provider_name, retryable=True)
-        yield {
-            "text": full_text,
-            "latency_ms": latency_ms,
-            "provider": self.provider_name,
-            "model": self.model,
-        }
+        yield _with_usage(
+            {
+                "text": full_text,
+                "latency_ms": latency_ms,
+                "provider": self.provider_name,
+                "model": self.model,
+            },
+            usage_acc.result(),
+        )
 
 
 # ── Groq Provider ────────────────────────────────────────────────────────────
@@ -508,6 +546,7 @@ class GroqLLMProvider(BaseLLMProvider):
 
         start_time = time.perf_counter()
         accumulated_text = []
+        usage_acc = OpenAIStyleUsageAccumulator()
 
         try:
             with requests.post(
@@ -551,6 +590,7 @@ class GroqLLMProvider(BaseLLMProvider):
                     except json.JSONDecodeError:
                         continue
 
+                    usage_acc.observe(event)
                     choices = event.get("choices", [])
                     if choices:
                         delta = choices[0].get("delta", {})
@@ -574,12 +614,15 @@ class GroqLLMProvider(BaseLLMProvider):
             # answer -- raising lets FallbackLLMProvider fail over and
             # ConversationManager fall back, instead of the caller hearing silence.
             raise LLMProviderError("empty response", provider=self.provider_name, retryable=True)
-        yield {
-            "text": full_text,
-            "latency_ms": latency_ms,
-            "provider": self.provider_name,
-            "model": self.model,
-        }
+        yield _with_usage(
+            {
+                "text": full_text,
+                "latency_ms": latency_ms,
+                "provider": self.provider_name,
+                "model": self.model,
+            },
+            usage_acc.result(),
+        )
 
 
 # ── Local Model (Qwen) Provider ─────────────────────────────────────────────
