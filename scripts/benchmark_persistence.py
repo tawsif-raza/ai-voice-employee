@@ -30,7 +30,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "agent"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
+from aitk.core.stats import percentile  # noqa: E402
 from audit_repository_postgres import PostgresAuditRepository  # noqa: E402
 from db import Database, load_database_config  # noqa: E402
 from db_models import Base  # noqa: E402
@@ -44,17 +46,12 @@ from session_repository_postgres import PostgresSessionRepository  # noqa: E402
 N = 500  # iterations per single-operation measurement
 
 
-def _percentile(values, pct):
-    values = sorted(values)
-    idx = min(int(len(values) * pct), len(values) - 1)
-    return values[idx]
-
-
 def _summarize(name, samples_seconds):
     ms = [s * 1000 for s in samples_seconds]
+    p95 = percentile(ms, 95, method="floor_index")
     print(
         f"{name:32s} n={len(ms):5d}  mean={statistics.mean(ms):7.3f}ms  "
-        f"median={statistics.median(ms):7.3f}ms  p95={_percentile(ms, 0.95):7.3f}ms  "
+        f"median={statistics.median(ms):7.3f}ms  p95={p95:7.3f}ms  "
         f"max={max(ms):7.3f}ms"
     )
 

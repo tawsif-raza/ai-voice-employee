@@ -27,7 +27,6 @@ Usage:
 
 import argparse
 import json
-import math
 import statistics
 import sys
 import time
@@ -38,7 +37,9 @@ import yaml
 _ROOT = Path(__file__).resolve().parents[1]
 for _sub in ("src/agent", "src/inference"):
     sys.path.insert(0, str(_ROOT / _sub))
+sys.path.insert(0, str(_ROOT / "tools"))
 
+from aitk.core.stats import percentile  # noqa: E402
 from conversation_manager import build_conversation_manager  # noqa: E402
 from decision_router import DecisionRouter  # noqa: E402
 from intent_engine import IntentEngine  # noqa: E402
@@ -108,11 +109,6 @@ def _manager(llm, routing_enabled, faq_candidates):
     return manager
 
 
-def _percentile(sorted_samples, q):
-    """Nearest-rank percentile of an already sorted list."""
-    return sorted_samples[max(0, math.ceil(q * len(sorted_samples)) - 1)]
-
-
 def _decision_latency(runs, faq_candidates):
     """decide() alone, isolated from the rest of the turn."""
     router, engine = _router(faq_candidates), IntentEngine()
@@ -130,8 +126,8 @@ def _decision_latency(runs, faq_candidates):
     return {
         "samples": len(samples),
         "p50_ms": statistics.median(samples),
-        "p95_ms": _percentile(samples, 0.95),
-        "p99_ms": _percentile(samples, 0.99),
+        "p95_ms": percentile(samples, 95, method="nearest_rank"),
+        "p99_ms": percentile(samples, 99, method="nearest_rank"),
         "max_ms": samples[-1],
     }
 
