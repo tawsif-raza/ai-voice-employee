@@ -31,16 +31,25 @@ jobs:
       # PHASE_14_1_WORKFLOW_HARDENING_REPORT.md for what each gate
       # enforces vs. treats as pre-existing, documented technical debt.
       - name: Check formatting (ruff format)
-        run: python -m ruff format --check src/ tests/ scripts/ notebooks/
+        run: python -m ruff format --check src/ tests/ scripts/ notebooks/ tools/
 
       - name: Lint (ruff check)
-        run: python -m ruff check src/ tests/ scripts/ notebooks/
+        run: python -m ruff check src/ tests/ scripts/ notebooks/ tools/
 
       - name: Type-check (mypy)
         run: python -m mypy src/
 
+      # tools/ (the aitk toolkit) is dev-only and absent from the production image, so it is
+      # checked here, strictly, in the dev checkout only.
+      - name: Type-check toolkit (mypy --strict)
+        run: MYPYPATH=tools python -m mypy --strict --explicit-package-bases tools/aitk
+
+      # AITK_REQUIRE_TOOLS=1 turns a missing tools/ into a collection FAILURE instead of a skip
+      # (tests/aitk_support.py), so toolkit tests can never be silently skipped in this job. The
+      # production-image job below deliberately does NOT set it: tools/ is not shipped there.
       - name: Run test suite
         env:
+          AITK_REQUIRE_TOOLS: "1"
           APP_ENV: dev
           PERSISTENCE_MODE: dev
           AUTH_MODE: dev

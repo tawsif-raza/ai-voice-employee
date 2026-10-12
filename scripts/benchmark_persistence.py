@@ -43,7 +43,9 @@ from observability_models import AuditEvent, EventType, new_event_id, now_utc  #
 from session_models import SessionState  # noqa: E402
 from session_repository_postgres import PostgresSessionRepository  # noqa: E402
 
-N = 500  # iterations per single-operation measurement
+# Iterations per single-operation measurement. BENCH_PERSISTENCE_ITERATIONS shortens a run
+# (the toolkit's CI smoke test uses a small value); unset, the baseline stays 500.
+N = int(os.environ.get("BENCH_PERSISTENCE_ITERATIONS", "500"))
 
 
 def _summarize(name, samples_seconds):

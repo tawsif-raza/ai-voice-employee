@@ -1,4 +1,4 @@
-# aitk — AI engineering toolkit (Phase 1: statistics + results schema)
+# aitk — AI engineering toolkit (Phase 1: statistics + results schema · Phase 2: usage + cost)
 
 Dev tooling shared by the repo's benchmark, eval and verification scripts. Stdlib only; no runtime
 dependency is added. **Not part of the production image** (`docker/Dockerfile.production` does not copy
@@ -46,7 +46,9 @@ from aitk.core.schema import Evidence, Report, Result, Status, metrics_from_summ
 from aitk.core.stats import summarize
 
 result = Result(
-    name="decide_latency", status=Status.PASS, evidence=Evidence.LOCAL,
+    name="decide_latency",
+    status=Status.PASS,
+    evidence=Evidence.LOCAL,
     metrics=metrics_from_summary(summarize(samples_ms), unit="ms"),
 )
 report.write_report(Report.create("benchmark_decision_router", [result]), "outputs/decision_router.json")
@@ -54,6 +56,26 @@ report.write_report(Report.create("benchmark_decision_router", [result]), "outpu
 
 Output is deterministic strict JSON (sorted keys, no NaN/Infinity) and written atomically. Readers accept
 only the exact schema version they know and reject unknown fields.
+
+## `aitk.cost` (Phase 2)
+
+Token-based **cost estimates** from provider-**reported** usage. Full guide, provider coverage table and the
+estimate-vs-invoice explanation: [`docs/AI_COST_TRACKING.md`](../../docs/AI_COST_TRACKING.md).
+
+- `pricing.py` — `PricingTable`: strict, versioned (`pricing_version: 1`) JSON prices with required source and
+  effective dates, `Decimal` arithmetic, exact model/alias matching, ambiguity rejected at load.
+- `pricing.json` — **shipped empty on purpose**; `pricing.example.json` is a synthetic template.
+- `tracker.py` — `estimate_cost`, `CostTracker`; statuses `PRICED` / `UNPRICED` / `UNKNOWN_USAGE`. A cost exists only
+  with real usage **and** a configured price; totals are withheld whenever any call is not `PRICED`.
+- Results go through the Phase 1 schema (`tracker.build_report(tool, Evidence.…)`); the evidence label is required.
+
+## Tests and CI
+
+Toolkit tests (`tests/test_aitk_*.py`) import `tests/aitk_support.py`, which **skips** a module when `tools/aitk` is
+absent (the production-image job mounts only `tests/`) but **fails** collection when `AITK_REQUIRE_TOOLS=1` — which
+the `test` CI job sets, so they cannot be silently skipped there. `tools/` is also linted (`ruff`) and checked with
+`mypy --strict` in the `test` job only. The benchmark smoke tests run the two migrated scripts in a subprocess with a
+timeout, a credential-free environment and sockets blocked.
 
 ## Not migrated yet, and why
 
