@@ -120,7 +120,9 @@ class MemoryRepository:
         exposed as a query API to any caller).
         """
         with self._lock:
-            expired_ids = [mid for mid, r in self._records.items() if r.expires_at is not None and r.expires_at < cutoff]
+            expired_ids = [
+                mid for mid, r in self._records.items() if r.expires_at is not None and r.expires_at < cutoff
+            ]
             for mid in expired_ids:
                 self._records.pop(mid, None)
                 self._versions.pop(mid, None)

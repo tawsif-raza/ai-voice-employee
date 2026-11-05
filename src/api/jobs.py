@@ -60,6 +60,7 @@ class JobRecord:
     job_id: str
     status: JobStatus
     created_at: float
+    owner_user_id: Optional[str] = None
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     result: Optional[dict[str, Any]] = field(default=None)
@@ -75,8 +76,8 @@ class JobStore:
         self._order: list[str] = []
         self._max_jobs = max_jobs
 
-    def create(self, job_id: str) -> JobRecord:
-        record = JobRecord(job_id=job_id, status=JobStatus.QUEUED, created_at=time.time())
+    def create(self, job_id: str, owner_user_id: Optional[str] = None) -> JobRecord:
+        record = JobRecord(job_id=job_id, status=JobStatus.QUEUED, created_at=time.time(), owner_user_id=owner_user_id)
         with self._lock:
             self._jobs[job_id] = record
             self._order.append(job_id)

@@ -129,7 +129,13 @@ def _llm_service_is_safe_for_concurrent_generation(llm_service) -> bool:
     False (conservative) for the plain local LLMService itself or any
     caller-injected/test-double object of unknown type.
     """
-    from llm_provider import ClaudeLLMProvider, FallbackLLMProvider, GeminiLLMProvider, GroqLLMProvider, LocalLLMProvider
+    from llm_provider import (
+        ClaudeLLMProvider,
+        FallbackLLMProvider,
+        GeminiLLMProvider,
+        GroqLLMProvider,
+        LocalLLMProvider,
+    )
 
     if isinstance(llm_service, LocalLLMProvider):
         return False
@@ -246,6 +252,8 @@ class ConversationManager:
     # reliably present verbatim in a user's message when they reference
     # an existing record. Never used to invent an ID that wasn't typed.
     _RECORD_ID_PATTERN = re.compile(r"\b(appt_\d+|order_\d+)\b")
+    # Roles a caller may supply in `history` -- see _normalize_history().
+    _CLIENT_HISTORY_ROLES = frozenset({"user", "assistant"})
     # Deterministic, application-owned reply classifiers for a pending
     # confirmation — never the LLM's interpretation (see module docstring).
     _AFFIRMATIVE_PATTERN = re.compile(
@@ -664,13 +672,15 @@ class ConversationManager:
         # back up here: SessionManager.get_session() itself returns None
         # for an expired session (see session_manager.py), so `session`
         # below is simply absent and this block is skipped entirely.
+        # A session_id owned by someone else resolves to None (F-07): the
+        # turn then runs without session-backed state rather than reading,
+        # resetting, or acting on that session.
         session = None
         if self.session_manager is not None and session_id:
             user_id = auth.user_id if auth is not None else None
-            session = self.session_manager.get_session(session_id, user_id=user_id)
-            if session is None:
-                session = self.session_manager.create_session(session_id=session_id, user_id=user_id)
+            session = self.session_manager.get_or_create_session(session_id, user_id=user_id)
 
+        if session is not None:
             if (
                 session.workflow_state == "AWAITING_CONFIRMATION"
                 and session.pending_action
@@ -985,9 +995,10 @@ class ConversationManager:
         if context_message is not None:
             messages.append(context_message)
         if self.memory_manager is not None:
-            memory_user_id = (auth.user_id if auth is not None else None) or (
-                session.user_id if session is not None else None
-            )
+            # Durable memory is per person, so it is only read for an
+            # authenticated identity: "anonymous" and an unverified caller
+            # are shared labels, not people (H2, F-09).
+            memory_user_id = auth.user_id if auth is not None and auth.authenticated else None
             if memory_user_id:
                 memory_records = self.memory_manager.get_allowed_context(memory_user_id)
                 # Phase 6 (only when configured): a second, content-level
@@ -1617,6 +1628,12 @@ class ConversationManager:
         crashing prompt assembly / tokenizer.apply_chat_template. Silently
         drops anything that doesn't match — this is caller input, not a
         trusted internal structure.
+
+        Only `user`/`assistant` turns are kept. System messages are
+        assembled by this class alone; a client-supplied `system` (or any
+        other) role would otherwise be merged into the provider's system
+        instruction by the Claude/Gemini adapters
+        (docs/MASTER_PROJECT_PLAN.md F-05).
         """
         normalized = []
         try:
@@ -1624,7 +1641,11 @@ class ConversationManager:
         except TypeError:
             return []
         for turn in iterator:
-            if isinstance(turn, dict) and isinstance(turn.get("role"), str) and isinstance(turn.get("content"), str):
+            if (
+                isinstance(turn, dict)
+                and turn.get("role") in ConversationManager._CLIENT_HISTORY_ROLES
+                and isinstance(turn.get("content"), str)
+            ):
                 normalized.append({"role": turn["role"], "content": turn["content"]})
         return normalized
 
@@ -1818,11 +1839,7 @@ def build_conversation_manager(
         llm_service = llm_provider
     elif os.environ.get("LLM_PROVIDER") in ("fallback", "free_fallback", "claude", "gemini", "groq") or (
         os.environ.get("LLM_PROVIDER") != "local"
-        and (
-            os.environ.get("ANTHROPIC_API_KEY")
-            or os.environ.get("GEMINI_API_KEY")
-            or os.environ.get("GROQ_API_KEY")
-        )
+        and (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("GROQ_API_KEY"))
     ):
         from llm_provider import build_llm_provider
 
@@ -1870,6 +1887,10 @@ def build_conversation_manager(
         from audit import AuditLogger  # noqa: E402
 
         audit_logger = AuditLogger(privacy_service=privacy_service, repository=persistence.audit)
+    elif audit_logger is not None and hasattr(audit_logger, "attach_defaults"):
+        # A caller-supplied logger (src/api/server.py's process-wide one)
+        # still gets the persisted repository and PII sanitization (F-08).
+        audit_logger.attach_defaults(repository=persistence.audit, privacy_service=privacy_service)
     if observability_enabled and metrics is None:
         from metrics import MetricsRegistry  # noqa: E402
 
@@ -1977,8 +1998,22 @@ def build_conversation_manager(
     )
 
     rag_config = _load_rag_config()
+
+    # The clinical guard is a safety layer, not a retrieval feature: it is
+    # built on every path, including deployments with RAG disabled
+    # (docker/Dockerfile.production) -- docs/MASTER_PROJECT_PLAN.md F-01.
+    # A relative path is resolved against the repo root rather than the
+    # working directory, and a missing file fails startup: HandoffDetector
+    # would otherwise fall back to its generic handoff phrases and silently
+    # stop catching clinical questions.
+    clinical_path = Path(clinical_config_path or rag_config.get("clinical_triggers_path") or str(_CLINICAL_CONFIG_PATH))
+    if not clinical_path.is_absolute():
+        clinical_path = Path(__file__).resolve().parents[2] / clinical_path
+    if not clinical_path.is_file():
+        raise FileNotFoundError(f"Clinical trigger configuration not found: {clinical_path}")
+    clinical_guard = HandoffDetector(config_path=clinical_path)
+
     retriever = None
-    clinical_guard = None
     if rag_enabled and bool(rag_config.get("enabled", True)):
         rag_dir = str(Path(__file__).resolve().parents[1] / "rag")
         if rag_dir not in sys.path:
@@ -1989,9 +2024,6 @@ def build_conversation_manager(
             knowledge_dir=rag_config.get("knowledge_dir"),
             index_dir=rag_config.get("index_dir"),
             embedding_model=rag_config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2"),
-        )
-        clinical_guard = HandoffDetector(
-            config_path=clinical_config_path or rag_config.get("clinical_triggers_path") or str(_CLINICAL_CONFIG_PATH)
         )
 
     return ConversationManager(

@@ -23,8 +23,20 @@ class ToolRegistry:
     def __init__(self):
         self._specs: dict[str, ActionSpec] = {}
         self._callables: dict[str, Callable[[dict], dict]] = {}
+        self._owner_lookups: dict[str, Callable[[dict], Optional[str]]] = {}
 
-    def register(self, spec: ActionSpec, fn: Callable[[dict], dict]) -> None:
+    def register(
+        self,
+        spec: ActionSpec,
+        fn: Callable[[dict], dict],
+        owner_lookup: Optional[Callable[[dict], Optional[str]]] = None,
+    ) -> None:
+        """
+        `owner_lookup(params) -> owner user_id | None` is optional: for an
+        action on an existing resource it lets ToolOrchestrator resolve the
+        resource's owner itself before authorization (H2, F-09), instead of
+        trusting a caller to supply it.
+        """
         if not isinstance(spec, ActionSpec):
             raise ToolRegistrationError("spec must be an ActionSpec instance")
         if not isinstance(spec.name, str) or not spec.name.strip():
@@ -33,8 +45,12 @@ class ToolRegistry:
             raise ToolRegistrationError(f"Tool '{spec.name}' is already registered — duplicate registration rejected")
         if not callable(fn):
             raise ToolRegistrationError(f"Implementation for tool '{spec.name}' must be callable")
+        if owner_lookup is not None and not callable(owner_lookup):
+            raise ToolRegistrationError(f"owner_lookup for tool '{spec.name}' must be callable")
         self._specs[spec.name] = spec
         self._callables[spec.name] = fn
+        if owner_lookup is not None:
+            self._owner_lookups[spec.name] = owner_lookup
 
     def is_registered(self, name) -> bool:
         return isinstance(name, str) and name in self._specs
@@ -55,6 +71,11 @@ class ToolRegistry:
         if not isinstance(name, str):
             return None
         return self._callables.get(name)
+
+    def get_owner_lookup(self, name) -> Optional[Callable[[dict], Optional[str]]]:
+        if not isinstance(name, str):
+            return None
+        return self._owner_lookups.get(name)
 
     def list_actions(self) -> list[ActionSpec]:
         return list(self._specs.values())

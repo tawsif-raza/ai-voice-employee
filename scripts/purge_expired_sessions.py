@@ -97,9 +97,11 @@ def main() -> int:
         # the shared, wired-up AuditLogger) from within the running
         # application/an admin task instead, once an operator decides
         # how this should be scheduled.
-        print("(Note: this script's audit event is recorded to a standalone AuditLogger, not the running "
-              "application's shared one -- see SessionManager.purge_expired_sessions() for the in-process "
-              "equivalent that does share it.)")
+        print(
+            "(Note: this script's audit event is recorded to a standalone AuditLogger, not the running "
+            "application's shared one -- see SessionManager.purge_expired_sessions() for the in-process "
+            "equivalent that does share it.)"
+        )
 
     database.dispose()
     return 0

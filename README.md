@@ -112,8 +112,11 @@ cp .env.example .env
 # 4. Build RAG index
 python src/rag/build_index.py
 
-# 5. Start the API server
-python src/api/server.py
+# 5. Start the API server in development mode
+#    (APP_ENV unset means production: the server then refuses dev auth and
+#    requires OIDC -- see "Environment Variables" below)
+APP_ENV=dev python src/api/server.py         # Linux/Mac
+$env:APP_ENV="dev"; python src/api/server.py # Windows PowerShell
 ```
 
 ### Running the Voice Client (TTS)
@@ -196,7 +199,8 @@ See [`.env.example`](.env.example) for the complete list. Key variables:
 |----------|----------|-------------|
 | `PORT` | No | API server port (default: 8000) |
 | `BASE_MODEL_NAME` | No | HuggingFace model ID (default: Qwen/Qwen2.5-0.5B-Instruct) |
-| `AUTH_MODE` | No | `dev` (default) or `production` (OIDC) |
+| `APP_ENV` | Yes (non-dev) | `dev` for local work/tests; unset means `production`, which refuses dev auth, mock voice and the mock PIN and requires authentication on the text API |
+| `AUTH_MODE` | No | `dev` (default, only with `APP_ENV=dev`) or `production` (OIDC) |
 | `PERSISTENCE_MODE` | No | `dev` (default, in-memory) or `production` (PostgreSQL) |
 | `DATABASE_URL` | When production | PostgreSQL connection string |
 | `ELEVENLABS_API_KEY` | For TTS | ElevenLabs API key |

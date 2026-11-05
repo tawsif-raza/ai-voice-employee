@@ -50,6 +50,8 @@ services:
       - HF_TOKEN=${HF_TOKEN:-}
       - MERGED_MODEL_DIR=/app/outputs/merged_model
       - PORT=8000
+      # Local development stack; a real deployment must not set dev.
+      - APP_ENV=${APP_ENV:-dev}
       # Phase 14: OpenTelemetry tracing configuration
       - TRACING_ENABLED=${TRACING_ENABLED:-false}
       - OTEL_SERVICE_NAME=ai-voice-agent
