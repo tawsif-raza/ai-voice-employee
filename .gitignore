@@ -1,4 +1,10 @@
 .env
+# Every local env file holds real credentials (e.g. the documented
+# `docker compose ... --env-file .env.canary`); only the placeholder
+# templates are tracked.
+.env.*
+!.env.example
+!.env.canary.example
 __pycache__/
 *.pyc
 data/raw/

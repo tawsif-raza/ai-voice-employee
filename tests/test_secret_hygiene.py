@@ -59,15 +59,16 @@ class StaticLLM(BaseLLMProvider):
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, text: str):
+    def __init__(self, status_code: int, text: str, sse_lines=()):
         self.status_code = status_code
         self.text = text
+        self._sse_lines = list(sse_lines)
 
     def json(self):
         return {"error": {"message": self.text}}
 
     def iter_lines(self, decode_unicode=True):
-        return iter(())
+        return iter(self._sse_lines)
 
     def __enter__(self):
         return self
@@ -82,7 +83,9 @@ def test_key_is_sent_in_header_not_url(monkeypatch):
     def fake_post(url, headers=None, **kwargs):
         captured["url"] = url
         captured["headers"] = headers or {}
-        return _FakeResponse(200, "")
+        # A realistic one-chunk Gemini SSE stream (an empty 200 is itself an
+        # error since H3 -- see test_voice_deadlines.py).
+        return _FakeResponse(200, "", sse_lines=['data: {"candidates": [{"content": {"parts": [{"text": "Hi."}]}}]}'])
 
     monkeypatch.setattr(requests, "post", fake_post)
     list(GeminiLLMProvider(api_key=SENTINEL_KEY).generate_stream([{"role": "user", "content": "hi"}]))
@@ -139,8 +142,11 @@ def test_api_response_and_logs_do_not_contain_key_when_gemini_fails(caplog):
     try:
         with caplog.at_level(logging.DEBUG):
             client = TestClient(server.app)
-            blocking = client.post("/generate", json={"message": "What are your opening hours?"})
-            streaming = client.post("/generate", json={"message": "What are your opening hours?", "stream": True})
+            # Must reach the LLM (a verified FAQ is answered by the decision router).
+            blocking = client.post("/generate", json={"message": "What is your return policy for online orders?"})
+            streaming = client.post(
+                "/generate", json={"message": "What is your return policy for online orders?", "stream": True}
+            )
     finally:
         server._conversation_manager = previous
 

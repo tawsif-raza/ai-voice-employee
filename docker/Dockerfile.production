@@ -41,8 +41,12 @@ COPY src/ src/
 COPY scripts/ scripts/
 COPY alembic.ini .
 COPY alembic/ alembic/
-# data/ is intentionally not copied -- this image never loads a local
-# model or knowledge-base index (same reasoning as docker/Dockerfile).
+# data/ is otherwise intentionally not copied -- this image never loads a
+# local model or knowledge-base index (same reasoning as docker/Dockerfile).
+# The one exception is the FAQ file the decision router answers verified
+# FAQ questions from (configs/decision_routing.yaml `knowledge_file`);
+# without it those turns simply take the normal LLM path.
+COPY data/knowledge/faqs.json data/knowledge/faqs.json
 
 # Phase 26: src/api/server.py's lifespan hardcodes rag_enabled=True on
 # every build_conversation_manager() call (no env var exposes it) --

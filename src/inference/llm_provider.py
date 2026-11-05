@@ -263,6 +263,12 @@ class ClaudeLLMProvider(BaseLLMProvider):
 
         latency_ms = (time.perf_counter() - start_time) * 1000
         full_text = "".join(accumulated_text).strip()
+        if not full_text:
+            # H3: a 200 with no visible text (e.g. a safety block, or a
+            # reasoning model spending its whole budget) is a failure, not an
+            # answer -- raising lets FallbackLLMProvider fail over and
+            # ConversationManager fall back, instead of the caller hearing silence.
+            raise LLMProviderError("empty response", provider=self.provider_name, retryable=True)
         yield {
             "text": full_text,
             "latency_ms": latency_ms,
@@ -427,6 +433,12 @@ class GeminiLLMProvider(BaseLLMProvider):
 
         latency_ms = (time.perf_counter() - start_time) * 1000
         full_text = "".join(accumulated_text).strip()
+        if not full_text:
+            # H3: a 200 with no visible text (e.g. a safety block, or a
+            # reasoning model spending its whole budget) is a failure, not an
+            # answer -- raising lets FallbackLLMProvider fail over and
+            # ConversationManager fall back, instead of the caller hearing silence.
+            raise LLMProviderError("empty response", provider=self.provider_name, retryable=True)
         yield {
             "text": full_text,
             "latency_ms": latency_ms,
@@ -556,6 +568,12 @@ class GroqLLMProvider(BaseLLMProvider):
 
         latency_ms = (time.perf_counter() - start_time) * 1000
         full_text = "".join(accumulated_text).strip()
+        if not full_text:
+            # H3: a 200 with no visible text (e.g. a safety block, or a
+            # reasoning model spending its whole budget) is a failure, not an
+            # answer -- raising lets FallbackLLMProvider fail over and
+            # ConversationManager fall back, instead of the caller hearing silence.
+            raise LLMProviderError("empty response", provider=self.provider_name, retryable=True)
         yield {
             "text": full_text,
             "latency_ms": latency_ms,
