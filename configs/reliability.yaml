@@ -54,6 +54,40 @@ reliability:
     max_reconnect_attempts: 3
     reconnect_backoff_seconds: 1.0
 
+  # Deadlines for a live phone call (H3; src/voice/voice_pipeline.py and
+  # src/api/server.py). Each stage is bounded so no provider failure can
+  # leave a caller in silence indefinitely:
+  #   - stt_connect: opening the Deepgram stream at call start.
+  #   - filler_after: say "One moment, please." if the LLM has produced no
+  #     text yet (0 disables). Spoken once per turn, never added to history.
+  #   - first_token: give up on the turn if no text at all by then (the
+  #     provider chain's own 30 s read timeouts + failover + retry could
+  #     otherwise keep a caller waiting ~2 minutes).
+  #   - turn: ceiling for one whole turn (generation + speech).
+  #   - fallback_speech: ceiling for speaking the apology itself, since the
+  #     TTS provider may be the component that failed.
+  #   - max_consecutive_turn_failures: after this many failed turns in a row
+  #     the call is ended and Twilio plays the TwiML fallback message.
+  #   - media_inactivity: Twilio streams a media frame every 20 ms while a
+  #     call is up; this long without any frame means the stream is dead.
+  # The per-process call cap and maximum call length are in APP_ENV
+  # settings (MAX_CONCURRENT_CALLS / MAX_CALL_DURATION_SECONDS).
+  voice:
+    stt_connect_timeout_seconds: 10
+    filler_after_seconds: 4
+    first_token_timeout_seconds: 15
+    turn_timeout_seconds: 60
+    fallback_speech_timeout_seconds: 10
+    max_consecutive_turn_failures: 3
+    media_inactivity_timeout_seconds: 20
+
+  # POST /jobs/generate (H3): its own worker pool, separate from voice
+  # turns, and a cap on queued+running jobs -- beyond it the endpoint
+  # answers 503 instead of queueing unbounded work.
+  jobs:
+    max_workers: 4
+    max_pending: 100
+
   circuit_breaker:
     llm:
       failure_threshold: 5
