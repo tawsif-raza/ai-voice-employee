@@ -55,6 +55,40 @@ regex_patterns:
     - '\bhow (much|many)\b.{0,30}\b(safe|okay|ok)\b'        # "how much melatonin is safe for a child" (dosage-adjacent, no "take"/"dose"/"mg")
     - '\b(combine|mix)\b.{0,20}\bwith\b'                    # "combine this antihistamine with alcohol" (interaction, no "safe to" prefix)
     - '\bdosage\s+(of|for)\b'                               # "what's the correct dosage of vitamin D" (no "how much/many" prefix)
+    # Below: medication and treatment DECISIONS, added 2026-10-09 after the
+    # decision-router review found "Is this dosage safe?", "Should I
+    # increase my dose?", "Can I stop taking this medicine?", "What
+    # happens if I take two tablets?" etc. all reaching the LLM
+    # (docs/CLINICAL_SAFETY.md). Patterns run on normalize()d text:
+    # lower-case, punctuation -> spaces ("can't" -> "can t"). Typo-tolerant
+    # stems: med[ie]c\w* (medicine/medecine/medication), dos(e|es|age|ing|ege)
+    # (dose/dosage/dosege), tablet\w*/pills?/capsules?.
+    # Dose / dosage safety or correctness.
+    - '\bdos(e|es|age|ages|ing|ege)\b.{0,25}\b(safe|okay|ok|right|correct|normal|too (high|low|much|strong)|enough|fine)\b'
+    - '\b(safe|okay|ok|right|correct|normal)\b.{0,20}\bdos(e|es|age|ages|ing|ege)\b'
+    # Changing a dose: increase / decrease / double / halve / skip / adjust.
+    - '\b(increas\w*|decreas\w*|lower\w*|rais\w*|reduc\w*|doubl\w*|halv\w*|chang\w*|adjust\w*|(?<!pick )(?<!picked )(?<!picking )up|cut\w*|skip\w*|miss\w*)\b.{0,20}\bdos(e|es|age|ages|ing|ege)\b'
+    - '\b(double|extra|second|another|missed|skipped)\s+(dos(e|es|age)|pills?|tablets?|capsules?)\b'
+    # Starting / stopping / skipping / coming off a medication.
+    - '\b(stop\w*|quit\w*|skip\w*|miss\w*|start\w*|com\w* off|wean\w*( off)?|taper\w*)\s+(taking\s+|using\s+)?(\w+\s+){0,2}?(med[ie]c\w*|meds|pills?|tablet\w*|capsules?|dos(e|es|age)|antibiotics?|antidepressants?|painkillers?|steroids?|insulin|inhaler|statins?|blood thinners?|birth control)\b'
+    - '\b(stop|stopping|quit|quitting|keep|continue|continuing)\s+taking\b'
+    # Frequency / timing / repeating a dose: "can I take this twice a day".
+    - '\b(can|could|should|may|must)\s+i\s+(take|use|give)\b.{0,40}\b(twice|two times|three times|four times|more often|less often|every \w+ hours?|at night|before bed|on an empty stomach|with food|without food)\b'
+    - '\btake\s+(it|this|them|these|that|one|another one|some more)\s+again\b'
+    - '\b(how often|how many times)\b.{0,25}\b(take|use|dos(e|es|age)|med[ie]c\w*|pills?|tablet\w*|capsules?)\b'
+    - '\bhow long\b.{0,30}\b(med[ie]c\w*|meds|pills?|tablet\w*|capsules?|antibiotics?|dos(e|es|age))\b'
+    - '\bhow (much|many)\b.{0,30}\b((can|should|do|may|could)\s+(i|he|she|they|we)|(i|he|she|they|we)\s+(can|should|could|may))\s+(take|give|use)\b(?!\s+back)'
+    # Quantity: "what happens if I take two tablets", "I took 3 pills".
+    - '\b(take|taking|took|taken|swallow\w*|give|gave|giving)\b.{0,20}\b(two|three|four|five|several|\d+|more|extra|double|another|a second)\s+(\w+\s+)?(tablet\w*|pills?|capsules?|dos(e|es|age)|mg|milligrams?|spoons?|teaspoons?|puffs?)\b'
+    - '\b(can|could|should|may)\s+i\s+take\s+(two|three|four|\d+|more|another|extra|a second|double)\b'
+    - '\bmore than (prescribed|recommended|directed|i should|the (label|dose|recommended|prescribed))\b'
+    # Combining with another medicine (named or not): "can I take this with another medicine".
+    - '\b(take|taking|use|using|mix\w*|combin\w*)\b.{0,30}\b(with|and|alongside|together with)\s+(my\s+|another\s+|other\s+|any\s+|a\s+|an\s+|the\s+|some\s+)?(other\s+|different\s+)?(med[ie]c\w*|meds|pills?|tablet\w*|drugs?|alcohol|antibiotics?|antidepressants?|painkillers?|supplements?)\b'
+    - '\b(can|could|should|may)\s+i\s+(take|mix|combine)\b.{1,40}\b(with|alongside|together with)\b'
+    # Treatment decisions: "should I take / stop / keep taking ...".
+    - '\bshould\s+(i|he|she|they|my \w+)\s+(still\s+)?(take|stop taking|start taking|keep taking|continue taking|increase|decrease|double|skip|lower|raise)\b'
+    # Suitability for a particular person.
+    - '\b(med[ie]c\w*|meds|pills?|tablet\w*|drugs?)\b.{0,25}\b(safe|okay|ok|right|suitable)\s+for\s+(me|my|him|her|them|a child|children|kids|a baby|babies|an? (elderly|older) \w+)\b'
 
 synonyms:
   weight: 0.8
